@@ -53,8 +53,8 @@ const VisitScreen = ({ navigation, route }) => {
   const [formData, setFormData] = useState({
     fromDate: '',
     toDate: '',
-    customer: '',
-    employees: [],
+    customers: [],          // multi-select array of {id, label}
+    employees: [],          // multi-select array of {id, label}
     departments: [],
     brands: []
   });
@@ -77,15 +77,25 @@ const VisitScreen = ({ navigation, route }) => {
 
   // Silent background re-fetch when network flips to online so cached
   // visits / synced offline rows refresh within a second of reconnect.
+  // We wait for the offline queue to drain so the post-flush fetch sees
+  // the real Odoo CV/YYYY/NNNNN refs (not the OFF placeholder names).
   useEffect(() => {
     let unsub = null;
     try {
       const networkStatus = require('@utils/networkStatus').default;
-      unsub = networkStatus.subscribe((online) => {
-        if (online) {
-          console.log('[VisitScreen] back online — silently re-fetching list');
+      const { waitForFlush } = require('@services/OfflineSyncService');
+      unsub = networkStatus.subscribe(async (online) => {
+        if (!online) return;
+        console.log('[VisitScreen] back online — fetch immediately, then re-fetch after queue drains');
+        // Immediate so the offline-only banner / cached rows refresh fast.
+        fetchData({});
+        // Wait up to 8s for the queue to drain, then fetch again so the
+        // OFF placeholders flip to real CV/YYYY/NNNNN refs.
+        try {
+          await waitForFlush(8000);
+          console.log('[VisitScreen] queue drained — re-fetching to pick up real Odoo refs');
           fetchData({});
-        }
+        } catch (_) {}
       });
     } catch (e) {
       console.log('[VisitScreen] networkStatus.subscribe failed:', e?.message);
@@ -108,7 +118,7 @@ const VisitScreen = ({ navigation, route }) => {
     console.log('[VisitScreen] refreshAt=' + refreshAt + ' newVisitId=' + newVisitId +
                 ' — clearing filters and re-fetching');
     setFormData({
-      fromDate: '', toDate: '', customer: '', employees: [], departments: [], brands: [],
+      fromDate: '', toDate: '', customers: [], employees: [], departments: [], brands: [],
     });
     fetchData({});
   }, [refreshAt]);
@@ -299,19 +309,30 @@ const VisitScreen = ({ navigation, route }) => {
   };
 
 
-  const applyFilters = () => {
+  // Build the filter payload sent to fetchCustomerVisitsOdoo. Multi-select
+  // arrays of {id, label} get unwrapped into id arrays.
+  const buildFilters = (fd) => {
     const filters = {};
-    if (formData.fromDate) filters.fromDate = moment(formData.fromDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
-    if (formData.toDate) filters.toDate = moment(formData.toDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
-    if (formData.customer?.id) filters.customerId = formData.customer.id;
-    fetchData(filters);
-  }
+    if (fd.fromDate) filters.fromDate = moment(fd.fromDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
+    if (fd.toDate) filters.toDate = moment(fd.toDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
+    if (Array.isArray(fd.customers) && fd.customers.length > 0) {
+      filters.customerIds = fd.customers.map((c) => c?.id).filter(Boolean);
+    }
+    if (Array.isArray(fd.employees) && fd.employees.length > 0) {
+      filters.employeeIds = fd.employees.map((e) => e?.id).filter(Boolean);
+    }
+    return filters;
+  };
+
+  const applyFilters = () => {
+    fetchData(buildFilters(formData));
+  };
 
   const clearFilters = () => {
     setFormData({
       fromDate: '',
       toDate: '',
-      customer: '',
+      customers: [],
       employees: [],
       departments: [],
       brands: [],
@@ -324,22 +345,28 @@ const VisitScreen = ({ navigation, route }) => {
     let next = { ...formData };
     if (key === 'fromDate') next.fromDate = '';
     if (key === 'toDate') next.toDate = '';
-    if (key === 'customer') next.customer = '';
+    if (key === 'customers') next.customers = [];
     if (key === 'employees') next.employees = [];
     setFormData(next);
-    const filters = {};
-    if (next.fromDate) filters.fromDate = moment(next.fromDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
-    if (next.toDate) filters.toDate = moment(next.toDate, 'DD-MM-YYYY').format('YYYY-MM-DD');
-    if (next.customer?.id) filters.customerId = next.customer.id;
-    fetchData(filters);
+    fetchData(buildFilters(next));
   };
 
-  // Derive the active-filter chips from formData.
+  // Derive the active-filter chips from formData. Multi-select shows count.
   const chips = [];
   if (formData.fromDate) chips.push({ key: 'fromDate', label: 'From', value: formData.fromDate });
   if (formData.toDate) chips.push({ key: 'toDate', label: 'To', value: formData.toDate });
-  if (formData.customer?.label) chips.push({ key: 'customer', label: 'Customer', value: formData.customer.label });
-  if (formData.employees[0]?.label) chips.push({ key: 'employees', label: 'Employee', value: formData.employees[0].label });
+  if (Array.isArray(formData.customers) && formData.customers.length > 0) {
+    const value = formData.customers.length === 1
+      ? formData.customers[0].label
+      : `${formData.customers[0].label} +${formData.customers.length - 1}`;
+    chips.push({ key: 'customers', label: 'Customer', value });
+  }
+  if (Array.isArray(formData.employees) && formData.employees.length > 0) {
+    const value = formData.employees.length === 1
+      ? formData.employees[0].label
+      : `${formData.employees[0].label} +${formData.employees.length - 1}`;
+    chips.push({ key: 'employees', label: 'Employee', value });
+  }
   const activeFilterCount = chips.length;
 
   return (
@@ -478,7 +505,7 @@ const VisitScreen = ({ navigation, route }) => {
             <MaterialIcons name="chevron-right" size={20} color="#bbb" />
           </TouchableOpacity>
 
-          {/* Customer */}
+          {/* Customer (multi-select) */}
           <TouchableOpacity
             style={styles.filterRow}
             activeOpacity={0.7}
@@ -487,14 +514,20 @@ const VisitScreen = ({ navigation, route }) => {
             <MaterialIcons name="person" size={20} color={COLORS.primaryThemeColor} />
             <View style={styles.filterRowContent}>
               <Text style={styles.filterLabel}>Customer</Text>
-              <Text style={[styles.filterValue, !formData.customer?.label && styles.filterValuePlaceholder]}>
-                {formData.customer?.label || 'Any customer'}
+              <Text style={[styles.filterValue,
+                (!formData.customers || formData.customers.length === 0) && styles.filterValuePlaceholder]}
+                numberOfLines={1}>
+                {formData.customers && formData.customers.length > 0
+                  ? (formData.customers.length === 1
+                      ? formData.customers[0].label
+                      : `${formData.customers[0].label} +${formData.customers.length - 1}`)
+                  : 'Any customer'}
               </Text>
             </View>
             <MaterialIcons name="chevron-right" size={20} color="#bbb" />
           </TouchableOpacity>
 
-          {/* Employee */}
+          {/* Employee (multi-select) */}
           <TouchableOpacity
             style={[styles.filterRow, { borderBottomWidth: 0 }]}
             activeOpacity={0.7}
@@ -503,8 +536,14 @@ const VisitScreen = ({ navigation, route }) => {
             <MaterialIcons name="badge" size={20} color={COLORS.primaryThemeColor} />
             <View style={styles.filterRowContent}>
               <Text style={styles.filterLabel}>Employee</Text>
-              <Text style={[styles.filterValue, !formData.employees[0]?.label && styles.filterValuePlaceholder]}>
-                {formData.employees[0]?.label || 'Any employee'}
+              <Text style={[styles.filterValue,
+                (!formData.employees || formData.employees.length === 0) && styles.filterValuePlaceholder]}
+                numberOfLines={1}>
+                {formData.employees && formData.employees.length > 0
+                  ? (formData.employees.length === 1
+                      ? formData.employees[0].label
+                      : `${formData.employees[0].label} +${formData.employees.length - 1}`)
+                  : 'Any employee'}
               </Text>
             </View>
             <MaterialIcons name="chevron-right" size={20} color="#bbb" />
@@ -547,30 +586,34 @@ const VisitScreen = ({ navigation, route }) => {
         onCancel={() => setDatePickerVisibility(false)}
       />
 
-      {/* Customer center popup — no edit option (filter-only) */}
+      {/* Customer center popup (multi-select) */}
       <CustomListModal
         isVisible={isCustomerModalVisible}
         items={dropdown.customers || []}
-        title="Select Customer"
+        title="Select Customers"
         onClose={() => setIsCustomerModalVisible(false)}
-        onValueChange={(value) => {
-          handleFieldChange('customer', value);
+        onValueChange={(values) => {
+          handleFieldChange('customers', values);
           setIsCustomerModalVisible(false);
         }}
         onAddIcon={false}
+        multiSelect
+        previousSelections={formData.customers}
       />
 
-      {/* Employee center popup */}
+      {/* Employee center popup (multi-select) */}
       <CustomListModal
         isVisible={isEmployeeModalVisible}
         items={dropdown.employees || []}
-        title="Select Employee"
+        title="Select Employees"
         onClose={() => setIsEmployeeModalVisible(false)}
-        onValueChange={(value) => {
-          handleFieldChange('employees', [value]);
+        onValueChange={(values) => {
+          handleFieldChange('employees', values);
           setIsEmployeeModalVisible(false);
         }}
         onAddIcon={false}
+        multiSelect
+        previousSelections={formData.employees}
       />
     </SafeAreaView>
   );

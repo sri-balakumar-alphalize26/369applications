@@ -11094,14 +11094,26 @@ export const fetchEmployeesOdoo = async (searchText = '') => {
 };
 
 // ---- Customer Visits ----
-export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate, toDate, customerId, employeeId } = {}) => {
+// `customerIds` / `employeeIds` accept arrays (multi-select). The legacy single
+// `customerId` / `employeeId` keys are still honored (each gets folded into
+// the corresponding array) so existing callers keep working.
+export const fetchCustomerVisitsOdoo = async ({
+  offset = 0, limit = 30, fromDate, toDate, customerId, employeeId,
+  customerIds, employeeIds,
+} = {}) => {
+  const _customerIds = Array.isArray(customerIds) ? customerIds.filter(Boolean)
+    : (customerId ? [customerId] : []);
+  const _employeeIds = Array.isArray(employeeIds) ? employeeIds.filter(Boolean)
+    : (employeeId ? [employeeId] : []);
   try {
     const headers = await ensureOdooSession();
     let domain = [];
     if (fromDate) domain.push(['date_time', '>=', `${fromDate} 00:00:00`]);
     if (toDate) domain.push(['date_time', '<=', `${toDate} 23:59:59`]);
-    if (customerId) domain.push(['partner_id', '=', customerId]);
-    if (employeeId) domain.push(['employee_id', '=', employeeId]);
+    if (_customerIds.length === 1) domain.push(['partner_id', '=', _customerIds[0]]);
+    else if (_customerIds.length > 1) domain.push(['partner_id', 'in', _customerIds]);
+    if (_employeeIds.length === 1) domain.push(['employee_id', '=', _employeeIds[0]]);
+    else if (_employeeIds.length > 1) domain.push(['employee_id', 'in', _employeeIds]);
     console.log('[fetchCustomerVisits] domain=' + JSON.stringify(domain) +
                 ' offset=' + offset + ' limit=' + limit);
 
@@ -11139,25 +11151,50 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
     // Cache for offline fallback
     try { await AsyncStorage.setItem('@cache:customerVisits', JSON.stringify(mapped)); } catch (_) {}
     // Merge in any still-queued offline visits at the top
-    return await _mergeOfflineCustomerVisits(mapped);
+    return await _mergeOfflineCustomerVisits(mapped, { fromDate, toDate, _customerIds, _employeeIds });
   } catch (err) {
     console.error('fetchCustomerVisitsOdoo error:', err?.message || err);
-    // Offline fallback — return last cached server records + still-pending offline rows
+    // Offline fallback — return last cached server records + still-pending offline rows.
+    // Apply the same filters locally so the Filter modal works without internet.
     try {
       const raw = await AsyncStorage.getItem('@cache:customerVisits');
       const cached = raw ? JSON.parse(raw) : [];
-      console.log('[fetchCustomerVisits] OFFLINE — returning ' + cached.length + ' cached records');
-      return await _mergeOfflineCustomerVisits(cached);
+      const filtered = _filterCustomerVisitsLocal(cached, { fromDate, toDate, _customerIds, _employeeIds });
+      console.log('[fetchCustomerVisits] OFFLINE — cached=' + cached.length +
+                  ' after-filter=' + filtered.length);
+      return await _mergeOfflineCustomerVisits(filtered, { fromDate, toDate, _customerIds, _employeeIds });
     } catch (_) {
       return [];
     }
   }
 };
 
+// Apply the date / customer / employee filters to a cached visit list so
+// offline filtering matches the online Odoo domain.
+const _filterCustomerVisitsLocal = (rows, { fromDate, toDate, _customerIds, _employeeIds } = {}) => {
+  if (!Array.isArray(rows)) return [];
+  // Odoo `date_time` is "YYYY-MM-DD HH:MM:SS" UTC. We compare day-strings
+  // against fromDate/toDate (which are already YYYY-MM-DD).
+  const dayOf = (s) => (typeof s === 'string' ? s.slice(0, 10) : '');
+  return rows.filter((r) => {
+    if (fromDate && dayOf(r.date_time) < fromDate) return false;
+    if (toDate && dayOf(r.date_time) > toDate) return false;
+    if (_customerIds && _customerIds.length > 0) {
+      const cid = r?.customer?.id;
+      if (!cid || !_customerIds.includes(cid)) return false;
+    }
+    if (_employeeIds && _employeeIds.length > 0) {
+      const eid = r?.employee?.id;
+      if (!eid || !_employeeIds.includes(eid)) return false;
+    }
+    return true;
+  });
+};
+
 // Merge any still-queued offline customer.visit creates into the list as
 // pending rows (with offline: true). Drops cached pending rows whose queue
 // item has already been removed (i.e. successfully synced).
-const _mergeOfflineCustomerVisits = async (serverList) => {
+const _mergeOfflineCustomerVisits = async (serverList, filterOpts = {}) => {
   try {
     const offlineQueue = require('@utils/offlineQueue').default;
     const queue = await offlineQueue.getAll();
@@ -11179,6 +11216,13 @@ const _mergeOfflineCustomerVisits = async (serverList) => {
         offline: true,
         offlineQueueId: q.id,
       }));
+    // Apply the same filter to the pending rows so offline filtering is
+    // consistent across queued and synced records.
+    const pendingFiltered = (filterOpts.fromDate || filterOpts.toDate
+        || (filterOpts._customerIds && filterOpts._customerIds.length)
+        || (filterOpts._employeeIds && filterOpts._employeeIds.length))
+      ? _filterCustomerVisitsLocal(pending, filterOpts)
+      : pending;
 
     // Merge in stored offline_labels for already-synced records so the OFF
     // reference stays visible alongside the real Odoo CV/YYYY/NNNNN reference.
@@ -11191,7 +11235,7 @@ const _mergeOfflineCustomerVisits = async (serverList) => {
       ...v,
       offline_label: labelMap[String(v.id)] || v.offline_label || null,
     }));
-    return [...pending, ...decoratedServer];
+    return [...pendingFiltered, ...decoratedServer];
   } catch (e) {
     console.log('[fetchCustomerVisits] merge offline failed:', e?.message);
     return serverList || [];

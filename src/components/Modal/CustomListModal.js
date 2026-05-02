@@ -24,12 +24,17 @@ const CustomListModal = ({
   onEdit,
   onClose = () => { },
   title,
+  multiSelect = false,
+  previousSelections = [],
 }) => {
   const [searchText, setSearchText] = useState('');
+  // Multi-select: track picked items locally; commit to parent on Done.
+  const [selectedItems, setSelectedItems] = useState(previousSelections || []);
 
   useEffect(() => {
     if (!isVisible) setSearchText('');
-  }, [isVisible]);
+    if (isVisible) setSelectedItems(previousSelections || []);
+  }, [isVisible, previousSelections]);
 
   const filteredItems = searchText.trim()
     ? (items || []).filter(item => {
@@ -39,9 +44,26 @@ const CustomListModal = ({
     : items || [];
 
   const handleCustomModal = (selectedCustomData) => {
+    if (multiSelect) {
+      setSelectedItems((prev) => {
+        const exists = (prev || []).some((p) => String(p.id) === String(selectedCustomData.id));
+        if (exists) return (prev || []).filter((p) => String(p.id) !== String(selectedCustomData.id));
+        return [...(prev || []), selectedCustomData];
+      });
+      return;
+    }
     onValueChange(selectedCustomData);
     onClose();
   };
+
+  const isSelected = (item) =>
+    (selectedItems || []).some((p) => String(p.id) === String(item.id));
+
+  const handleConfirm = () => {
+    onValueChange(selectedItems || []);
+    onClose();
+  };
+  const handleClearAll = () => setSelectedItems([]);
 
   return (
     <Modal
@@ -85,22 +107,35 @@ const CustomListModal = ({
         <FlatList
           data={filteredItems}
           keyExtractor={(item, index) => String(item.id || index)}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[styles.listItem, onEdit && { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
-              onPress={() => handleCustomModal(item)}
-              activeOpacity={0.6}
-            >
-              <Text style={[styles.itemText, onEdit && { flex: 1 }]}>
-                {item.label || item.name || ''}
-              </Text>
-              {onEdit && (
-                <TouchableOpacity onPress={() => onEdit(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                  <AntDesign name="edit" size={18} color={COLORS.primaryThemeColor} />
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          )}
+          renderItem={({ item }) => {
+            const checked = multiSelect && isSelected(item);
+            return (
+              <TouchableOpacity
+                style={[
+                  styles.listItem,
+                  (onEdit || multiSelect) && { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+                ]}
+                onPress={() => handleCustomModal(item)}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.itemText, (onEdit || multiSelect) && { flex: 1 }]}>
+                  {item.label || item.name || ''}
+                </Text>
+                {multiSelect && (
+                  <AntDesign
+                    name={checked ? 'checkcircle' : 'checkcircleo'}
+                    size={20}
+                    color={checked ? COLORS.primaryThemeColor : '#bbb'}
+                  />
+                )}
+                {onEdit && !multiSelect && (
+                  <TouchableOpacity onPress={() => onEdit(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <AntDesign name="edit" size={18} color={COLORS.primaryThemeColor} />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            );
+          }}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
@@ -110,8 +145,22 @@ const CustomListModal = ({
           contentContainerStyle={styles.listContent}
         />
 
-        {/* Add button at bottom if needed */}
-        {onAddIcon && (
+        {/* Multi-select footer: Clear / Done */}
+        {multiSelect && (
+          <View style={styles.multiFooter}>
+            <TouchableOpacity style={styles.multiBtnClear} onPress={handleClearAll} activeOpacity={0.7}>
+              <Text style={styles.multiBtnClearText}>Clear</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.multiBtnDone} onPress={handleConfirm} activeOpacity={0.85}>
+              <Text style={styles.multiBtnDoneText}>
+                Done{(selectedItems && selectedItems.length > 0) ? ` (${selectedItems.length})` : ''}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Add button at bottom if needed (single-select only) */}
+        {!multiSelect && onAddIcon && (
           <TouchableOpacity style={styles.addRow} onPress={onAdd}>
             <AntDesign name="pluscircle" size={20} color={COLORS.primaryThemeColor} />
             <Text style={styles.addRowText}>Add New</Text>
@@ -229,5 +278,39 @@ export const styles = StyleSheet.create({
     fontFamily: FONT_FAMILY.urbanistBold,
     color: COLORS.primaryThemeColor,
     marginLeft: 8,
+  },
+  multiFooter: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  multiBtnClear: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: '#F4F4F4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  multiBtnClearText: {
+    color: '#666',
+    fontFamily: FONT_FAMILY.urbanistBold,
+    fontSize: 13,
+  },
+  multiBtnDone: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 8,
+    backgroundColor: COLORS.primaryThemeColor,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  multiBtnDoneText: {
+    color: '#fff',
+    fontFamily: FONT_FAMILY.urbanistBold,
+    fontSize: 13,
   },
 });
