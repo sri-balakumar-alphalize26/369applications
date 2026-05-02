@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, Platform, TouchableOpacity } from 'react-native';
 import Text from '@components/Text';
-import { FONT_FAMILY } from '@constants/theme';
+import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { formatDate, formatDateTime } from '@utils/common/date';
 
 // Odoo returns date_time as "YYYY-MM-DD HH:MM:SS" UTC with no Z marker.
@@ -24,14 +24,31 @@ const VisitList = ({ item, onPress }) => {
     <TouchableOpacity activeOpacity={0.8} onPress={onPress} style={styles.itemContainer}>
       <View style={styles.leftColumn}>
         <View style={styles.headerRow}>
-          <Text style={styles.head} numberOfLines={1}>
-            {item?.customer?.name?.trim() || '-'}
-          </Text>
-          <View style={[
-            styles.stateBadge,
-            { backgroundColor: STATE_COLORS[stateKey] || '#999' },
-          ]}>
-            <Text style={styles.stateBadgeText}>{stateKey.toUpperCase()}</Text>
+          <View style={{ flex: 1, marginRight: 8 }}>
+            {item?.name ? (
+              <Text style={styles.refText} numberOfLines={1}>{item.name}</Text>
+            ) : null}
+            {item?.offline_label && item.offline_label !== item.name ? (
+              <Text style={styles.offRefText} numberOfLines={1}>
+                Offline ref: {item.offline_label}
+              </Text>
+            ) : null}
+            <Text style={styles.head} numberOfLines={1}>
+              {item?.customer?.name?.trim() || '-'}
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {item?.offline && (
+              <View style={[styles.stateBadge, { backgroundColor: '#9E9E9E', marginRight: 4 }]}>
+                <Text style={styles.stateBadgeText}>OFFLINE</Text>
+              </View>
+            )}
+            <View style={[
+              styles.stateBadge,
+              { backgroundColor: STATE_COLORS[stateKey] || '#999' },
+            ]}>
+              <Text style={styles.stateBadgeText}>{stateKey.toUpperCase()}</Text>
+            </View>
           </View>
         </View>
         <View style={styles.rightColumn}>
@@ -80,11 +97,23 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 5,
   },
+  refText: {
+    fontSize: 12,
+    color: COLORS.primaryThemeColor,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    marginBottom: 2,
+    letterSpacing: 0.3,
+  },
+  offRefText: {
+    fontSize: 10,
+    color: '#888',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+    marginBottom: 2,
+    letterSpacing: 0.3,
+  },
   head: {
-    flex: 1,
     fontFamily: FONT_FAMILY.urbanistBold,
     fontSize: 17,
-    marginRight: 8,
   },
   stateBadge: {
     paddingHorizontal: 10,

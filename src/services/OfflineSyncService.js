@@ -464,6 +464,95 @@ const syncItemDirectly = async (item) => {
         return recordId;
     }
 
+    // customer.visit create — same flow as the online createCustomerVisitOdoo.
+    if (item.model === 'customer.visit' && item.operation === 'create') {
+        // Strip the denormalized helper fields we stuffed in for offline cache row rendering.
+        const cleanVals = { ...values };
+        delete cleanVals._customerName;
+        delete cleanVals._employeeName;
+        delete cleanVals._offlineRef;
+        // Save the OFF<NNNNN> label so we can keep showing it even after sync.
+        const offlineLabel = cleanVals.offline_label;
+        delete cleanVals.offline_label;
+        const createResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0',
+                method: 'call',
+                params: {
+                    model: 'customer.visit',
+                    method: 'create',
+                    args: [cleanVals],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 30000 }
+        );
+        if (createResp.data?.error) {
+            const msg = createResp.data.error?.data?.message || createResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        const newId = Array.isArray(createResp.data?.result) ? createResp.data.result[0] : createResp.data.result;
+        console.log('[OfflineSyncService] Created customer.visit id:', newId, 'offline_label:', offlineLabel);
+        // Persist localId → serverId for any dependent records that might reference it.
+        try {
+            const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+            const map = mapRaw ? JSON.parse(mapRaw) : {};
+            map[String(item.id)] = newId;
+            await AsyncStorage.setItem('@sync:localToServer', JSON.stringify(map));
+        } catch (_) { /* ignore */ }
+        // Persist OFF<NNNNN> label keyed by server id so the list keeps
+        // showing it next to the real Odoo CV/YYYY/NNNNN reference after sync.
+        if (offlineLabel) {
+            try {
+                const labelRaw = await AsyncStorage.getItem('@cache:offlineLabels:customerVisit');
+                const labelMap = labelRaw ? JSON.parse(labelRaw) : {};
+                labelMap[String(newId)] = offlineLabel;
+                await AsyncStorage.setItem('@cache:offlineLabels:customerVisit', JSON.stringify(labelMap));
+            } catch (_) { /* ignore */ }
+        }
+        logSyncHistory(baseUrl, headers, { model: 'customer.visit', operation: 'create', values: cleanVals, syncedRecordId: newId }).catch(() => {});
+        return newId;
+    }
+
+    // customer.visit method — used for offline action_done / action_reset_to_draft.
+    if (item.model === 'customer.visit' && item.operation === 'method') {
+        // values shape: { id: <number or 'offline_<localId>'>, method: 'action_done' | 'action_reset_to_draft' }
+        let targetId = values.id;
+        if (typeof targetId === 'string' && targetId.startsWith('offline_')) {
+            const localId = targetId.replace(/^offline_/, '');
+            try {
+                const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+                const map = mapRaw ? JSON.parse(mapRaw) : {};
+                const resolved = map[String(localId)];
+                if (!resolved) throw new Error('parent visit not synced yet');
+                targetId = resolved;
+            } catch (e) {
+                throw new Error('customer.visit method resolve failed: ' + e?.message);
+            }
+        }
+        const methodResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0',
+                method: 'call',
+                params: {
+                    model: 'customer.visit',
+                    method: values.method,
+                    args: [[targetId]],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 15000 }
+        );
+        if (methodResp.data?.error) {
+            const msg = methodResp.data.error?.data?.message || methodResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        console.log('[OfflineSyncService] customer.visit.' + values.method + ' on id=' + targetId);
+        return targetId;
+    }
+
     // Banner create
     if (item.model === 'app.banner' && item.operation === 'create') {
         const response = await axios.post(

@@ -9,6 +9,7 @@ import { FABButton } from '@components/common/Button';
 import { fetchCustomerVisitsOdoo, fetchCustomersOdoo, fetchEmployeesOdoo } from '@api/services/generalApi';
 import { useDataFetching } from '@hooks';
 import { OverlayLoader } from '@components/Loader';
+import OfflineBanner from '@components/common/OfflineBanner';
 import Text from '@components/Text';
 import { TouchableOpacity, View, StyleSheet, ScrollView } from 'react-native';
 import RNModal from 'react-native-modal';
@@ -73,6 +74,24 @@ const VisitScreen = ({ navigation, route }) => {
       fetchData({});
     }, [])
   );
+
+  // Silent background re-fetch when network flips to online so cached
+  // visits / synced offline rows refresh within a second of reconnect.
+  useEffect(() => {
+    let unsub = null;
+    try {
+      const networkStatus = require('@utils/networkStatus').default;
+      unsub = networkStatus.subscribe((online) => {
+        if (online) {
+          console.log('[VisitScreen] back online — silently re-fetching list');
+          fetchData({});
+        }
+      });
+    } catch (e) {
+      console.log('[VisitScreen] networkStatus.subscribe failed:', e?.message);
+    }
+    return () => { if (typeof unsub === 'function') unsub(); };
+  }, []);
 
   useEffect(() => {
     if (isFocused) {
@@ -329,6 +348,10 @@ const VisitScreen = ({ navigation, route }) => {
         title="Customer Visits"
         logo={true}
         onBackPress={() => navigation.goBack()}
+      />
+      <OfflineBanner
+        message="OFFLINE MODE — showing cached visits, new entries will sync when online"
+        onOnline={() => fetchData({})}
       />
 
       {/* Active-filter chips (only when filters applied) */}

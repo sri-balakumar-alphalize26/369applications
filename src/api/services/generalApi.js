@@ -11032,9 +11032,20 @@ export const fetchVisitPurposesOdoo = async () => {
       VISIT_PURPOSE_MODELS, 'search_read', [],
       { domain: [['active', '=', true]], fields: ['id', 'name'], order: 'name' }, headers
     );
-    return (result || []).map(p => ({ id: p.id, name: p.name }));
+    const mapped = (result || []).map(p => ({ id: p.id, name: p.name }));
+    try { await AsyncStorage.setItem('@cache:visitPurposes', JSON.stringify(mapped)); } catch (_) {}
+    return mapped;
   } catch (err) {
     console.error('fetchVisitPurposesOdoo error:', err?.message || err);
+    // Offline fallback — return last cached purposes so the dropdown still works.
+    try {
+      const raw = await AsyncStorage.getItem('@cache:visitPurposes');
+      if (raw) {
+        const cached = JSON.parse(raw);
+        console.log('[fetchVisitPurposes] OFFLINE — returning ' + cached.length + ' cached purposes');
+        return cached;
+      }
+    } catch (_) {}
     return [];
   }
 };
@@ -11051,15 +11062,33 @@ export const fetchEmployeesOdoo = async (searchText = '') => {
       ['hr.employee'], 'search_read', [],
       { domain, fields: ['id', 'name', 'department_id', 'parent_id'], limit: 50, order: 'name' }, headers
     );
-    return (result || []).map(e => ({
+    const mapped = (result || []).map(e => ({
       id: e.id,
       name: e.name,
       department: Array.isArray(e.department_id) ? e.department_id[1] : '',
       manager_id: Array.isArray(e.parent_id) ? e.parent_id[0] : null,
       manager_name: Array.isArray(e.parent_id) ? e.parent_id[1] : '',
     }));
+    // Cache only the unfiltered list (the offline picker can search locally).
+    if (!searchText) {
+      try { await AsyncStorage.setItem('@cache:employees', JSON.stringify(mapped)); } catch (_) {}
+    }
+    return mapped;
   } catch (err) {
     console.error('fetchEmployeesOdoo error:', err?.message || err);
+    try {
+      const raw = await AsyncStorage.getItem('@cache:employees');
+      if (raw) {
+        const cached = JSON.parse(raw);
+        console.log('[fetchEmployees] OFFLINE — returning ' + cached.length + ' cached employees');
+        // Apply local filter if a searchText was passed
+        if (searchText) {
+          const q = String(searchText).toLowerCase();
+          return cached.filter((e) => (e.name || '').toLowerCase().includes(q));
+        }
+        return cached;
+      }
+    } catch (_) {}
     return [];
   }
 };
@@ -11092,7 +11121,7 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
                   ' date=' + result[0].date_time +
                   ' partner=' + JSON.stringify(result[0].partner_id));
     }
-    return (result || []).map(v => ({
+    const mapped = (result || []).map(v => ({
       id: v.id,
       name: v.name,
       customer: Array.isArray(v.partner_id) ? { id: v.partner_id[0], name: v.partner_id[1] } : null,
@@ -11107,13 +11136,101 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
       visit_plan_id: Array.isArray(v.visit_plan_id) ? v.visit_plan_id[0] : null,
       state: v.state,
     }));
+    // Cache for offline fallback
+    try { await AsyncStorage.setItem('@cache:customerVisits', JSON.stringify(mapped)); } catch (_) {}
+    // Merge in any still-queued offline visits at the top
+    return await _mergeOfflineCustomerVisits(mapped);
   } catch (err) {
     console.error('fetchCustomerVisitsOdoo error:', err?.message || err);
-    return [];
+    // Offline fallback — return last cached server records + still-pending offline rows
+    try {
+      const raw = await AsyncStorage.getItem('@cache:customerVisits');
+      const cached = raw ? JSON.parse(raw) : [];
+      console.log('[fetchCustomerVisits] OFFLINE — returning ' + cached.length + ' cached records');
+      return await _mergeOfflineCustomerVisits(cached);
+    } catch (_) {
+      return [];
+    }
+  }
+};
+
+// Merge any still-queued offline customer.visit creates into the list as
+// pending rows (with offline: true). Drops cached pending rows whose queue
+// item has already been removed (i.e. successfully synced).
+const _mergeOfflineCustomerVisits = async (serverList) => {
+  try {
+    const offlineQueue = require('@utils/offlineQueue').default;
+    const queue = await offlineQueue.getAll();
+    const pending = (queue || [])
+      .filter(q => q.model === 'customer.visit' && q.operation === 'create')
+      .map(q => ({
+        id: 'offline_' + q.id,
+        name: q.values?.offline_label || q.values?._offlineRef || 'OFF',
+        offline_label: q.values?.offline_label || q.values?._offlineRef || null,
+        customer: q.values?._customerName ? { id: q.values?.partner_id, name: q.values._customerName } : null,
+        employee: q.values?._employeeName ? { id: q.values?.employee_id, name: q.values._employeeName } : null,
+        date_time: q.values?.date_time,
+        visit_duration: q.values?.visit_duration,
+        remarks: q.values?.remarks,
+        latitude: q.values?.latitude,
+        longitude: q.values?.longitude,
+        location_name: q.values?.location_name,
+        state: q.values?.state || 'draft',
+        offline: true,
+        offlineQueueId: q.id,
+      }));
+
+    // Merge in stored offline_labels for already-synced records so the OFF
+    // reference stays visible alongside the real Odoo CV/YYYY/NNNNN reference.
+    let labelMap = {};
+    try {
+      const raw = await AsyncStorage.getItem('@cache:offlineLabels:customerVisit');
+      labelMap = raw ? JSON.parse(raw) : {};
+    } catch (_) {}
+    const decoratedServer = (serverList || []).map((v) => ({
+      ...v,
+      offline_label: labelMap[String(v.id)] || v.offline_label || null,
+    }));
+    return [...pending, ...decoratedServer];
+  } catch (e) {
+    console.log('[fetchCustomerVisits] merge offline failed:', e?.message);
+    return serverList || [];
   }
 };
 
 export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
+  // Offline-only id (the visit hasn't synced yet) — read straight from the queue.
+  if (typeof visitId === 'string' && visitId.startsWith('offline_')) {
+    try {
+      const offlineQueue = require('@utils/offlineQueue').default;
+      const localId = visitId.replace(/^offline_/, '');
+      const queue = await offlineQueue.getAll();
+      const item = queue.find(q => q.id === localId);
+      if (item && item.values) {
+        const v = item.values;
+        return {
+          id: visitId,
+          name: 'PENDING SYNC',
+          customer: v._customerName ? { id: v.partner_id, name: v._customerName } : null,
+          employee: v._employeeName ? { id: v.employee_id, name: v._employeeName } : null,
+          date_time: v.date_time,
+          purpose: null,
+          visit_duration: v.visit_duration,
+          remarks: v.remarks,
+          latitude: v.latitude,
+          longitude: v.longitude,
+          location_name: v.location_name,
+          state: v.state || 'draft',
+          images: [],
+          voiceNoteBase64: v.voice_note || null,
+          voiceNoteFilename: v.voice_note_filename || null,
+          offline: true,
+        };
+      }
+    } catch (e) { console.log('[visitDetails] offline lookup failed:', e?.message); }
+    return null;
+  }
+
   try {
     const headers = await ensureOdooSession();
     console.log('[visitDetails] fetching visit id=' + visitId);
@@ -11253,29 +11370,69 @@ export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
 };
 
 export const createCustomerVisitOdoo = async (data) => {
+  // Build vals once; same shape used both online (POST) and offline (queue).
+  const vals = {
+    partner_id: data.customerId,
+    employee_id: data.employeeId,
+    date_time: data.dateTime,
+    purpose_id: data.purposeId || false,
+    visit_duration: data.visitDuration || false,
+    remarks: data.remarks || '',
+    latitude: data.latitude || 0,
+    longitude: data.longitude || 0,
+    location_name: data.locationName || '',
+    visit_plan_id: data.visitPlanId || false,
+  };
+  if (data.images && data.images.length > 0) {
+    vals.image_ids = data.images.map((img, index) => [0, 0, {
+      image: img.base64,
+      image_filename: img.filename || `visit_image_${index + 1}.jpg`,
+    }]);
+  }
+  if (data.voiceBase64) {
+    vals.voice_note = data.voiceBase64;
+    vals.voice_note_filename = data.voiceFilename || 'voice_note.m4a';
+  }
+  // Helper labels (denormalized) so the offline list row can render customer
+  // / employee names without needing to look them up post-sync.
+  if (data.customerName) vals._customerName = data.customerName;
+  if (data.employeeName) vals._employeeName = data.employeeName;
+
+  // Offline branch — generate OFFNNNNN label, enqueue + cache.
+  const networkStatus = require('@utils/networkStatus').default;
+  const online = await networkStatus.isOnline();
+  if (!online) {
+    try {
+      // Same OFF<seq> pattern Easy Sales uses, with its own counter.
+      const offLabel = await _nextOffLabel({
+        counterKey: 'cv_off_counter',
+        cacheKey: '@cache:customerVisits',
+        scope: null,
+      });
+      vals.offline_label = offLabel;
+      vals._offlineRef = offLabel;   // stash for the cached row + sync handler
+      const offlineQueue = require('@utils/offlineQueue').default;
+      const localId = await offlineQueue.enqueue({
+        model: 'customer.visit',
+        operation: 'create',
+        values: vals,
+      });
+      console.log('[createCustomerVisit] OFFLINE queued localId=' + localId + ' label=' + offLabel);
+      return { id: 'offline_' + localId, reference: offLabel, offline: true, offlineLabel: offLabel };
+    } catch (e) {
+      console.error('[createCustomerVisit] offline enqueue failed:', e?.message);
+      throw e;
+    }
+  }
+
+  // Online — strip the helper underscored fields before sending to Odoo
+  // (Odoo would reject unknown _customerName / _employeeName keys).
+  delete vals._customerName;
+  delete vals._employeeName;
+
   try {
     const headers = await ensureOdooSession();
-    const vals = {
-      partner_id: data.customerId,
-      employee_id: data.employeeId,
-      date_time: data.dateTime,
-      purpose_id: data.purposeId || false,
-      visit_duration: data.visitDuration || false,
-      remarks: data.remarks || '',
-      latitude: data.latitude || 0,
-      longitude: data.longitude || 0,
-      location_name: data.locationName || '',
-      visit_plan_id: data.visitPlanId || false,
-    };
-    if (data.images && data.images.length > 0) {
-      vals.image_ids = data.images.map((img, index) => [0, 0, {
-        image: img.base64,
-        image_filename: img.filename || `visit_image_${index + 1}.jpg`,
-      }]);
-    }
     if (data.voiceBase64) {
-      vals.voice_note = data.voiceBase64;
-      vals.voice_note_filename = data.voiceFilename || 'voice_note.m4a';
       console.log('[createCustomerVisit] sending voice_note, base64 length=' +
                   data.voiceBase64.length + ' filename=' + vals.voice_note_filename);
     } else {
@@ -11351,7 +11508,73 @@ export const updateCustomerVisitOdoo = async (visitId, data) => {
   }
 };
 
+// Helper: queue a customer.visit method call for later sync. Used when
+// offline so the user can mark a visit Done / reset to Draft without internet.
+// Also flips cached state in @cache:customerVisits and @cache:customerVisitDetail:<id>
+// so the UI reflects the new state instantly without waiting for reconnect.
+const _queueCustomerVisitMethod = async (visitId, method) => {
+  const offlineQueue = require('@utils/offlineQueue').default;
+  const targetId = (typeof visitId === 'string' && visitId.startsWith('offline_'))
+    ? visitId   // pass through; sync handler will resolve via @sync:localToServer
+    : visitId;
+  const targetState = method === 'action_done' ? 'done'
+                    : method === 'action_reset_to_draft' ? 'draft'
+                    : null;
+
+  const localId = await offlineQueue.enqueue({
+    model: 'customer.visit',
+    operation: 'method',
+    values: { id: targetId, method },
+  });
+
+  if (targetState) {
+    // 1) Flip state in list cache
+    try {
+      const raw = await AsyncStorage.getItem('@cache:customerVisits');
+      if (raw) {
+        const list = JSON.parse(raw) || [];
+        const next = list.map(r => r.id === visitId ? { ...r, state: targetState } : r);
+        await AsyncStorage.setItem('@cache:customerVisits', JSON.stringify(next));
+      }
+    } catch (_) {}
+    // 2) Flip state in detail cache
+    try {
+      const dKey = `@cache:customerVisitDetail:${visitId}`;
+      const draw = await AsyncStorage.getItem(dKey);
+      if (draw) {
+        const d = JSON.parse(draw) || {};
+        d.state = targetState;
+        await AsyncStorage.setItem(dKey, JSON.stringify(d));
+      }
+    } catch (_) {}
+    // 3) Stamp state on a still-pending offline create so when its create
+    //    eventually flushes to Odoo, the record carries the latest state.
+    if (typeof visitId === 'string' && visitId.startsWith('offline_')) {
+      try {
+        const localCreateId = visitId.replace(/^offline_/, '');
+        const items = await offlineQueue.getAll();
+        const creator = items.find(it => String(it.id) === String(localCreateId)
+          && it.model === 'customer.visit' && it.operation === 'create');
+        if (creator) {
+          await offlineQueue.updateValues(localCreateId, {
+            ...creator.values,
+            state: targetState,
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  console.log('[customer.visit] OFFLINE queued ' + method + ' on visit=' + visitId
+              + ' localId=' + localId + ' state→' + targetState);
+  return { offline: true, localId, state: targetState };
+};
+
 export const markCustomerVisitAsDoneOdoo = async (visitId) => {
+  const networkStatus = require('@utils/networkStatus').default;
+  if (!(await networkStatus.isOnline())) {
+    return await _queueCustomerVisitMethod(visitId, 'action_done');
+  }
   try {
     const headers = await ensureOdooSession();
     const { result } = await callOdooWithModelFallback(
@@ -11365,6 +11588,10 @@ export const markCustomerVisitAsDoneOdoo = async (visitId) => {
 };
 
 export const resetCustomerVisitToDraftOdoo = async (visitId) => {
+  const networkStatus = require('@utils/networkStatus').default;
+  if (!(await networkStatus.isOnline())) {
+    return await _queueCustomerVisitMethod(visitId, 'action_reset_to_draft');
+  }
   try {
     const headers = await ensureOdooSession();
     const { result } = await callOdooWithModelFallback(

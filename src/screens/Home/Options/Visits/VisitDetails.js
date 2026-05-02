@@ -4,6 +4,7 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { MaterialIcons } from '@expo/vector-icons';
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers';
+import OfflineBanner from '@components/common/OfflineBanner';
 import { useFocusEffect } from '@react-navigation/native';
 import { NavigationHeader } from '@components/Header';
 import { DetailField } from '@components/common/Detail';
@@ -273,6 +274,10 @@ const VisitDetails = ({ navigation, route }) => {
         onBackPress={() => navigation.goBack()}
         logo={false}
       />
+      <OfflineBanner
+        message="OFFLINE MODE — showing cached details"
+        onOnline={fetchDetails}
+      />
       <RoundedScrollContainer>
         {/* Status badge (Draft / Done) — colored pill, top-right */}
         <View style={detailStyles.statusRow}>
@@ -293,6 +298,10 @@ const VisitDetails = ({ navigation, route }) => {
             />
           </TouchableOpacity>
         </View>
+        <DetailField label="Reference" value={details?.name || '-'} />
+        {details?.offline_label && details.offline_label !== details.name && (
+          <DetailField label="Offline Reference" value={details.offline_label} />
+        )}
         <DetailField
           label="Date & Time"
           value={(() => {

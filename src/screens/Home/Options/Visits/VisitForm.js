@@ -1,8 +1,9 @@
-import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image, Modal } from 'react-native'
+import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image, Modal, PanResponder } from 'react-native'
 import { Camera } from 'expo-camera'
 import React, { useState, useEffect, useRef } from 'react'
 import { NavigationHeader } from '@components/Header'
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers'
+import OfflineBanner from '@components/common/OfflineBanner'
 import { TextInput as FormInput } from '@components/common/TextInput'
 import { formatDate } from '@utils/common/date'
 import { LoadingButton } from '@components/common/Button'
@@ -201,11 +202,38 @@ const VisitForm = ({ navigation, route }) => {
       }
     };
     fetchData();
+
+    // Background re-fetch when network flips back to online — silently
+    // refreshes customers/employees/visit-purposes within ~1s of reconnect
+    // so the dropdowns are always fresh after returning from offline.
+    let networkUnsub = null;
+    try {
+      const networkStatus = require('@utils/networkStatus').default;
+      networkUnsub = networkStatus.subscribe((online) => {
+        if (online) {
+          console.log('[VisitForm] back online — silently refreshing dropdowns');
+          fetchData();
+        }
+      });
+    } catch (e) { console.log('[VisitForm] networkStatus.subscribe failed:', e?.message); }
+    return () => { if (typeof networkUnsub === 'function') networkUnsub(); };
   }, []);
 
   // Voice recording functions
   const startRecording = async () => {
     try {
+      // Block recording while offline — same pattern Sales Order uses for
+      // operations that need the server (the audio still uploads at submit
+      // time so it'd be safer to disallow if we can't guarantee sync).
+      const networkStatus = require('@utils/networkStatus').default;
+      if (!(await networkStatus.isOnline())) {
+        showToast({
+          type: 'error',
+          title: 'You are offline',
+          message: 'Voice notes can only be recorded when connected to internet',
+        });
+        return;
+      }
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== 'granted') {
         showToast({ type: 'error', title: 'Permission Denied', message: 'Microphone permission is required' });
@@ -310,6 +338,15 @@ const VisitForm = ({ navigation, route }) => {
   const pickImageFromCamera = async () => {
     console.log('[cam] step 1 — pickImageFromCamera called');
     try {
+      const networkStatus = require('@utils/networkStatus').default;
+      if (!(await networkStatus.isOnline())) {
+        showToast({
+          type: 'error',
+          title: 'You are offline',
+          message: 'Photos can only be added when connected to internet',
+        });
+        return;
+      }
       const { status } = await Camera.requestCameraPermissionsAsync();
       console.log('[cam] step 2 — permission status:', status);
       if (status !== 'granted') {
@@ -361,6 +398,15 @@ const VisitForm = ({ navigation, route }) => {
   const pickImageFromGallery = async () => {
     console.log('[gallery] step 1 — pickImageFromGallery called');
     try {
+      const networkStatus = require('@utils/networkStatus').default;
+      if (!(await networkStatus.isOnline())) {
+        showToast({
+          type: 'error',
+          title: 'You are offline',
+          message: 'Photos can only be added when connected to internet',
+        });
+        return;
+      }
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       console.log('[gallery] step 2 — permission status:', status);
       if (status !== 'granted') {
@@ -412,6 +458,15 @@ const VisitForm = ({ navigation, route }) => {
   // (alternative to live-recording).
   const pickVoiceNoteFromFile = async () => {
     try {
+      const networkStatus = require('@utils/networkStatus').default;
+      if (!(await networkStatus.isOnline())) {
+        showToast({
+          type: 'error',
+          title: 'You are offline',
+          message: 'Voice notes can only be added when connected to internet',
+        });
+        return;
+      }
       const result = await DocumentPicker.getDocumentAsync({
         type: 'audio/*',
         copyToCacheDirectory: true,
@@ -429,28 +484,52 @@ const VisitForm = ({ navigation, route }) => {
     }
   };
 
-  // Voice playback (uses the same expo-av Audio module)
+  // Voice playback — full scrubber, ported from VisitDetails so the user
+  // can play / pause / drag-to-scrub the just-recorded clip during creation.
   const soundRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [audioPositionMs, setAudioPositionMs] = useState(0);
+  const [audioDurationMs, setAudioDurationMs] = useState(0);
+  const [waveBarWidth, setWaveBarWidth] = useState(0);
+  const isDraggingRef = useRef(false);
+  const wasPlayingBeforeDragRef = useRef(false);
+  const durationMsRef = useRef(0);
+  const barWidthRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  useEffect(() => { durationMsRef.current = audioDurationMs; }, [audioDurationMs]);
+  useEffect(() => { barWidthRef.current = waveBarWidth; }, [waveBarWidth]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
   const playVoiceNote = async (overrideUri = null) => {
     const uri = overrideUri || voiceUri;
     if (!uri) return;
     try {
+      // Already loaded — just resume from current position. setOnPlaybackStatusUpdate
+      // is still attached so position tracking continues seamlessly.
       if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
+        await soundRef.current.playAsync();
+        setIsPlaying(true);
+        return;
       }
-      const { sound } = await Audio.Sound.createAsync(
-        { uri },
-        { shouldPlay: true },
-      );
+      const { sound } = await Audio.Sound.createAsync({ uri }, { shouldPlay: true });
       soundRef.current = sound;
       setIsPlaying(true);
-      sound.setOnPlaybackStatusUpdate((s) => {
-        if (s?.didJustFinish) {
+      sound.setOnPlaybackStatusUpdate(async (s) => {
+        if (!s?.isLoaded) return;
+        if (!isDraggingRef.current) {
+          setAudioPositionMs(s.positionMillis || 0);
+        }
+        if (s.durationMillis) setAudioDurationMs(s.durationMillis);
+        if (s.didJustFinish) {
+          // Hard stop: pause AND rewind to 0. Without explicit pauseAsync the
+          // sound's internal "playing" flag stays true, so the next frame can
+          // re-emit isPlaying=true and the user perceives it as auto-replaying.
+          try { await sound.pauseAsync(); } catch (_) {}
+          try { await sound.setPositionAsync(0); } catch (_) {}
           setIsPlaying(false);
-          sound.unloadAsync().catch(() => {});
-          soundRef.current = null;
+          setAudioPositionMs(0);
+        } else {
+          setIsPlaying(s.isPlaying);
         }
       });
     } catch (e) {
@@ -460,12 +539,80 @@ const VisitForm = ({ navigation, route }) => {
   };
   const stopVoicePlayback = async () => {
     if (soundRef.current) {
-      try { await soundRef.current.stopAsync(); } catch (_) {}
-      try { await soundRef.current.unloadAsync(); } catch (_) {}
-      soundRef.current = null;
+      try { await soundRef.current.pauseAsync(); } catch (_) {}
     }
     setIsPlaying(false);
   };
+  // Tear down the loaded sound so a new recording starts clean.
+  const resetAudioState = async () => {
+    await stopVoicePlayback();
+    if (soundRef.current) {
+      try { await soundRef.current.unloadAsync(); } catch (_) {}
+      soundRef.current = null;
+    }
+    setAudioPositionMs(0);
+    setAudioDurationMs(0);
+  };
+
+  const audioPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: async (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!soundRef.current || !dur || !bw) return;
+        isDraggingRef.current = true;
+        wasPlayingBeforeDragRef.current = isPlayingRef.current;
+        if (isPlayingRef.current) {
+          try { await soundRef.current.pauseAsync(); } catch (_) {}
+          setIsPlaying(false);
+        }
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        setAudioPositionMs(Math.floor(ratio * dur));
+      },
+      onPanResponderMove: (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!dur || !bw) return;
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        setAudioPositionMs(Math.floor(ratio * dur));
+      },
+      onPanResponderRelease: async (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!soundRef.current || !dur || !bw) {
+          isDraggingRef.current = false;
+          return;
+        }
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        const targetMs = Math.floor(ratio * dur);
+        try {
+          await soundRef.current.setPositionAsync(targetMs);
+          setAudioPositionMs(targetMs);
+          if (wasPlayingBeforeDragRef.current) {
+            await soundRef.current.playAsync();
+            setIsPlaying(true);
+          }
+        } catch (e) {
+          console.log('[VisitForm] scrub release failed:', e?.message);
+        }
+        isDraggingRef.current = false;
+      },
+      onPanResponderTerminate: () => { isDraggingRef.current = false; },
+    })
+  ).current;
+
+  const formatMs = (ms) => {
+    const total = Math.floor((ms || 0) / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
   useEffect(() => () => {
     // cleanup on unmount
     if (soundRef.current) {
@@ -509,7 +656,9 @@ const VisitForm = ({ navigation, route }) => {
       try {
         const payload = {
           customerId: formData.customer?.id,
+          customerName: formData.customer?.label || formData.customer?.name || '',
           employeeId: formData.visitedBy?.id || false,
+          employeeName: formData.visitedBy?.label || formData.visitedBy?.name || '',
           // Send UTC: Odoo stores datetimes as UTC and converts on display.
           // formatDate(local, 'yyyy-MM-dd HH:mm:ss') would send local time
           // which Odoo would then re-interpret as UTC, shifting the time.
@@ -624,6 +773,7 @@ const VisitForm = ({ navigation, route }) => {
   return (
     <SafeAreaView>
       <NavigationHeader title="New Customer Visit" onBackPress={() => navigation.goBack()} />
+      <OfflineBanner message="OFFLINE MODE — visit will sync when online" />
       <RoundedScrollContainer>
         {/* Map */}
         <View style={styles.mapContainer}>
@@ -812,31 +962,58 @@ const VisitForm = ({ navigation, route }) => {
           )}
 
           {!isRecording && voiceUri && (
-            <View style={styles.voicePlayerRow}>
-              <TouchableOpacity
-                style={styles.voicePlayBtn}
-                onPress={isPlaying ? stopVoicePlayback : playVoiceNote}
-                activeOpacity={0.8}
-              >
-                <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
-              </TouchableOpacity>
-              <View style={styles.voiceWaveBar}>
-                <View style={[styles.voiceWaveFill, { width: isPlaying ? '60%' : '100%' }]} />
+            <View>
+              <View style={styles.voicePlayerRow}>
+                <TouchableOpacity
+                  style={styles.voicePlayBtn}
+                  onPress={isPlaying ? stopVoicePlayback : () => playVoiceNote()}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
+                </TouchableOpacity>
+                <View
+                  style={styles.voiceWaveBar}
+                  onLayout={(e) => setWaveBarWidth(e.nativeEvent.layout.width)}
+                  {...audioPanResponder.panHandlers}
+                >
+                  <View style={styles.voiceWaveTrack} />
+                  <View
+                    style={[
+                      styles.voiceWaveFill,
+                      {
+                        width: audioDurationMs
+                          ? `${Math.min(100, (audioPositionMs / audioDurationMs) * 100)}%`
+                          : '0%',
+                      },
+                    ]}
+                  />
+                  {audioDurationMs > 0 && (
+                    <View
+                      style={[
+                        styles.voiceWaveThumb,
+                        { left: `${Math.min(100, (audioPositionMs / audioDurationMs) * 100)}%` },
+                      ]}
+                    />
+                  )}
+                </View>
+                <Text style={styles.voiceTime}>
+                  {formatMs(audioPositionMs)} / {formatMs(audioDurationMs)}
+                </Text>
+                <TouchableOpacity
+                  style={styles.voiceIconBtn}
+                  onPress={async () => { await resetAudioState(); startRecording(); }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="replay" size={20} color={COLORS.orange} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.voiceIconBtn}
+                  onPress={async () => { await resetAudioState(); setVoiceUri(null); setRecordingDuration(0); }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="delete" size={20} color="#D32F2F" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                style={styles.voiceIconBtn}
-                onPress={async () => { await stopVoicePlayback(); startRecording(); }}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="replay" size={20} color={COLORS.orange} />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.voiceIconBtn}
-                onPress={async () => { await stopVoicePlayback(); setVoiceUri(null); setRecordingDuration(0); }}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="delete" size={20} color="#D32F2F" />
-              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -1082,14 +1259,42 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   voiceWaveBar: {
-    flex: 1,
+    flex: 1, height: 22,           // wider hit area — easier to grab while scrubbing
+    justifyContent: 'center',
+    marginRight: 10,
+    position: 'relative',
+  },
+  voiceWaveTrack: {
+    position: 'absolute',
+    left: 0, right: 0,
+    top: 8,
     height: 6,
     backgroundColor: '#E5E0EE',
     borderRadius: 3,
-    overflow: 'hidden',
-    marginRight: 10,
   },
-  voiceWaveFill: { height: '100%', backgroundColor: COLORS.primaryThemeColor },
+  voiceWaveFill: {
+    position: 'absolute',
+    left: 0,
+    top: 8,
+    height: 6,
+    backgroundColor: COLORS.primaryThemeColor,
+    borderRadius: 3,
+  },
+  voiceWaveThumb: {
+    position: 'absolute',
+    top: 3,
+    width: 16, height: 16, borderRadius: 8,
+    backgroundColor: COLORS.primaryThemeColor,
+    borderWidth: 2, borderColor: '#fff',
+    marginLeft: -8,             // center the thumb on the position
+    elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 2,
+  },
+  voiceTime: {
+    fontSize: 11, color: '#666', minWidth: 78, textAlign: 'right',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+    marginRight: 6,
+  },
   voiceIconBtn: {
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: '#F5F5F5',

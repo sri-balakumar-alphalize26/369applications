@@ -6,6 +6,7 @@ export default CustomToast = {
             {...props}
             style={{ borderLeftColor: 'green' }}
             contentContainerStyle={{ paddingHorizontal: 15 }}
+            text2NumberOfLines={2}
             text1Style={{
                 fontSize: 15,
                 fontWeight: '400',
@@ -15,6 +16,7 @@ export default CustomToast = {
                 fontSize: 13,
                 fontFamily: FONT_FAMILY.urbanistBold,
                 fontWeight: '400',
+                flexShrink: 1,
             }}
         />
     ),
@@ -22,6 +24,7 @@ export default CustomToast = {
     error: (props) => (
         <ErrorToast
             {...props}
+            text2NumberOfLines={2}
             text1Style={{
                 fontSize: 15,
                 fontFamily: FONT_FAMILY.urbanistBold,
@@ -31,6 +34,7 @@ export default CustomToast = {
                 fontSize: 13,
                 fontFamily: FONT_FAMILY.urbanistBold,
                 fontWeight: '400',
+                flexShrink: 1,
             }}
         />
     ),
