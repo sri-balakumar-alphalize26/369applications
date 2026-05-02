@@ -383,24 +383,44 @@ class EmployeeReport(models.Model):
                         return round(_wage / _days_in_month / 2.0, 2)
                     return 0.0
 
+                # Today's date in the employee's timezone (the day-in-progress
+                # mustn't be auto-half-flagged — Session 2 may still be ahead).
+                today_local = _pytz.utc.localize(
+                    fields.Datetime.now()
+                ).astimezone(_tz).date()
+
+                # Earliest attendance date for this employee — anything before
+                # this is "pre-hire" and should never count as auto half-day.
+                first_att_date = None
+                for _att in all_attendance:
+                    if _att.date and (first_att_date is None or _att.date < first_att_date):
+                        first_att_date = _att.date
+
                 for _date, _sessions in att_by_date.items():
-                    if _date not in leave_date_info:  # don't override explicit leave requests
-                        if 'S1' in _sessions and 'S2' not in _sessions:
-                            # Morning only → missed afternoon session
-                            auto_half_day_info[_date] = {
-                                'session': 'pm',
-                                'label': 'Half Day - Afternoon Absent',
-                                'reason': 'Auto-detected: No check-in for afternoon session',
-                                'deduction': _half_day_deduction(_date),
-                            }
-                        elif 'S2' in _sessions and 'S1' not in _sessions:
-                            # Afternoon only → missed morning session
-                            auto_half_day_info[_date] = {
-                                'session': 'am',
-                                'label': 'Half Day - Morning Absent',
-                                'reason': 'Auto-detected: No check-in for morning session',
-                                'deduction': _half_day_deduction(_date),
-                            }
+                    # Skip today (day in progress) and any date before this
+                    # employee's first check-in (they hadn't joined yet).
+                    if _date >= today_local:
+                        continue
+                    if first_att_date and _date < first_att_date:
+                        continue
+                    if _date in leave_date_info:  # don't override explicit leave requests
+                        continue
+                    if 'S1' in _sessions and 'S2' not in _sessions:
+                        # Morning only → missed afternoon session
+                        auto_half_day_info[_date] = {
+                            'session': 'pm',
+                            'label': 'Half Day - Afternoon Absent',
+                            'reason': 'Auto-detected: No check-in for afternoon session',
+                            'deduction': _half_day_deduction(_date),
+                        }
+                    elif 'S2' in _sessions and 'S1' not in _sessions:
+                        # Afternoon only → missed morning session
+                        auto_half_day_info[_date] = {
+                            'session': 'am',
+                            'label': 'Half Day - Morning Absent',
+                            'reason': 'Auto-detected: No check-in for morning session',
+                            'deduction': _half_day_deduction(_date),
+                        }
 
                 # Add auto half-day deductions to leave totals
                 for _date, _info in auto_half_day_info.items():

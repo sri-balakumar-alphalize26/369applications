@@ -26,14 +26,6 @@
         <field name="model">hr.attendance.late.config</field>
         <field name="arch" type="xml">
             <form string="Late Tracking Configuration">
-                <header>
-                    <button name="action_recompute_deductions"
-                            type="object"
-                            string="Recompute Late Records"
-                            class="btn-primary"
-                            icon="fa-refresh"
-                            help="Force-refresh stored late-tracking values (is_late, late_minutes, deduction_amount, ...) for the last 3 months. Use this after editing employee wages or deduction slabs."/>
-                </header>
                 <sheet>
                     <group>
                         <group string="Scope">

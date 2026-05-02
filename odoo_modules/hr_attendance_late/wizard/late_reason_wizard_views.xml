@@ -28,7 +28,7 @@
                             &#8226; Late # in month:
                             <field name="late_sequence" readonly="1" nolabel="1" class="oe_inline"/>
                             &#8226; Deduction:
-                            <field name="deduction_amount" widget="monetary" readonly="1" nolabel="1" class="oe_inline"/>
+                            <field name="deduction_amount" readonly="1" nolabel="1" class="oe_inline"/>
                         </p>
                     </div>
                     <group>

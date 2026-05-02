@@ -430,6 +430,12 @@ class HrAttendance(models.Model):
         for rec in self:
             if not rec.check_in or not rec.employee_id or not rec.checkin_session:
                 continue
+            # Skip records that already have check_out — the constraint is
+            # meant to block a NEW (open) check-in into a session already
+            # closed today, NOT to retroactively reject historical closed
+            # records during module upgrade / data migration recomputes.
+            if rec.check_out:
+                continue
 
             tz = pytz.timezone(rec.employee_id.tz or 'UTC')
             local_dt = pytz.utc.localize(rec.check_in).astimezone(tz)
