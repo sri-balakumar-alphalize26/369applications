@@ -1,5 +1,8 @@
-import React, { useCallback, useState } from 'react';
-import { Image, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Image, TouchableOpacity, View, StyleSheet, Modal as RNModal, ScrollView } from 'react-native';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
+import { MaterialIcons } from '@expo/vector-icons';
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers';
 import { useFocusEffect } from '@react-navigation/native';
 import { NavigationHeader } from '@components/Header';
@@ -10,10 +13,19 @@ import { showToastMessage } from '@components/Toast';
 import { showToast } from '@utils/common';
 import { fetchCustomerVisitDetailsOdoo, markCustomerVisitAsDoneOdoo, resetCustomerVisitToDraftOdoo } from '@api/services/generalApi';
 import { LoadingButton } from '@components/common/Button';
-import { ConfirmationModal } from '@components/Modal';
+import StyledAlertModal from '@components/Modal/StyledAlertModal';
 import { OverlayLoader } from '@components/Loader';
 import useAuthStore from '@stores/auth/useAuthStore';
 import Text from '@components/Text';
+
+// Mirror of the Selection options on `customer.visit.visit_duration` —
+// translates the stored key (e.g. '30_60') back to a human-readable label.
+const DURATION_LABELS = {
+  '0_15': '0 to 15 minutes',
+  '15_30': '15 to 30 minutes',
+  '30_60': '30 to 60 minutes',
+  '60_plus': 'More than 60 minutes',
+};
 
 const VisitDetails = ({ navigation, route }) => {
   const user = useAuthStore((state) => state.user);
@@ -25,6 +37,81 @@ const VisitDetails = ({ navigation, route }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isConfirmationModalVisible, setIsConfirmationModalVisible] = useState(false);
   const [confirmationAction, setConfirmationAction] = useState(null);
+  const [previewImageUri, setPreviewImageUri] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioPositionMs, setAudioPositionMs] = useState(0);
+  const [audioDurationMs, setAudioDurationMs] = useState(0);
+  const [waveBarWidth, setWaveBarWidth] = useState(0);
+  const soundRef = useRef(null);
+
+  // Cleanup any audio on unmount.
+  useEffect(() => () => {
+    if (soundRef.current) {
+      soundRef.current.unloadAsync().catch(() => {});
+    }
+  }, []);
+
+  // Write the voice note's base64 to a temp file and play it via expo-av.
+  const playVoiceNote = async () => {
+    try {
+      if (!details?.voiceNoteBase64) return;
+      if (soundRef.current) {
+        // Already loaded — just resume.
+        await soundRef.current.playAsync();
+        setIsPlaying(true);
+        return;
+      }
+      const ext = (details.voiceNoteFilename || 'voice_note.m4a').split('.').pop();
+      const path = `${FileSystem.cacheDirectory}visit_${visitId}_voice.${ext}`;
+      await FileSystem.writeAsStringAsync(path, details.voiceNoteBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const { sound } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
+      soundRef.current = sound;
+      setIsPlaying(true);
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (!s?.isLoaded) return;
+        setAudioPositionMs(s.positionMillis || 0);
+        if (s.durationMillis) setAudioDurationMs(s.durationMillis);
+        if (s.didJustFinish) {
+          setIsPlaying(false);
+          setAudioPositionMs(0);
+          // Keep the sound loaded so the user can replay without re-decoding.
+          sound.setPositionAsync(0).catch(() => {});
+        } else {
+          setIsPlaying(s.isPlaying);
+        }
+      });
+    } catch (e) {
+      console.log('[VisitDetails] voice playback error:', e?.message);
+      setIsPlaying(false);
+    }
+  };
+  const stopVoicePlayback = async () => {
+    if (soundRef.current) {
+      try { await soundRef.current.pauseAsync(); } catch (_) {}
+    }
+    setIsPlaying(false);
+  };
+  // Tap anywhere on the wave bar to seek to that position
+  const seekVoiceNote = async (event) => {
+    if (!soundRef.current || !audioDurationMs || !waveBarWidth) return;
+    const x = event?.nativeEvent?.locationX ?? 0;
+    const ratio = Math.max(0, Math.min(1, x / waveBarWidth));
+    const targetMs = Math.floor(ratio * audioDurationMs);
+    try {
+      await soundRef.current.setPositionAsync(targetMs);
+      setAudioPositionMs(targetMs);
+    } catch (e) {
+      console.log('[VisitDetails] seek failed:', e?.message);
+    }
+  };
+  const formatMs = (ms) => {
+    const total = Math.floor((ms || 0) / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
 
   const fetchDetails = async () => {
     try {
@@ -107,9 +194,121 @@ const VisitDetails = ({ navigation, route }) => {
         <DetailField label="Employee Name" value={details?.employee?.name?.trim() || '-'} multiline />
         <DetailField label="Customer Name" value={details?.customer?.name?.trim() || '-'} multiline />
         <DetailField label="Location" value={details?.location_name || '-'} />
+        <DetailField
+          label="Latitude"
+          value={details?.latitude != null ? Number(details.latitude).toFixed(6) : '-'}
+        />
+        <DetailField
+          label="Longitude"
+          value={details?.longitude != null ? Number(details.longitude).toFixed(6) : '-'}
+        />
         <DetailField label="Visit Purpose" value={details?.purpose?.name || '-'} />
+        <DetailField
+          label="Visit Duration"
+          value={DURATION_LABELS[details?.visit_duration] || details?.visit_duration || '-'}
+        />
         <DetailField label="Visit Status" value={details?.state || '-'} />
         <DetailField label="Remarks" value={details?.remarks || '-'} multiline numberOfLines={5} textAlignVertical={'top'} />
+
+        {/* Photos — always render the card so user knows the section exists */}
+        <View style={styles.attachCard}>
+          <View style={styles.attachHeader}>
+            <View style={styles.attachHeaderLeft}>
+              <MaterialIcons name="photo-library" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachHeaderTitle}>Photos</Text>
+            </View>
+            {Array.isArray(details?.images) && details.images.length > 0 && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>{details.images.length}</Text>
+              </View>
+            )}
+          </View>
+          {Array.isArray(details?.images) && details.images.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {details.images.map((img) => (
+                <TouchableOpacity
+                  key={img.id}
+                  activeOpacity={0.85}
+                  onPress={() => setPreviewImageUri(img.dataUri)}
+                  style={styles.imageThumbWrapper}
+                >
+                  <Image source={{ uri: img.dataUri }} style={styles.imageThumb} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={styles.attachEmptyText}>No photos attached.</Text>
+          )}
+        </View>
+
+        {/* Voice Note — always render the card so user knows the section exists */}
+        <View style={styles.attachCard}>
+          <View style={styles.attachHeader}>
+            <View style={styles.attachHeaderLeft}>
+              <MaterialIcons name="graphic-eq" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachHeaderTitle}>Voice Note</Text>
+            </View>
+          </View>
+          {details?.voiceNoteBase64 ? (
+            <View>
+              <View style={styles.voicePlayerRow}>
+                <TouchableOpacity
+                  style={styles.voicePlayBtn}
+                  onPress={isPlaying ? stopVoicePlayback : playVoiceNote}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.voiceWaveBar}
+                  activeOpacity={0.7}
+                  onLayout={(e) => setWaveBarWidth(e.nativeEvent.layout.width)}
+                  onPress={seekVoiceNote}
+                >
+                  <View
+                    style={[
+                      styles.voiceWaveFill,
+                      {
+                        width: audioDurationMs
+                          ? `${Math.min(100, (audioPositionMs / audioDurationMs) * 100)}%`
+                          : '0%',
+                      },
+                    ]}
+                  />
+                </TouchableOpacity>
+                <Text style={styles.voiceTime}>
+                  {formatMs(audioPositionMs)} / {formatMs(audioDurationMs)}
+                </Text>
+              </View>
+              <Text style={styles.voiceFilename} numberOfLines={1}>
+                {details.voiceNoteFilename || 'voice_note.m4a'}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.attachEmptyText}>No voice note recorded.</Text>
+          )}
+        </View>
+
+        {/* Fullscreen image preview */}
+        <RNModal
+          visible={!!previewImageUri}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPreviewImageUri(null)}
+        >
+          <TouchableOpacity
+            style={styles.previewOverlay}
+            activeOpacity={1}
+            onPress={() => setPreviewImageUri(null)}
+          >
+            {previewImageUri && (
+              <Image source={{ uri: previewImageUri }} style={styles.previewImage} resizeMode="contain" />
+            )}
+            <TouchableOpacity style={styles.previewClose} onPress={() => setPreviewImageUri(null)}>
+              <MaterialIcons name="close" size={26} color="#fff" />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </RNModal>
 
         {isAdmin && (
           <View style={{ marginTop: 30, marginBottom: 20 }}>
@@ -135,13 +334,16 @@ const VisitDetails = ({ navigation, route }) => {
         )}
 
         <OverlayLoader visible={isLoading} />
-        <ConfirmationModal
-          headerMessage={
+        <StyledAlertModal
+          isVisible={isConfirmationModalVisible}
+          message={
             confirmationAction === 'done'
               ? 'Are you sure you want to mark this visit as done?'
               : 'Are you sure you want to reset this visit to draft?'
           }
-          isVisible={isConfirmationModalVisible}
+          confirmText="YES"
+          cancelText="CANCEL"
+          destructive={confirmationAction !== 'done'}
           onCancel={() => setIsConfirmationModalVisible(false)}
           onConfirm={confirmationAction === 'done' ? handleMarkAsDone : handleResetToDraft}
         />
@@ -149,5 +351,71 @@ const VisitDetails = ({ navigation, route }) => {
     </SafeAreaView>
   );
 };
+
+const styles = StyleSheet.create({
+  attachCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    marginVertical: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+  },
+  attachHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  attachHeaderLeft: { flexDirection: 'row', alignItems: 'center' },
+  attachHeaderTitle: {
+    marginLeft: 8,
+    fontSize: 15,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: '#2e2a4f',
+  },
+  countBadge: {
+    backgroundColor: COLORS.primaryThemeColor,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 12,
+    minWidth: 22,
+    alignItems: 'center',
+  },
+  countBadgeText: { color: '#fff', fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold },
+  imageThumbWrapper: { marginRight: 8 },
+  imageThumb: { width: 90, height: 90, borderRadius: 10, backgroundColor: '#f0f0f0' },
+  attachEmptyText: { fontSize: 12, color: '#999', fontFamily: FONT_FAMILY.urbanistMedium, paddingVertical: 6 },
+  voicePlayerRow: { flexDirection: 'row', alignItems: 'center' },
+  voicePlayBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: COLORS.primaryThemeColor,
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: 12,
+  },
+  voiceWaveBar: {
+    flex: 1, height: 6,
+    backgroundColor: '#E5E0EE',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginRight: 10,
+  },
+  voiceWaveFill: { height: '100%', backgroundColor: COLORS.primaryThemeColor },
+  voiceFilename: { fontSize: 11, color: '#888', marginTop: 6, fontFamily: FONT_FAMILY.urbanistMedium },
+  voiceTime: { fontSize: 11, color: '#666', minWidth: 78, textAlign: 'right', fontFamily: FONT_FAMILY.urbanistMedium },
+  previewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewImage: { width: '100%', height: '85%' },
+  previewClose: {
+    position: 'absolute', top: 40, right: 20,
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+});
 
 export default VisitDetails;

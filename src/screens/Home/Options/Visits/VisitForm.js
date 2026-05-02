@@ -1,12 +1,15 @@
-import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native'
+import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image, Modal } from 'react-native'
+import { Camera } from 'expo-camera'
 import React, { useState, useEffect, useRef } from 'react'
 import { NavigationHeader } from '@components/Header'
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers'
 import { TextInput as FormInput } from '@components/common/TextInput'
 import { formatDate } from '@utils/common/date'
 import { LoadingButton } from '@components/common/Button'
-import { DropdownSheet } from '@components/common/BottomSheets'
-import { ActionModal } from '@components/Modal'
+import CustomListModal from '@components/Modal/CustomListModal'
+import * as ImagePicker from 'expo-image-picker'
+import * as ImageManipulator from 'expo-image-manipulator'
+import * as DocumentPicker from 'expo-document-picker'
 import * as Location from 'expo-location'
 import * as FileSystem from 'expo-file-system'
 import { Audio } from 'expo-av'
@@ -51,9 +54,9 @@ const VisitForm = ({ navigation, route }) => {
 
   const { visitPlanId = "", pipelineId = "" } = route?.params || {};
   const currentUser = useAuthStore((state) => state.user);
-  const [selectedType, setSelectedType] = useState(null);
   const [errors, setErrors] = useState({});
-  const [isVisible, setIsVisible] = useState(false);
+  const [isPurposeModalVisible, setIsPurposeModalVisible] = useState(false);
+  const [isDurationModalVisible, setIsDurationModalVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [customersList, setCustomersList] = useState([]);
@@ -61,6 +64,14 @@ const VisitForm = ({ navigation, route }) => {
   const [imageUris, setImageUris] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceUri, setVoiceUri] = useState(null);
+  // After Stop, the recording lands in `pendingVoiceUri` instead of being
+  // committed straight to `voiceUri`. The user can preview-and-Keep or Discard
+  // before the audio becomes part of the form payload.
+  const [pendingVoiceUri, setPendingVoiceUri] = useState(null);
+  // In-app camera modal — replaces the crashy OS launchCameraAsync.
+  const [showInAppCamera, setShowInAppCamera] = useState(false);
+  const [isCapturingPhoto, setIsCapturingPhoto] = useState(false);
+  const visitCameraRef = useRef(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const recordingRef = useRef(null);
   const timerRef = useRef(null);
@@ -240,7 +251,8 @@ const VisitForm = ({ navigation, route }) => {
       if (recordingRef.current) {
         await recordingRef.current.stopAndUnloadAsync();
         const uri = recordingRef.current.getURI();
-        setVoiceUri(uri);
+        // Stage in pending state — user must explicitly tap Keep to commit.
+        setPendingVoiceUri(uri);
         recordingRef.current = null;
       }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
@@ -254,6 +266,214 @@ const VisitForm = ({ navigation, route }) => {
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
+
+  // Inline image-picker handlers — replaces the old generic ActionModal
+  // tile so the Visits form can show a dedicated, styled "Add Photo" UX.
+  //
+  // CRITICAL: every picked URI passes through `downsizeImage` BEFORE landing in
+  // state. Phone cameras output 12–50MP JPEGs (2–6 MB each); keeping them in
+  // RN's JS heap + base64 at submit time causes Android OOM → app reloads.
+  // Resizing to max 1024px + quality 0.5 brings each image down to ~150–300 KB.
+  // FORCE LOW MEMORY: aggressive resize chain. Picker writes a small JPEG to
+  // disk; we wait one tick for the picker UI to fully tear down, then resize
+  // to 800px / quality 0.4. Two-pass fallback to 480px if the first fails.
+  const downsizeImage = async (uri) => {
+    console.log('[resize] entering downsizeImage with uri:', uri);
+    try {
+      console.log('[resize] pass-1: calling manipulateAsync(800px @ 0.4)');
+      const result = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      console.log('[resize] pass-1 OK →', result.uri);
+      return result.uri;
+    } catch (e) {
+      console.log('[resize] pass-1 FAILED:', e?.message);
+      try {
+        console.log('[resize] pass-2: calling manipulateAsync(480px @ 0.3)');
+        const tiny = await ImageManipulator.manipulateAsync(
+          uri,
+          [{ resize: { width: 480 } }],
+          { compress: 0.3, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        console.log('[resize] pass-2 OK →', tiny.uri);
+        return tiny.uri;
+      } catch (e2) {
+        console.log('[resize] pass-2 also failed, returning original:', e2?.message);
+        return uri;
+      }
+    }
+  };
+
+  // Open in-app camera (replaces crashy OS launchCameraAsync). The OS picker
+  // builds a full-resolution bitmap on OK that OOMs the bridge — we control
+  // the capture quality directly via expo-camera's takePictureAsync.
+  const pickImageFromCamera = async () => {
+    console.log('[cam] step 1 — pickImageFromCamera called');
+    try {
+      const { status } = await Camera.requestCameraPermissionsAsync();
+      console.log('[cam] step 2 — permission status:', status);
+      if (status !== 'granted') {
+        showToast({ type: 'error', title: 'Camera permission denied' });
+        return;
+      }
+      console.log('[cam] step 3 — opening in-app camera modal');
+      setShowInAppCamera(true);
+    } catch (e) {
+      console.log('[cam] FATAL camera error:', e?.message, e?.stack);
+      showToast({ type: 'error', title: 'Camera failed', message: e?.message });
+    }
+  };
+
+  // Called by the in-app camera's capture button. Takes a low-quality picture
+  // straight to disk via expo-camera, closes the modal, resizes, commits.
+  const captureFromInAppCamera = async () => {
+    if (isCapturingPhoto || !visitCameraRef.current) return;
+    setIsCapturingPhoto(true);
+    try {
+      console.log('[cam] step A — takePictureAsync starting');
+      const photo = await visitCameraRef.current.takePictureAsync({
+        quality: 0.3,
+        skipProcessing: true,
+        exif: false,
+      });
+      console.log('[cam] step B — captured uri:', photo?.uri, 'size:', photo?.width + 'x' + photo?.height);
+      setShowInAppCamera(false);
+      // Yield so the camera native view tears down before we start resize.
+      await new Promise((r) => setTimeout(r, 100));
+      console.log('[cam] step C — calling downsizeImage');
+      const small = await downsizeImage(photo.uri);
+      console.log('[cam] step D — downsize returned:', small);
+      try {
+        const info = await FileSystem.getInfoAsync(small);
+        console.log('[cam] step E — resized size:', info.size, 'bytes (~' +
+                    Math.round((info.size || 0) / 1024) + ' KB)');
+      } catch (_) {}
+      setImageUris((prev) => [...prev, small]);
+      console.log('[cam] step F — DONE');
+    } catch (e) {
+      console.log('[cam] FATAL capture error:', e?.message, e?.stack);
+      showToast({ type: 'error', title: 'Capture failed', message: e?.message });
+      setShowInAppCamera(false);
+    } finally {
+      setIsCapturingPhoto(false);
+    }
+  };
+  const pickImageFromGallery = async () => {
+    console.log('[gallery] step 1 — pickImageFromGallery called');
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      console.log('[gallery] step 2 — permission status:', status);
+      if (status !== 'granted') {
+        showToast({ type: 'error', title: 'Gallery permission denied' });
+        return;
+      }
+      console.log('[gallery] step 3 — launching gallery');
+      const result = await ImagePicker.launchImageLibraryAsync({
+        quality: 0.2,
+        exif: false,
+        allowsEditing: false,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      });
+      console.log('[gallery] step 4 — picker returned, canceled=' + result.canceled +
+                  ' assets=' + (result.assets?.length || 0));
+      if (!result.canceled && result.assets?.length) {
+        const original = result.assets[0].uri;
+        const w = result.assets[0].width;
+        const h = result.assets[0].height;
+        console.log('[gallery] step 5 — original uri:', original, 'size:', w + 'x' + h);
+        try {
+          const info = await FileSystem.getInfoAsync(original);
+          console.log('[gallery] step 6 — file on disk size:', info.size, 'bytes (~' +
+                      Math.round((info.size || 0) / 1024) + ' KB)');
+        } catch (probeErr) {
+          console.log('[gallery] step 6 — file probe FAILED:', probeErr?.message);
+        }
+        console.log('[gallery] step 7 — yielding 80ms');
+        await new Promise((r) => setTimeout(r, 80));
+        console.log('[gallery] step 8 — calling downsizeImage');
+        const small = await downsizeImage(original);
+        console.log('[gallery] step 9 — downsize returned:', small);
+        try {
+          const info2 = await FileSystem.getInfoAsync(small);
+          console.log('[gallery] step 10 — resized file size:', info2.size, 'bytes (~' +
+                      Math.round((info2.size || 0) / 1024) + ' KB)');
+        } catch (_) {}
+        console.log('[gallery] step 11 — committing to state');
+        setImageUris((prev) => [...prev, small]);
+        console.log('[gallery] step 12 — DONE');
+      }
+    } catch (e) {
+      console.log('[gallery] FATAL error:', e?.message, e?.stack);
+      showToast({ type: 'error', title: 'Gallery failed', message: e?.message });
+    }
+  };
+
+  // Pick an existing audio file from device storage as the voice note
+  // (alternative to live-recording).
+  const pickVoiceNoteFromFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'audio/*',
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled && result.assets?.length) {
+        const asset = result.assets[0];
+        if (asset.uri) {
+          setVoiceUri(asset.uri);
+          setRecordingDuration(0);  // unknown for picked file; user can play to verify
+          console.log('[VisitForm] voice note picked from file:', asset.name);
+        }
+      }
+    } catch (e) {
+      console.log('[VisitForm] file picker error:', e?.message);
+    }
+  };
+
+  // Voice playback (uses the same expo-av Audio module)
+  const soundRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playVoiceNote = async (overrideUri = null) => {
+    const uri = overrideUri || voiceUri;
+    if (!uri) return;
+    try {
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true },
+      );
+      soundRef.current = sound;
+      setIsPlaying(true);
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (s?.didJustFinish) {
+          setIsPlaying(false);
+          sound.unloadAsync().catch(() => {});
+          soundRef.current = null;
+        }
+      });
+    } catch (e) {
+      console.log('[VisitForm] playback error:', e?.message);
+      setIsPlaying(false);
+    }
+  };
+  const stopVoicePlayback = async () => {
+    if (soundRef.current) {
+      try { await soundRef.current.stopAsync(); } catch (_) {}
+      try { await soundRef.current.unloadAsync(); } catch (_) {}
+      soundRef.current = null;
+    }
+    setIsPlaying(false);
+  };
+  useEffect(() => () => {
+    // cleanup on unmount
+    if (soundRef.current) {
+      soundRef.current.unloadAsync().catch(() => {});
+    }
+  }, []);
 
   const fileToBase64 = async (uri) => {
     try {
@@ -269,31 +489,6 @@ const VisitForm = ({ navigation, route }) => {
     if (errors[field]) setErrors((prevErrors) => ({ ...prevErrors, [field]: null }));
   };
 
-  const toggleBottomSheet = (type) => {
-    setSelectedType(type);
-    setIsVisible(!isVisible);
-  };
-
-  const renderBottomSheet = () => {
-    let items = [];
-    let fieldName = '';
-    switch (selectedType) {
-      case 'Customers': items = dropdowns.customers; fieldName = 'customer'; break;
-      case 'Visited By': items = dropdowns.employees; fieldName = 'visitedBy'; break;
-      case 'Visit Purpose': items = dropdowns.visitPurpose; fieldName = 'visitPurpose'; break;
-      case 'Visit Duration': items = DURATION_OPTIONS; fieldName = 'visitDuration'; break;
-      default: return null;
-    }
-    return (
-      <DropdownSheet
-        isVisible={isVisible}
-        items={items}
-        title={selectedType}
-        onClose={() => setIsVisible(false)}
-        onValueChange={(value) => handleFieldChange(fieldName, value)}
-      />
-    );
-  };
 
   const validateForm = (fieldsToValidate) => {
     Keyboard.dismiss();
@@ -393,67 +588,336 @@ const VisitForm = ({ navigation, route }) => {
           </TouchableOpacity>
         </View>
 
-        <FormInput label="Customer Name" placeholder="Select customer" dropIcon="menu-down" editable={false} multiline required value={formData.customer?.label} validate={errors.customer} onPress={() => toggleBottomSheet('Customers')} />
-        <FormInput label="Visited By" placeholder="Select employee" dropIcon="menu-down" editable={false} value={formData.visitedBy?.label} onPress={() => toggleBottomSheet('Visited By')} />
+        {/* Auto-captured GPS coordinates + reverse-geocoded address (read-only) */}
+        <FormInput
+          label="Location"
+          placeholder="Auto-fetched on load"
+          editable={false}
+          multiline
+          value={formData.locationName || ''}
+        />
+        <FormInput
+          label="Latitude"
+          placeholder="Auto-fetched on load"
+          editable={false}
+          value={formData.latitude != null ? String(formData.latitude.toFixed(6)) : ''}
+        />
+        <FormInput
+          label="Longitude"
+          placeholder="Auto-fetched on load"
+          editable={false}
+          value={formData.longitude != null ? String(formData.longitude.toFixed(6)) : ''}
+        />
+
+        <FormInput
+          label="Customer Name"
+          placeholder="Select customer"
+          dropIcon="menu-down"
+          editable={false}
+          multiline
+          required
+          value={formData.customer?.label}
+          validate={errors.customer}
+          onPress={() => {
+            console.log('[VisitForm] opening CustomerScreen');
+            navigation.navigate('CustomerScreen', {
+              selectMode: true,
+              onSelect: (selected) => {
+                console.log('[VisitForm] customer picked id=' + selected?.id + ' name="' + selected?.name + '"');
+                handleFieldChange('customer', {
+                  value: selected.id,
+                  label: selected.name,
+                  ...selected,
+                });
+              },
+            });
+          }}
+        />
+        <FormInput
+          label="Visited By"
+          placeholder="Select employee"
+          dropIcon="menu-down"
+          editable={false}
+          value={formData.visitedBy?.label}
+          onPress={() => {
+            console.log('[VisitForm] opening EmployeePickerScreen');
+            navigation.navigate('EmployeePickerScreen', {
+              selectMode: true,
+              onSelect: (selected) => {
+                console.log('[VisitForm] employee picked id=' + selected?.id + ' name="' + selected?.name + '"');
+                handleFieldChange('visitedBy', {
+                  value: selected.id,
+                  label: selected.name,
+                  ...selected,
+                });
+              },
+            });
+          }}
+        />
         <FormInput required label="Date and time" dropIcon="calendar" editable={false} value={formatDate(formData.dateAndTime, 'dd-MM-yyyy HH:mm:ss')} />
-        <FormInput label="Visit Purpose" placeholder="Select purpose of visit" dropIcon="menu-down" editable={false} required value={formData.visitPurpose?.label} validate={errors.visitPurpose} onPress={() => toggleBottomSheet('Visit Purpose')} />
-        <FormInput label="Visit Duration (mins)" placeholder="Select duration" dropIcon="menu-down" editable={false} value={formData.visitDuration?.label} onPress={() => toggleBottomSheet('Visit Duration')} />
+        <FormInput label="Visit Purpose" placeholder="Select purpose of visit" dropIcon="menu-down" editable={false} required value={formData.visitPurpose?.label} validate={errors.visitPurpose} onPress={() => setIsPurposeModalVisible(true)} />
+        <FormInput label="Visit Duration (mins)" placeholder="Select duration" dropIcon="menu-down" editable={false} value={formData.visitDuration?.label} onPress={() => setIsDurationModalVisible(true)} />
         <FormInput label="Remarks" placeholder="Enter Remarks" multiline textAlignVertical="top" numberOfLines={5} required value={formData.remarks} validate={errors.remarks} onChangeText={(value) => handleFieldChange('remarks', value)} />
         <Text style={styles.minCharsText}>Min 25 characters required</Text>
 
-        {/* Images */}
-        <ActionModal title="Attach Images" setImageUrl={(uri) => setImageUris(prev => [...prev, uri])} />
-        {imageUris.length > 0 && (
-          <View style={styles.imagesRow}>
-            {imageUris.map((uri, index) => (
-              <View key={index} style={styles.imagePreviewContainer}>
-                <Image source={{ uri }} style={styles.imagePreview} />
-                <TouchableOpacity style={styles.removeButton} onPress={() => setImageUris(prev => prev.filter((_, i) => i !== index))}>
-                  <MaterialIcons name="close" size={18} color="#fff" />
+        {/* Images — card with header, count badge, source-picker buttons, thumbnail grid */}
+        <View style={styles.attachCard}>
+          <View style={styles.attachHeader}>
+            <View style={styles.attachHeaderLeft}>
+              <MaterialIcons name="photo-library" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachHeaderTitle}>Photos</Text>
+            </View>
+            {imageUris.length > 0 && (
+              <View style={styles.countBadge}>
+                <Text style={styles.countBadgeText}>{imageUris.length}</Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.attachActionsRow}>
+            <TouchableOpacity style={styles.attachActionBtn} onPress={pickImageFromCamera} activeOpacity={0.7}>
+              <MaterialIcons name="photo-camera" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachActionText}>Camera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.attachActionBtn} onPress={pickImageFromGallery} activeOpacity={0.7}>
+              <MaterialIcons name="image" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachActionText}>Gallery</Text>
+            </TouchableOpacity>
+          </View>
+
+          {imageUris.length > 0 ? (
+            <View style={styles.imagesGrid}>
+              {imageUris.map((uri, index) => (
+                <View key={index} style={styles.imageTile}>
+                  <Image source={{ uri }} style={styles.imageTileImg} />
+                  <TouchableOpacity
+                    style={styles.imageTileRemove}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    onPress={() => setImageUris((prev) => prev.filter((_, i) => i !== index))}
+                  >
+                    <MaterialIcons name="close" size={14} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View style={styles.attachEmpty}>
+              <MaterialIcons name="add-a-photo" size={28} color="#bbb" />
+              <Text style={styles.attachEmptyText}>No photos yet — tap Camera or Gallery to add</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Voice Note — card with idle / recording / recorded states + playback */}
+        <View style={styles.attachCard}>
+          <View style={styles.attachHeader}>
+            <View style={styles.attachHeaderLeft}>
+              <MaterialIcons name="graphic-eq" size={20} color={COLORS.primaryThemeColor} />
+              <Text style={styles.attachHeaderTitle}>Voice Note</Text>
+            </View>
+            {voiceUri && !isRecording && (
+              <View style={[styles.countBadge, { backgroundColor: '#1B8A2A' }]}>
+                <Text style={styles.countBadgeText}>{formatDuration(recordingDuration)}</Text>
+              </View>
+            )}
+          </View>
+
+          {!isRecording && !voiceUri && (
+            <View style={styles.voiceIdleRow}>
+              <TouchableOpacity style={styles.voiceCircleBtn} onPress={startRecording} activeOpacity={0.85}>
+                <View style={styles.voiceCircleInner}>
+                  <MaterialIcons name="mic" size={32} color="#fff" />
+                </View>
+                <Text style={styles.voiceCircleHint}>Tap to record</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.voiceCircleBtn} onPress={pickVoiceNoteFromFile} activeOpacity={0.85}>
+                <View style={[styles.voiceCircleInner, { backgroundColor: COLORS.primaryThemeColor }]}>
+                  <MaterialIcons name="attach-file" size={32} color="#fff" />
+                </View>
+                <Text style={styles.voiceCircleHint}>Pick from file</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {isRecording && (
+            <TouchableOpacity style={styles.voiceRecordingBtn} onPress={stopRecording} activeOpacity={0.85}>
+              <View style={styles.voicePulseDot} />
+              <Text style={styles.voiceRecordingText}>Recording  {formatDuration(recordingDuration)}</Text>
+              <View style={styles.voiceStopBox}>
+                <MaterialIcons name="stop" size={18} color="#fff" />
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {!isRecording && pendingVoiceUri && !voiceUri && (
+            <View>
+              <View style={styles.voicePlayerRow}>
+                <TouchableOpacity
+                  style={styles.voicePlayBtn}
+                  onPress={() => isPlaying ? stopVoicePlayback() : playVoiceNote(pendingVoiceUri)}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
+                </TouchableOpacity>
+                <View style={styles.voiceWaveBar}>
+                  <View style={[styles.voiceWaveFill, { width: isPlaying ? '60%' : '100%' }]} />
+                </View>
+                <Text style={styles.voicePreviewHint} numberOfLines={1}>
+                  Preview — tap Keep to save
+                </Text>
+              </View>
+              <View style={styles.voicePreviewActions}>
+                <TouchableOpacity
+                  style={[styles.voicePreviewBtn, styles.voicePreviewBtnDiscard]}
+                  onPress={async () => {
+                    await stopVoicePlayback();
+                    setPendingVoiceUri(null);
+                    setRecordingDuration(0);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="delete" size={18} color="#D32F2F" />
+                  <Text style={[styles.voicePreviewBtnText, { color: '#D32F2F' }]}>Discard</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.voicePreviewBtn, styles.voicePreviewBtnKeep]}
+                  onPress={async () => {
+                    await stopVoicePlayback();
+                    setVoiceUri(pendingVoiceUri);
+                    setPendingVoiceUri(null);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialIcons name="check" size={18} color="#fff" />
+                  <Text style={[styles.voicePreviewBtnText, { color: '#fff' }]}>Keep</Text>
                 </TouchableOpacity>
               </View>
-            ))}
-          </View>
-        )}
+            </View>
+          )}
 
-        {/* Voice */}
-        <Text style={styles.fieldLabel}>Voice Note</Text>
-        <View style={styles.voiceContainer}>
-          {!isRecording && !voiceUri && (
-            <TouchableOpacity style={styles.voiceButton} onPress={startRecording}>
-              <MaterialIcons name="mic" size={28} color="#fff" />
-              <Text style={styles.voiceButtonText}>Tap to Record</Text>
-            </TouchableOpacity>
-          )}
-          {isRecording && (
-            <TouchableOpacity style={[styles.voiceButton, { backgroundColor: '#D32F2F' }]} onPress={stopRecording}>
-              <MaterialIcons name="stop" size={28} color="#fff" />
-              <Text style={styles.voiceButtonText}>Recording {formatDuration(recordingDuration)} - Tap to Stop</Text>
-            </TouchableOpacity>
-          )}
           {!isRecording && voiceUri && (
-            <View style={styles.voiceRecordedRow}>
-              <MaterialIcons name="check-circle" size={24} color="#1B8A2A" />
-              <Text style={styles.voiceRecordedText}>Voice note recorded ({formatDuration(recordingDuration)})</Text>
-              <TouchableOpacity onPress={() => { setVoiceUri(null); setRecordingDuration(0); }}>
-                <MaterialIcons name="delete" size={24} color="#D32F2F" />
+            <View style={styles.voicePlayerRow}>
+              <TouchableOpacity
+                style={styles.voicePlayBtn}
+                onPress={isPlaying ? stopVoicePlayback : playVoiceNote}
+                activeOpacity={0.8}
+              >
+                <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={{ marginLeft: 10 }} onPress={startRecording}>
-                <MaterialIcons name="replay" size={24} color={COLORS.orange} />
+              <View style={styles.voiceWaveBar}>
+                <View style={[styles.voiceWaveFill, { width: isPlaying ? '60%' : '100%' }]} />
+              </View>
+              <TouchableOpacity
+                style={styles.voiceIconBtn}
+                onPress={async () => { await stopVoicePlayback(); startRecording(); }}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons name="replay" size={20} color={COLORS.orange} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.voiceIconBtn}
+                onPress={async () => { await stopVoicePlayback(); setVoiceUri(null); setRecordingDuration(0); }}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons name="delete" size={20} color="#D32F2F" />
               </TouchableOpacity>
             </View>
           )}
         </View>
 
-        {renderBottomSheet()}
+        {/* Visit Purpose — centered popup like the Warehouse picker in Easy Sales */}
+        <CustomListModal
+          isVisible={isPurposeModalVisible}
+          items={dropdowns.visitPurpose}
+          title="Visit Purpose"
+          onClose={() => setIsPurposeModalVisible(false)}
+          onValueChange={(value) => {
+            console.log('[VisitForm] visit purpose picked:', value?.label || value);
+            handleFieldChange('visitPurpose', value);
+            setIsPurposeModalVisible(false);
+          }}
+          onAddIcon={false}
+        />
+
+        {/* Visit Duration — centered popup, same pattern */}
+        <CustomListModal
+          isVisible={isDurationModalVisible}
+          items={DURATION_OPTIONS}
+          title="Visit Duration (mins)"
+          onClose={() => setIsDurationModalVisible(false)}
+          onValueChange={(value) => {
+            console.log('[VisitForm] visit duration picked:', value?.label || value);
+            handleFieldChange('visitDuration', value);
+            setIsDurationModalVisible(false);
+          }}
+          onAddIcon={false}
+        />
+
         <LoadingButton title='SAVE' onPress={submit} loading={isSubmitting} />
       </RoundedScrollContainer>
+
+      {/* In-app camera — replaces OS launchCameraAsync to avoid OOM crash */}
+      <Modal visible={showInAppCamera} animationType="slide" onRequestClose={() => setShowInAppCamera(false)}>
+        <View style={styles.cameraModalContainer}>
+          <Camera
+            ref={visitCameraRef}
+            style={styles.cameraView}
+            type={Camera.Constants.Type.back}
+          >
+            <View style={styles.cameraOverlay}>
+              <View style={styles.cameraTopBar}>
+                <TouchableOpacity
+                  style={styles.cameraCloseBtn}
+                  onPress={() => setShowInAppCamera(false)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <MaterialIcons name="close" size={28} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.cameraTitle}>Take Photo</Text>
+                <View style={{ width: 40 }} />
+              </View>
+
+              <View style={styles.cameraBottomBar}>
+                <TouchableOpacity
+                  style={[styles.cameraShutterBtn, isCapturingPhoto && { opacity: 0.4 }]}
+                  onPress={captureFromInAppCamera}
+                  disabled={isCapturingPhoto}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.cameraShutterInner} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Camera>
+        </View>
+      </Modal>
+
       <OverlayLoader visible={isLoading} />
     </SafeAreaView>
   )
 }
 
 const styles = StyleSheet.create({
+  // In-app camera modal
+  cameraModalContainer: { flex: 1, backgroundColor: '#000' },
+  cameraView: { flex: 1 },
+  cameraOverlay: { flex: 1, justifyContent: 'space-between' },
+  cameraTopBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 50, paddingBottom: 16,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  cameraCloseBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  cameraTitle: { color: '#fff', fontFamily: FONT_FAMILY.urbanistBold, fontSize: 16 },
+  cameraBottomBar: { alignItems: 'center', paddingBottom: 50, paddingTop: 20, backgroundColor: 'rgba(0,0,0,0.4)' },
+  cameraShutterBtn: {
+    width: 76, height: 76, borderRadius: 38,
+    borderWidth: 4, borderColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  cameraShutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff' },
+
   mapContainer: { height: 200, borderRadius: 8, overflow: 'hidden', marginBottom: 10 },
   map: { flex: 1 },
   mapPlaceholder: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#e0e0e0' },
@@ -464,15 +928,158 @@ const styles = StyleSheet.create({
   refreshButtonText: { color: '#fff', fontSize: 13, fontWeight: 'bold' },
   minCharsText: { fontSize: 12, color: '#999', marginTop: -5, marginBottom: 10, textAlign: 'right' },
   fieldLabel: { marginVertical: 5, fontSize: 16, color: '#2e2a4f', fontFamily: FONT_FAMILY.urbanistSemiBold },
-  imagesRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 15 },
-  imagePreviewContainer: { position: 'relative' },
-  imagePreview: { width: 90, height: 90, borderRadius: 8 },
-  removeButton: { position: 'absolute', top: -8, right: -8, backgroundColor: '#D32F2F', borderRadius: 12, width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  voiceContainer: { marginBottom: 20 },
-  voiceButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.orange, paddingHorizontal: 20, paddingVertical: 14, borderRadius: 8, alignSelf: 'flex-start' },
-  voiceButtonText: { color: '#fff', fontSize: 14, fontWeight: 'bold', marginLeft: 8 },
-  voiceRecordedRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
-  voiceRecordedText: { flex: 1, marginLeft: 8, fontSize: 14, color: '#333' },
+  // Generic attachment-card styling — used by both Photos and Voice Note sections
+  attachCard: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    padding: 14,
+    marginVertical: 8,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+  },
+  attachHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  attachHeaderLeft: { flexDirection: 'row', alignItems: 'center' },
+  attachHeaderTitle: {
+    marginLeft: 8,
+    fontSize: 15,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: '#2e2a4f',
+  },
+  countBadge: {
+    backgroundColor: COLORS.primaryThemeColor,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 12,
+    minWidth: 22,
+    alignItems: 'center',
+  },
+  countBadgeText: { color: '#fff', fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold },
+
+  // Photo source-picker buttons
+  attachActionsRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  attachActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#F4EFFA',
+  },
+  attachActionText: {
+    marginLeft: 8,
+    color: COLORS.primaryThemeColor,
+    fontSize: 13,
+    fontFamily: FONT_FAMILY.urbanistBold,
+  },
+
+  // Photos grid + tiles
+  imagesGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  imageTile: {
+    width: 90,
+    height: 90,
+    borderRadius: 10,
+    overflow: 'hidden',
+    position: 'relative',
+    backgroundColor: '#F0F0F0',
+  },
+  imageTileImg: { width: '100%', height: '100%' },
+  imageTileRemove: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(211, 47, 47, 0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+  },
+  attachEmptyText: { marginLeft: 10, fontSize: 12, color: '#999', fontFamily: FONT_FAMILY.urbanistMedium },
+
+  // Voice note states
+  voiceIdleRow: { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' },
+  voiceCircleBtn: { alignItems: 'center', paddingVertical: 8, flex: 1 },
+  voiceCircleInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: COLORS.orange,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: COLORS.orange,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  voiceCircleHint: { marginTop: 8, fontSize: 12, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
+  voiceRecordingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFEBEE',
+    borderRadius: 30,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  voicePulseDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#D32F2F',
+    marginRight: 12,
+  },
+  voiceRecordingText: { flex: 1, color: '#D32F2F', fontFamily: FONT_FAMILY.urbanistBold, fontSize: 14 },
+  voiceStopBox: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: '#D32F2F',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  voicePlayerRow: { flexDirection: 'row', alignItems: 'center' },
+  voicePreviewHint: { flex: 1, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium, fontSize: 12 },
+  voicePreviewActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
+  voicePreviewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  voicePreviewBtnDiscard: { backgroundColor: '#FDEDED', borderWidth: 1, borderColor: '#D32F2F' },
+  voicePreviewBtnKeep: { backgroundColor: COLORS.primaryThemeColor },
+  voicePreviewBtnText: { marginLeft: 6, fontFamily: FONT_FAMILY.urbanistBold, fontSize: 13 },
+  voicePlayBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: COLORS.primaryThemeColor,
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: 12,
+  },
+  voiceWaveBar: {
+    flex: 1,
+    height: 6,
+    backgroundColor: '#E5E0EE',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginRight: 10,
+  },
+  voiceWaveFill: { height: '100%', backgroundColor: COLORS.primaryThemeColor },
+  voiceIconBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: '#F5F5F5',
+    alignItems: 'center', justifyContent: 'center',
+    marginLeft: 6,
+  },
 });
 
 export default VisitForm

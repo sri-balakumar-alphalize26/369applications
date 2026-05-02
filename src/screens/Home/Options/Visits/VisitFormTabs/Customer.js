@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigation } from '@react-navigation/native'
 import { formatDate } from '@utils/common/date'
 import { RoundedScrollContainer } from '@components/containers'
 import { DropdownSheet } from '@components/common/BottomSheets'
@@ -11,6 +12,7 @@ import { Button } from '@components/common/Button'
 
 
 const Customer = ({ formData, errors, handleFieldChange, onNextPress }) => {
+    const navigation = useNavigation();
 
     const [isVisible, setIsVisible] = useState(false);
     const [isDatePickerVisible, setIsDatePickerVisible] = useState(false);
@@ -141,11 +143,26 @@ const Customer = ({ formData, errors, handleFieldChange, onNextPress }) => {
             <FormInput
                 label={"Employee Name"}
                 placeholder={"Select Employee"}
+                dropIcon={"menu-down"}
                 editable={false}
                 multiline={true}
                 required
                 value={formData.employee?.label}
                 validate={errors.employee}
+                onPress={() => {
+                    console.log('[VisitForm] opening EmployeePickerScreen');
+                    navigation.navigate('EmployeePickerScreen', {
+                        selectMode: true,
+                        onSelect: (selected) => {
+                            console.log('[VisitForm] employee picked id=' + selected?.id + ' name="' + selected?.name + '"');
+                            handleFieldChange('employee', {
+                                value: selected.id,
+                                label: selected.name,
+                                ...selected,
+                            });
+                        },
+                    });
+                }}
             />
             <FormInput
                 label={"Customer Name"}
@@ -156,7 +173,20 @@ const Customer = ({ formData, errors, handleFieldChange, onNextPress }) => {
                 required
                 value={formData.customer?.label}
                 validate={errors.customer}
-                onPress={() => toggleBottomSheet('Customers')}
+                onPress={() => {
+                    console.log('[VisitForm] opening CustomerScreen');
+                    navigation.navigate('CustomerScreen', {
+                        selectMode: true,
+                        onSelect: (selected) => {
+                            console.log('[VisitForm] customer picked id=' + selected?.id + ' name="' + selected?.name + '"');
+                            handleFieldChange('customer', {
+                                value: selected.id,
+                                label: selected.name,
+                                ...selected,
+                            });
+                        },
+                    });
+                }}
             />
             <FormInput
                 label={"Next Visit Date"}

@@ -141,9 +141,11 @@ const getCurrentLocation = async () => {
     return { success: false, error: 'Location permission denied' };
   }
 
-  // 1) FAST PATH: any reasonably recent cached fix (≤60s). Returns in milliseconds.
+  // 1) FAST PATH: any reasonably recent cached fix (≤120s). Returns in ~10ms.
+  // Widened from 60s → 120s so users tapping check-in within 2 minutes never
+  // pay a network/GPS round-trip.
   try {
-    const last = await Location.getLastKnownPositionAsync({ maxAge: 60_000 });
+    const last = await Location.getLastKnownPositionAsync({ maxAge: 120_000 });
     if (last?.coords) {
       console.log('[Location] CACHED fix accuracy:', last.coords.accuracy, 'm');
       // Kick off a background refresh so the next call has a fresher cache.
@@ -159,11 +161,11 @@ const getCurrentLocation = async () => {
     }
   } catch (_) { /* fall through */ }
 
-  // 2) Quick Balanced live fetch — cell + Wi-Fi, ~1-3s indoors.
+  // 2) Quick Balanced live fetch — 3s timeout, cell + Wi-Fi triangulation.
   try {
     const live = await Promise.race([
       Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout')), 4000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout')), 3000)),
     ]);
     if (live?.coords) {
       console.log('[Location] LIVE-BALANCED fix accuracy:', live.coords.accuracy, 'm');
@@ -375,6 +377,7 @@ export const getWorkplaceLocation = async (userId) => {
 
 // Verify if user is within workplace location
 export const verifyAttendanceLocation = async (userId) => {
+  const t0 = Date.now();
   console.log('[Attendance] Verifying attendance location for user:', userId);
 
   try {
@@ -423,7 +426,8 @@ export const verifyAttendanceLocation = async (userId) => {
                 'accuracy:', accuracy, 'm');
     console.log('[Attendance] Raw distance:', Math.round(distance),
                 'm, effective:', Math.round(effectiveDistance),
-                'm, threshold:', ATTENDANCE_LOCATION_THRESHOLD, 'm, withinRange:', withinRange);
+                'm, threshold:', ATTENDANCE_LOCATION_THRESHOLD, 'm, withinRange:', withinRange,
+                '— total verify took', (Date.now() - t0), 'ms');
 
     return {
       success: true,
@@ -2687,6 +2691,86 @@ export const getMyWaiverRequests = async (employeeId) => {
   }
 };
 
+// =============================================================================
+// CUSTOMER VISIT (field-work) — wraps the customer.visit Odoo module so the
+// attendance app can flag a check-in as a customer visit, skip the geofence,
+// and auto-mark the visit Done at check-out. Online-only for now.
+// =============================================================================
+
+// Create a customer.visit in `draft` state. Returns { success, visitId }.
+export const createCustomerVisit = async ({
+  employeeId, partnerId, latitude, longitude, locationName,
+}) => {
+  console.log('[Visit] Creating customer.visit for emp:', employeeId, 'partner:', partnerId);
+  try {
+    const headers = await getOdooAuthHeaders();
+    const now = formatDateForOdoo(new Date());
+    const response = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'customer.visit',
+          method: 'create',
+          args: [{
+            employee_id: employeeId,
+            partner_id: partnerId,
+            date_time: now,
+            latitude: latitude || 0,
+            longitude: longitude || 0,
+            location_name: locationName || '',
+          }],
+          kwargs: {},
+        },
+      },
+      { headers }
+    );
+    if (response.data?.error) {
+      const msg = response.data.error?.data?.message || response.data.error?.message || 'Odoo error';
+      console.error('[Visit] Create error:', msg);
+      return { success: false, error: msg };
+    }
+    const visitId = response.data?.result;
+    console.log('[Visit] Created customer.visit id:', visitId);
+    return { success: true, visitId };
+  } catch (e) {
+    console.error('[Visit] Create exception:', e?.message);
+    return { success: false, error: e?.message || 'Failed to create visit' };
+  }
+};
+
+// Mark a customer.visit as done. Used at check-out.
+export const closeCustomerVisit = async (visitId) => {
+  console.log('[Visit] Closing customer.visit id:', visitId);
+  try {
+    const headers = await getOdooAuthHeaders();
+    const response = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'customer.visit',
+          method: 'action_done',
+          args: [[visitId]],
+          kwargs: {},
+        },
+      },
+      { headers }
+    );
+    if (response.data?.error) {
+      const msg = response.data.error?.data?.message || response.data.error?.message || 'Odoo error';
+      console.error('[Visit] Close error:', msg);
+      return { success: false, error: msg };
+    }
+    return { success: true };
+  } catch (e) {
+    console.error('[Visit] Close exception:', e?.message);
+    return { success: false, error: e?.message || 'Failed to close visit' };
+  }
+};
+
 export default {
   checkInToOdoo,
   checkInByEmployeeId,
@@ -2715,4 +2799,6 @@ export default {
   getEligibleLateAttendances,
   submitWaiverRequest,
   getMyWaiverRequests,
+  createCustomerVisit,
+  closeCustomerVisit,
 };

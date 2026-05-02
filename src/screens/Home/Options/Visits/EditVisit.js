@@ -182,7 +182,20 @@ const EditVisit = ({ navigation, route }) => {
           multiline={true}
           value={formData.customer?.label?.trim()}
           validate={errors.customer}
-          onPress={() => toggleBottomSheet('Customers')}
+          onPress={() => {
+            console.log('[EditVisit] opening CustomerScreen');
+            navigation.navigate('CustomerScreen', {
+              selectMode: true,
+              onSelect: (selected) => {
+                console.log('[EditVisit] customer picked id=' + selected?.id + ' name="' + selected?.name + '"');
+                handleFieldChange('customer', {
+                  value: selected.id,
+                  label: selected.name,
+                  ...selected,
+                });
+              },
+            });
+          }}
         />
         <FormInput
           label="Contact Person"

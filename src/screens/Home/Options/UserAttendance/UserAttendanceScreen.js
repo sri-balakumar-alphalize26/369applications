@@ -8,7 +8,7 @@ import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
-import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount } from '@services/AttendanceService';
+import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -67,6 +67,12 @@ const UserAttendanceScreen = ({ navigation }) => {
   const [lateReasonText, setLateReasonText] = useState('');
   const [pendingLateAttendanceId, setPendingLateAttendanceId] = useState(null);
   const [lateInfo, setLateInfo] = useState(null); // { isLate, lateMinutes, lateSequence }
+
+  // Customer Visit (field-work) state — when on, geofence check is skipped
+  // and a customer.visit record is created at check-in / closed at check-out.
+  const [fieldVisitMode, setFieldVisitMode] = useState(false);
+  const [visitCustomer, setVisitCustomer] = useState(null);    // { id, name, ... }
+  const [linkedVisitId, setLinkedVisitId] = useState(null);     // server-side customer.visit id
 
   // Waiver request state
   const [waiverTab, setWaiverTab] = useState('form'); // 'form' | 'history'
@@ -271,6 +277,28 @@ const UserAttendanceScreen = ({ navigation }) => {
       console.error('Failed to load attendance:', error);
     }
   };
+
+  // Restore an in-progress customer visit (if any) when the screen mounts
+  // or when verifiedEmployee changes — so the "On Visit: <Customer>" banner
+  // reappears after the user navigated away or restarted the app, and the
+  // check-out flow can still find the linked visit id.
+  useEffect(() => {
+    (async () => {
+      if (!verifiedEmployee?.id) return;
+      try {
+        const raw = await AsyncStorage.getItem(`@fieldVisit:active:${verifiedEmployee.id}`);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed?.visitId) {
+          setLinkedVisitId(parsed.visitId);
+          if (parsed.customer) setVisitCustomer(parsed.customer);
+          console.log('[Visit] Restored active visit id:', parsed.visitId);
+        }
+      } catch (e) {
+        console.log('[Visit] Restore skipped:', e?.message);
+      }
+    })();
+  }, [verifiedEmployee?.id]);
 
   // Prefetch the late config + slabs and stash in AsyncStorage whenever the
   // user is verified AND online. Re-runs on every online flip so the caches
@@ -567,38 +595,53 @@ const UserAttendanceScreen = ({ navigation }) => {
 
   const processCheckIn = async (photoBase64) => {
     try {
-      const locationResult = await verifyAttendanceLocation(verifiedEmployee.userId || currentUser?.uid);
-
-      if (!locationResult.success) {
-        showAlert({ message: locationResult.error || 'Location verification failed' });
-        setLocationStatus({ verified: false, error: locationResult.error });
-        setLoading(false);
-        return;
-      }
-
-      if (!locationResult.withinRange) {
-        showAlert({
-          message:
-            `You are ${locationResult.distance}m away from ${locationResult.workplaceName || 'workplace'}.\n` +
-            `(GPS: ±${locationResult.accuracy ?? '?'}m, raw distance ${locationResult.rawDistance ?? locationResult.distance}m)\n` +
-            `Must be within ${locationResult.threshold}m. ` +
-            `If you're at the office, move outdoors briefly for a better GPS lock.`,
-        });
+      // Field-visit mode bypasses the office-geofence check, but we still
+      // capture the user's GPS so the customer.visit record stores it.
+      let visitGpsCoords = null;
+      if (fieldVisitMode && visitCustomer?.id) {
+        const loc = await getCurrentLocation();
+        if (loc.success) {
+          visitGpsCoords = { latitude: loc.latitude, longitude: loc.longitude };
+        }
         setLocationStatus({
-          verified: false,
+          verified: true,
+          fieldVisit: true,
+          customerName: visitCustomer.name,
+        });
+      } else {
+        const locationResult = await verifyAttendanceLocation(verifiedEmployee.userId || currentUser?.uid);
+
+        if (!locationResult.success) {
+          showAlert({ message: locationResult.error || 'Location verification failed' });
+          setLocationStatus({ verified: false, error: locationResult.error });
+          setLoading(false);
+          return;
+        }
+
+        if (!locationResult.withinRange) {
+          showAlert({
+            message:
+              `You are ${locationResult.distance}m away from ${locationResult.workplaceName || 'workplace'}.\n` +
+              `(GPS: ±${locationResult.accuracy ?? '?'}m, raw distance ${locationResult.rawDistance ?? locationResult.distance}m)\n` +
+              `Must be within ${locationResult.threshold}m. ` +
+              `If you're at the office, move outdoors briefly for a better GPS lock.`,
+          });
+          setLocationStatus({
+            verified: false,
+            distance: locationResult.distance,
+            threshold: locationResult.threshold,
+            workplaceName: locationResult.workplaceName,
+          });
+          setLoading(false);
+          return;
+        }
+
+        setLocationStatus({
+          verified: true,
           distance: locationResult.distance,
-          threshold: locationResult.threshold,
           workplaceName: locationResult.workplaceName,
         });
-        setLoading(false);
-        return;
       }
-
-      setLocationStatus({
-        verified: true,
-        distance: locationResult.distance,
-        workplaceName: locationResult.workplaceName,
-      });
 
       // OFFLINE GUARD — block re-check-in for the same session today.
       // The Odoo constraint `_check_no_reentry_same_session` enforces this
@@ -747,6 +790,32 @@ const UserAttendanceScreen = ({ navigation }) => {
           employeeName: result.employeeName,
         });
 
+        // Field-visit mode → create the linked customer.visit record now.
+        if (fieldVisitMode && visitCustomer?.id) {
+          try {
+            const visitRes = await createCustomerVisit({
+              employeeId: verifiedEmployee.id,
+              partnerId: visitCustomer.id,
+              latitude: visitGpsCoords?.latitude || 0,
+              longitude: visitGpsCoords?.longitude || 0,
+              locationName: visitCustomer.name,
+            });
+            if (visitRes.success) {
+              setLinkedVisitId(visitRes.visitId);
+              await AsyncStorage.setItem(
+                `@fieldVisit:active:${verifiedEmployee.id}`,
+                JSON.stringify({ visitId: visitRes.visitId, customer: visitCustomer }),
+              );
+              showToastMessage(`Visit started: ${visitCustomer.name}`);
+            } else {
+              console.log('[Visit] Create failed:', visitRes.error);
+              showToastMessage('Visit log failed — attendance still saved');
+            }
+          } catch (e) {
+            console.log('[Visit] Create exception:', e?.message);
+          }
+        }
+
         // Check if the just-created check-in is late and prompt for reason.
         // Target the record we just created (by attendanceId) — not "first of
         // the day" — so the popup also fires for split-shift session-2 and any
@@ -835,8 +904,19 @@ const UserAttendanceScreen = ({ navigation }) => {
 
   const processCheckOut = async (photoBase64) => {
     try {
-      // Skip location verification when offline (same as processCheckIn)
-      if (!offline) {
+      // Skip location verification when offline OR when this attendance is
+      // linked to an active customer.visit (employee is at the customer's site,
+      // not the office, so the office geofence MUST be skipped).
+      let activeVisitForCheckout = linkedVisitId;
+      if (!activeVisitForCheckout && verifiedEmployee?.id) {
+        try {
+          const raw = await AsyncStorage.getItem(`@fieldVisit:active:${verifiedEmployee.id}`);
+          if (raw) activeVisitForCheckout = JSON.parse(raw)?.visitId;
+        } catch (_) { /* ignore */ }
+      }
+      const skipGeofence = offline || !!activeVisitForCheckout;
+
+      if (!skipGeofence) {
         const locationResult = await verifyAttendanceLocation(verifiedEmployee.userId || currentUser?.uid);
 
         if (!locationResult.success) {
@@ -949,6 +1029,32 @@ const UserAttendanceScreen = ({ navigation }) => {
           if (uploadResult.success) {
             console.log('[Attendance] Check-out photo uploaded successfully');
           }
+        }
+
+        // If a customer.visit was linked at check-in, mark it Done now.
+        let activeVisitId = linkedVisitId;
+        if (!activeVisitId && verifiedEmployee?.id) {
+          try {
+            const raw = await AsyncStorage.getItem(`@fieldVisit:active:${verifiedEmployee.id}`);
+            if (raw) activeVisitId = JSON.parse(raw)?.visitId;
+          } catch (_) { /* ignore */ }
+        }
+        if (activeVisitId) {
+          try {
+            const closeRes = await closeCustomerVisit(activeVisitId);
+            if (closeRes.success) {
+              console.log('[Visit] Closed visit id:', activeVisitId);
+              showToastMessage('Visit completed');
+            } else {
+              console.log('[Visit] Close failed:', closeRes.error);
+            }
+          } catch (e) {
+            console.log('[Visit] Close exception:', e?.message);
+          }
+          await AsyncStorage.removeItem(`@fieldVisit:active:${verifiedEmployee.id}`);
+          setLinkedVisitId(null);
+          setVisitCustomer(null);
+          setFieldVisitMode(false);
         }
 
         showToastMessage('Check-out successful!');
@@ -2124,21 +2230,86 @@ const UserAttendanceScreen = ({ navigation }) => {
         <Text style={styles.currentTimeValue}>{formatTimeOnly(currentTime)}</Text>
       </View>
 
+      {/* Active Customer Visit banner */}
+      {linkedVisitId && visitCustomer && (
+        <View style={styles.activeVisitBanner}>
+          <MaterialIcons name="place" size={scale(18)} color="#fff" />
+          <Text style={styles.activeVisitBannerText}>
+            On Visit: {visitCustomer.name}
+          </Text>
+        </View>
+      )}
+
+      {/* Field Visit toggle + customer picker — only show before check-in */}
+      {!hasCheckedIn && !hasCheckedOut && (
+        <View style={styles.fieldVisitCard}>
+          <TouchableOpacity
+            style={styles.fieldVisitToggleRow}
+            activeOpacity={0.7}
+            onPress={() => {
+              const next = !fieldVisitMode;
+              setFieldVisitMode(next);
+              if (!next) setVisitCustomer(null);
+            }}
+          >
+            <MaterialIcons
+              name={fieldVisitMode ? 'check-box' : 'check-box-outline-blank'}
+              size={scale(22)}
+              color={fieldVisitMode ? COLORS.primaryThemeColor : '#999'}
+            />
+            <Text style={styles.fieldVisitToggleLabel}>Customer Visit (skip office GPS)</Text>
+          </TouchableOpacity>
+
+          {fieldVisitMode && (
+            <TouchableOpacity
+              style={styles.fieldVisitPickerRow}
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('CustomerScreen', {
+                selectMode: true,
+                onSelect: (selected) => setVisitCustomer(selected),
+              })}
+            >
+              <MaterialIcons name="person" size={scale(20)} color="#666" />
+              <Text style={[
+                styles.fieldVisitPickerText,
+                !visitCustomer?.name && styles.fieldVisitPickerPlaceholder,
+              ]}>
+                {visitCustomer?.name || 'Select customer'}
+              </Text>
+              <MaterialIcons name="chevron-right" size={scale(20)} color="#999" />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       {/* Action Buttons */}
       <View style={styles.buttonContainer}>
         {!hasCheckedIn && !hasCheckedOut && (
           <TouchableOpacity
-            style={styles.checkInButton}
-            onPress={handleCheckIn}
-            disabled={loading}
+            style={[
+              styles.checkInButton,
+              fieldVisitMode && !visitCustomer && styles.checkInButtonDisabled,
+            ]}
+            onPress={() => {
+              if (fieldVisitMode && !visitCustomer) {
+                showToastMessage('Please select a customer first');
+                return;
+              }
+              handleCheckIn();
+            }}
+            disabled={loading || (fieldVisitMode && !visitCustomer)}
             activeOpacity={0.8}
           >
             <View style={styles.buttonIconContainer}>
               <MaterialIcons name="fingerprint" size={scale(22)} color={COLORS.white} />
             </View>
             <View style={styles.buttonTextContainer}>
-              <Text style={styles.buttonTitle}>Check In</Text>
-              <Text style={styles.buttonSubtitle}>Tap to mark your arrival</Text>
+              <Text style={styles.buttonTitle}>{fieldVisitMode ? 'Start Visit' : 'Check In'}</Text>
+              <Text style={styles.buttonSubtitle}>
+                {fieldVisitMode
+                  ? (visitCustomer ? `For ${visitCustomer.name}` : 'Select customer first')
+                  : 'Tap to mark your arrival'}
+              </Text>
             </View>
             <Feather name="chevron-right" size={scale(20)} color={COLORS.white} />
           </TouchableOpacity>
@@ -2578,6 +2749,15 @@ const styles = StyleSheet.create({
   // Action Buttons
   buttonContainer: { marginTop: 2 },
   checkInButton: { backgroundColor: '#4CAF50', borderRadius: scale(14), padding: scale(14), flexDirection: 'row', alignItems: 'center', shadowColor: '#4CAF50', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3 },
+  checkInButtonDisabled: { backgroundColor: '#A5D6A7', shadowOpacity: 0, elevation: 0 },
+  fieldVisitCard: { backgroundColor: '#fff', borderRadius: scale(12), padding: scale(12), marginBottom: scale(10), borderWidth: 1, borderColor: '#E0E0E0' },
+  fieldVisitToggleRow: { flexDirection: 'row', alignItems: 'center' },
+  fieldVisitToggleLabel: { fontSize: scale(13), color: COLORS.darkText || '#333', fontFamily: FONT_FAMILY.urbanistMedium, marginLeft: scale(8) },
+  fieldVisitPickerRow: { flexDirection: 'row', alignItems: 'center', marginTop: scale(10), paddingHorizontal: scale(10), paddingVertical: scale(10), backgroundColor: '#F5F5F5', borderRadius: scale(8) },
+  fieldVisitPickerText: { flex: 1, fontSize: scale(13), color: COLORS.darkText || '#333', fontFamily: FONT_FAMILY.urbanistMedium, marginLeft: scale(8) },
+  fieldVisitPickerPlaceholder: { color: '#999' },
+  activeVisitBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.primaryThemeColor || '#5C2D91', paddingVertical: scale(8), paddingHorizontal: scale(12), borderRadius: scale(8), marginBottom: scale(8) },
+  activeVisitBannerText: { flex: 1, color: '#fff', fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, marginLeft: scale(8) },
   checkOutButton: { backgroundColor: '#F44336', borderRadius: scale(14), padding: scale(14), flexDirection: 'row', alignItems: 'center', shadowColor: '#F44336', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3 },
   buttonIconContainer: { width: scale(40), height: scale(40), borderRadius: scale(20), backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', marginRight: scale(12) },
   buttonTextContainer: { flex: 1 },

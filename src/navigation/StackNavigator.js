@@ -26,6 +26,7 @@ import POSPayment from "@screens/Home/Sections/Customer/POSPayment";
 import { InventoryDetails, InventoryForm, InventoryScreen } from "@screens/Home/Options/Inventory";
 import { ProductDetail } from "@components/common/Detail";
 import { CustomerDetails, CustomerScreen } from "@screens/Home/Sections/Customer";
+import EmployeePickerScreen from "@screens/Home/Sections/Employee/EmployeePickerScreen";
 import { MarketStudyScreen } from "@screens/Home/Options/MarketStudy";
 import { EditVisitPlan, VisitPlanForm, VisitsPlanScreen, VisitPlanDetails } from "@screens/Home/Options/VisitsPlan";
 import { EditVisit, VisitDetails, VisitScreen } from "@screens/Home/Options/Visits"; //customer visit
@@ -483,6 +484,11 @@ const StackNavigator = () => {
       <Stack.Screen
         name="CustomerScreen"
         component={CustomerScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="EmployeePickerScreen"
+        component={EmployeePickerScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

@@ -11108,14 +11108,100 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
 export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
   try {
     const headers = await ensureOdooSession();
+    console.log('[visitDetails] fetching visit id=' + visitId);
+    // CRITICAL: bin_size=False forces Odoo to return base64 for Binary fields
+    // instead of just the file size as an int. Without this, voice_note comes
+    // back as a number and the player shows "No voice note recorded".
     const { result } = await callOdooWithModelFallback(
       VISIT_MODELS, 'read', [[visitId]],
-      { fields: ['id', 'name', 'partner_id', 'employee_id', 'date_time', 'purpose_id',
-        'visit_duration', 'remarks', 'latitude', 'longitude', 'location_name',
-        'visit_plan_id', 'state'] }, headers
+      {
+        fields: ['id', 'name', 'partner_id', 'employee_id', 'date_time', 'purpose_id',
+          'visit_duration', 'remarks', 'latitude', 'longitude', 'location_name',
+          'visit_plan_id', 'state', 'image_ids', 'voice_note', 'voice_note_filename'],
+        context: { bin_size: false },
+      }, headers
     );
     const v = result?.[0];
-    if (!v) return null;
+    if (!v) {
+      console.log('[visitDetails] no record found for id=' + visitId);
+      return null;
+    }
+    console.log('[visitDetails] raw voice_note typeof=' + typeof v.voice_note +
+                ' length=' + (typeof v.voice_note === 'string' ? v.voice_note.length : 'n/a') +
+                ' value=' + (typeof v.voice_note === 'string' ? v.voice_note.slice(0, 30) + '...' : v.voice_note));
+    console.log('[visitDetails] voice_note_filename=' + v.voice_note_filename);
+    console.log('[visitDetails] image_ids=' + JSON.stringify(v.image_ids));
+
+    // Fetch each linked image (base64) — also bin_size:false so we get base64.
+    let images = [];
+    if (Array.isArray(v.image_ids) && v.image_ids.length) {
+      try {
+        const { result: imgResult } = await callOdooWithModelFallback(
+          ['customer.visit.image'], 'read', [v.image_ids],
+          {
+            fields: ['id', 'image', 'image_filename'],
+            context: { bin_size: false },
+          }, headers
+        );
+        images = (imgResult || []).map((row) => ({
+          id: row.id,
+          filename: row.image_filename || `image_${row.id}.jpg`,
+          dataUri: row.image ? `data:image/jpeg;base64,${row.image}` : null,
+        })).filter((r) => r.dataUri);
+        console.log('[visitDetails] images fetched:', images.length);
+      } catch (e) {
+        console.log('[visitDetails] image fetch failed:', e?.message);
+      }
+    }
+
+    // Voice note: even with bin_size:false at the top read, attachment-backed
+    // Binary fields sometimes still come back as a number. Re-read from
+    // ir.attachment as a defensive fallback, and ALSO pass bin_size:false so
+    // the `datas` field actually returns base64 instead of int size.
+    let voiceNoteBase64 = null;
+    let voiceNoteFilename = v.voice_note_filename || null;
+    if (typeof v.voice_note === 'string' && v.voice_note.length > 100) {
+      voiceNoteBase64 = v.voice_note;
+      console.log('[visitDetails] voice note from main read, length=' + v.voice_note.length);
+    } else {
+      console.log('[visitDetails] voice_note not in main read (typeof=' + typeof v.voice_note +
+                  '), trying ir.attachment fallback');
+      try {
+        const { result: attachRes } = await callOdooWithModelFallback(
+          ['ir.attachment'], 'search_read',
+          [[
+            ['res_model', '=', 'customer.visit'],
+            ['res_id', '=', v.id],
+            ['res_field', '=', 'voice_note'],
+          ]],
+          {
+            fields: ['id', 'datas', 'name'],
+            limit: 1,
+            context: { bin_size: false },   // ← critical: forces datas to be base64
+          },
+          headers
+        );
+        console.log('[visitDetails] ir.attachment lookup result count:', attachRes?.length || 0);
+        if (Array.isArray(attachRes) && attachRes.length > 0) {
+          const datas = attachRes[0].datas;
+          console.log('[visitDetails] attachment datas typeof=' + typeof datas +
+                      ' length=' + (typeof datas === 'string' ? datas.length : 'n/a'));
+          if (typeof datas === 'string' && datas.length > 100) {
+            voiceNoteBase64 = datas;
+            if (!voiceNoteFilename) voiceNoteFilename = attachRes[0].name || null;
+            console.log('[visitDetails] voice note recovered via ir.attachment, size:', datas.length);
+          } else {
+            console.log('[visitDetails] attachment datas was not a usable base64 string');
+          }
+        } else {
+          console.log('[visitDetails] no voice note attachment found for visit', v.id);
+        }
+      } catch (e) {
+        console.log('[visitDetails] voice attachment lookup failed:', e?.message);
+      }
+    }
+    console.log('[visitDetails] FINAL voiceNoteBase64=' + (voiceNoteBase64 ? 'present (' + voiceNoteBase64.length + ' chars)' : 'NULL'));
+
     return {
       id: v.id,
       name: v.name,
@@ -11130,6 +11216,9 @@ export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
       location_name: v.location_name,
       visit_plan_id: Array.isArray(v.visit_plan_id) ? v.visit_plan_id[0] : null,
       state: v.state,
+      images,
+      voiceNoteBase64,
+      voiceNoteFilename,
     };
   } catch (err) {
     console.error('fetchCustomerVisitDetailsOdoo error:', err?.message || err);

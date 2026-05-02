@@ -36,15 +36,92 @@ class CustomerVisit(models.Model):
 
     @api.depends('voice_note', 'voice_note_filename')
     def _compute_voice_note_player(self):
+        """Force-render an inline <audio> tag using the REAL base64 payload.
+
+        Three layers of defense:
+        1. Read with `bin_size=False` so we get base64 not the file size int.
+        2. Fallback: pull `datas` directly from the underlying ir.attachment.
+        3. Validate the base64 length before building the data URI — anything
+           less than ~100 chars can't be a real audio file and would render a
+           grayed-out unplayable player.
+        """
+        import logging
+        _logger = logging.getLogger(__name__)
+        ext_to_mime = {
+            'm4a': 'audio/mp4',
+            'mp4': 'audio/mp4',
+            'aac': 'audio/aac',
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'ogg': 'audio/ogg',
+            'webm': 'audio/webm',
+            '3gp': 'audio/3gpp',
+        }
         for record in self:
-            if record.voice_note:
-                base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
-                audio_url = f'{base_url}/web/content?model=customer.visit&id={record.id}&field=voice_note&filename={record.voice_note_filename or "voice_note.m4a"}'
+            filename = record.voice_note_filename or 'voice_note.m4a'
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'm4a'
+            mime = ext_to_mime.get(ext, 'audio/mp4')
+
+            # ── Step 1: read with bin_size=False to bypass the size-only quirk
+            try:
+                rec_real = record.with_context(bin_size=False)
+                raw = rec_real.voice_note
+            except Exception as e:
+                _logger.warning('[customer.visit] voice_note bin_size=False read failed: %s', e)
+                raw = record.voice_note
+
+            # Convert bytes → str if needed
+            if isinstance(raw, (bytes, bytearray)):
+                try:
+                    raw = raw.decode('ascii')
+                except Exception:
+                    raw = raw.decode('utf-8', errors='ignore')
+            elif isinstance(raw, int):
+                # bin_size mode returned the size, not the data — force re-read via attachment.
+                _logger.info('[customer.visit] voice_note returned int (size=%s), falling back to attachment', raw)
+                raw = None
+            elif not isinstance(raw, str):
+                raw = None
+
+            # ── Step 2: fallback to ir.attachment.datas if step 1 didn't yield
+            if not raw or len(raw) < 100:
+                try:
+                    attachment = self.env['ir.attachment'].sudo().search([
+                        ('res_model', '=', 'customer.visit'),
+                        ('res_id', '=', record.id),
+                        ('res_field', '=', 'voice_note'),
+                    ], limit=1)
+                    if attachment:
+                        att_real = attachment.with_context(bin_size=False)
+                        datas = att_real.datas
+                        if isinstance(datas, (bytes, bytearray)):
+                            datas = datas.decode('ascii', errors='ignore')
+                        if isinstance(datas, str) and len(datas) >= 100:
+                            raw = datas
+                            _logger.info('[customer.visit] voice_note recovered from ir.attachment, %d chars', len(datas))
+                        # Heal the mimetype so Edit/Download also work
+                        if attachment.mimetype in (False, '', 'application/octet-stream', 'application/binary'):
+                            attachment.sudo().write({'mimetype': mime})
+                except Exception as e:
+                    _logger.warning('[customer.visit] ir.attachment fallback failed: %s', e)
+
+            # ── Step 3: validate before building the data URI
+            if not raw or len(raw) < 100:
                 record.voice_note_player = Markup(
-                    '<audio controls style="width:100%%;"><source src="%s" type="audio/mp4">Your browser does not support audio.</audio>'
-                ) % audio_url
-            else:
-                record.voice_note_player = Markup('<span style="color: #999;">No voice note</span>')
+                    '<span style="color: #999;">No voice note</span>'
+                )
+                continue
+
+            data_uri = f'data:{mime};base64,{raw}'
+            _logger.info('[customer.visit] rendering audio player rec=%s mime=%s b64_len=%s',
+                         record.id, mime, len(raw))
+
+            record.voice_note_player = Markup(
+                '<audio controls preload="auto" style="width:100%%;">'
+                '<source src="%s" type="%s">'
+                'Your browser does not support the audio element.'
+                '</audio>'
+            ) % (data_uri, mime)
 
     @api.model_create_multi
     def create(self, vals_list):
