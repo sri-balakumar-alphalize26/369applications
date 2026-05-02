@@ -11073,6 +11073,8 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
     if (toDate) domain.push(['date_time', '<=', `${toDate} 23:59:59`]);
     if (customerId) domain.push(['partner_id', '=', customerId]);
     if (employeeId) domain.push(['employee_id', '=', employeeId]);
+    console.log('[fetchCustomerVisits] domain=' + JSON.stringify(domain) +
+                ' offset=' + offset + ' limit=' + limit);
 
     const { result } = await callOdooWithModelFallback(
       VISIT_MODELS, 'search_read', [],
@@ -11081,9 +11083,15 @@ export const fetchCustomerVisitsOdoo = async ({ offset = 0, limit = 30, fromDate
         fields: ['id', 'name', 'partner_id', 'employee_id', 'date_time', 'purpose_id',
           'visit_duration', 'remarks', 'latitude', 'longitude', 'location_name',
           'visit_plan_id', 'state'],
-        offset, limit, order: 'date_time desc'
+        offset, limit, order: 'date_time desc, id desc'
       }, headers
     );
+    console.log('[fetchCustomerVisits] returned ' + (result?.length || 0) + ' records');
+    if (Array.isArray(result) && result.length > 0) {
+      console.log('[fetchCustomerVisits] first record id=' + result[0].id +
+                  ' date=' + result[0].date_time +
+                  ' partner=' + JSON.stringify(result[0].partner_id));
+    }
     return (result || []).map(v => ({
       id: v.id,
       name: v.name,
@@ -11167,34 +11175,52 @@ export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
       console.log('[visitDetails] voice_note not in main read (typeof=' + typeof v.voice_note +
                   '), trying ir.attachment fallback');
       try {
+        // Permissive search: model + id only, no res_field filter (some Odoo
+        // versions don't set res_field on auto-created attachment-Binary
+        // attachments). Also list mimetype + name so we can identify the
+        // audio attachment among possibly many.
         const { result: attachRes } = await callOdooWithModelFallback(
           ['ir.attachment'], 'search_read',
           [[
             ['res_model', '=', 'customer.visit'],
             ['res_id', '=', v.id],
-            ['res_field', '=', 'voice_note'],
           ]],
           {
-            fields: ['id', 'datas', 'name'],
-            limit: 1,
-            context: { bin_size: false },   // ← critical: forces datas to be base64
+            fields: ['id', 'datas', 'name', 'mimetype', 'res_field'],
+            limit: 20,
+            context: { bin_size: false },
           },
           headers
         );
         console.log('[visitDetails] ir.attachment lookup result count:', attachRes?.length || 0);
         if (Array.isArray(attachRes) && attachRes.length > 0) {
-          const datas = attachRes[0].datas;
-          console.log('[visitDetails] attachment datas typeof=' + typeof datas +
-                      ' length=' + (typeof datas === 'string' ? datas.length : 'n/a'));
-          if (typeof datas === 'string' && datas.length > 100) {
-            voiceNoteBase64 = datas;
-            if (!voiceNoteFilename) voiceNoteFilename = attachRes[0].name || null;
-            console.log('[visitDetails] voice note recovered via ir.attachment, size:', datas.length);
+          for (const a of attachRes) {
+            console.log('  - attachment id=' + a.id + ' name=' + a.name +
+                        ' mimetype=' + a.mimetype + ' res_field=' + a.res_field);
+          }
+          // Pick the audio attachment: prefer res_field='voice_note', else
+          // anything with audio mime, else anything matching .m4a/.mp3 by name.
+          const pickAudio = attachRes.find((a) => a.res_field === 'voice_note')
+            || attachRes.find((a) => typeof a.mimetype === 'string' && a.mimetype.startsWith('audio'))
+            || attachRes.find((a) => /\.(m4a|mp3|aac|wav|ogg|3gp|webm)$/i.test(a.name || ''));
+          if (pickAudio) {
+            console.log('[visitDetails] picked audio attachment id=' + pickAudio.id +
+                        ' name=' + pickAudio.name);
+            const datas = pickAudio.datas;
+            console.log('[visitDetails] datas typeof=' + typeof datas +
+                        ' length=' + (typeof datas === 'string' ? datas.length : 'n/a'));
+            if (typeof datas === 'string' && datas.length > 100) {
+              voiceNoteBase64 = datas;
+              if (!voiceNoteFilename) voiceNoteFilename = pickAudio.name || null;
+              console.log('[visitDetails] voice note recovered via ir.attachment, size:', datas.length);
+            } else {
+              console.log('[visitDetails] picked attachment had no usable datas');
+            }
           } else {
-            console.log('[visitDetails] attachment datas was not a usable base64 string');
+            console.log('[visitDetails] no audio-shaped attachment found among', attachRes.length, 'attachments');
           }
         } else {
-          console.log('[visitDetails] no voice note attachment found for visit', v.id);
+          console.log('[visitDetails] no attachments at all for visit', v.id, '— upload likely never happened');
         }
       } catch (e) {
         console.log('[visitDetails] voice attachment lookup failed:', e?.message);
@@ -11250,11 +11276,46 @@ export const createCustomerVisitOdoo = async (data) => {
     if (data.voiceBase64) {
       vals.voice_note = data.voiceBase64;
       vals.voice_note_filename = data.voiceFilename || 'voice_note.m4a';
+      console.log('[createCustomerVisit] sending voice_note, base64 length=' +
+                  data.voiceBase64.length + ' filename=' + vals.voice_note_filename);
+    } else {
+      console.log('[createCustomerVisit] NO voice_note in payload (data.voiceBase64=' +
+                  typeof data.voiceBase64 + ')');
     }
+    // Compute serialized payload size for diagnosis (large payloads can hang
+    // some proxies or hit Odoo's request body limit).
+    let serialSize = 0;
+    try { serialSize = JSON.stringify(vals).length; } catch (_) {}
+    console.log('[createCustomerVisit] vals serialized size: ~' +
+                Math.round(serialSize / 1024) + ' KB');
+    console.log('[createCustomerVisit] >>> calling Odoo create RPC');
+    const t0 = Date.now();
     const { result } = await callOdooWithModelFallback(
       VISIT_MODELS, 'create', [[vals]], {}, headers
     );
-    return result;
+    console.log('[createCustomerVisit] <<< Odoo returned in ' + (Date.now() - t0) +
+                'ms, result=' + JSON.stringify(result));
+    // Odoo's create() with a single dict in args returns either a scalar id
+    // or a 1-element array depending on the call shape. Unwrap to a scalar.
+    const newId = Array.isArray(result) ? result[0] : result;
+
+    // Fetch the auto-generated reference number (e.g. "CV/2026/00002") so the
+    // calling screen can show it in a success toast and the list shows it
+    // immediately without waiting for a separate refresh.
+    let reference = null;
+    try {
+      const { result: readRes } = await callOdooWithModelFallback(
+        VISIT_MODELS, 'read', [[newId]],
+        { fields: ['id', 'name'] }, headers
+      );
+      if (Array.isArray(readRes) && readRes.length > 0) {
+        reference = readRes[0]?.name || null;
+      }
+    } catch (e) {
+      console.log('[createCustomerVisit] reference fetch failed:', e?.message);
+    }
+    console.log('[createCustomerVisit] returning id=' + newId + ' reference=' + reference);
+    return { id: newId, reference };
   } catch (err) {
     console.error('createCustomerVisitOdoo error:', err?.message || err);
     throw err;

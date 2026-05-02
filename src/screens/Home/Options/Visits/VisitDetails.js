@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, TouchableOpacity, View, StyleSheet, Modal as RNModal, ScrollView } from 'react-native';
+import { Image, TouchableOpacity, View, StyleSheet, Modal as RNModal, ScrollView, PanResponder } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -25,6 +25,12 @@ const DURATION_LABELS = {
   '15_30': '15 to 30 minutes',
   '30_60': '30 to 60 minutes',
   '60_plus': 'More than 60 minutes',
+};
+
+// State color map — matches the Easy Sales detail screen's badge palette.
+const STATE_COLORS = {
+  draft: '#FF9800',
+  done: '#4CAF50',
 };
 
 const VisitDetails = ({ navigation, route }) => {
@@ -69,15 +75,22 @@ const VisitDetails = ({ navigation, route }) => {
       const { sound } = await Audio.Sound.createAsync({ uri: path }, { shouldPlay: true });
       soundRef.current = sound;
       setIsPlaying(true);
-      sound.setOnPlaybackStatusUpdate((s) => {
+      sound.setOnPlaybackStatusUpdate(async (s) => {
         if (!s?.isLoaded) return;
-        setAudioPositionMs(s.positionMillis || 0);
+        // While the user is dragging, don't let the playback updater fight
+        // their finger — the drag handler is the source of truth for position.
+        if (!isDraggingRef.current) {
+          setAudioPositionMs(s.positionMillis || 0);
+        }
         if (s.durationMillis) setAudioDurationMs(s.durationMillis);
         if (s.didJustFinish) {
+          // Hard stop: pause AND rewind to 0. Without explicit pauseAsync the
+          // sound's internal "playing" flag stays true, so the next frame can
+          // re-emit isPlaying=true and the user perceives it as auto-replaying.
+          try { await sound.pauseAsync(); } catch (_) {}
+          try { await sound.setPositionAsync(0); } catch (_) {}
           setIsPlaying(false);
           setAudioPositionMs(0);
-          // Keep the sound loaded so the user can replay without re-decoding.
-          sound.setPositionAsync(0).catch(() => {});
         } else {
           setIsPlaying(s.isPlaying);
         }
@@ -93,7 +106,7 @@ const VisitDetails = ({ navigation, route }) => {
     }
     setIsPlaying(false);
   };
-  // Tap anywhere on the wave bar to seek to that position
+  // Tap-to-seek (single tap on bar) — kept for accessibility / single-tap UX.
   const seekVoiceNote = async (event) => {
     if (!soundRef.current || !audioDurationMs || !waveBarWidth) return;
     const x = event?.nativeEvent?.locationX ?? 0;
@@ -106,6 +119,71 @@ const VisitDetails = ({ navigation, route }) => {
       console.log('[VisitDetails] seek failed:', e?.message);
     }
   };
+
+  // Drag-to-scrub: user can drag the bar left/right to seek through the audio.
+  // The PanResponder is created once via useRef, so it captures the initial
+  // (zero) values of state. We mirror state into refs so the responder always
+  // sees fresh values during drag.
+  const isDraggingRef = useRef(false);
+  const wasPlayingBeforeDragRef = useRef(false);
+  const durationMsRef = useRef(0);
+  const barWidthRef = useRef(0);
+  const isPlayingRef = useRef(false);
+  useEffect(() => { durationMsRef.current = audioDurationMs; }, [audioDurationMs]);
+  useEffect(() => { barWidthRef.current = waveBarWidth; }, [waveBarWidth]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+
+  const audioPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: async (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!soundRef.current || !dur || !bw) return;
+        isDraggingRef.current = true;
+        wasPlayingBeforeDragRef.current = isPlayingRef.current;
+        if (isPlayingRef.current) {
+          try { await soundRef.current.pauseAsync(); } catch (_) {}
+          setIsPlaying(false);
+        }
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        setAudioPositionMs(Math.floor(ratio * dur));
+      },
+      onPanResponderMove: (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!dur || !bw) return;
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        setAudioPositionMs(Math.floor(ratio * dur));
+      },
+      onPanResponderRelease: async (evt) => {
+        const dur = durationMsRef.current;
+        const bw = barWidthRef.current;
+        if (!soundRef.current || !dur || !bw) {
+          isDraggingRef.current = false;
+          return;
+        }
+        const x = evt?.nativeEvent?.locationX ?? 0;
+        const ratio = Math.max(0, Math.min(1, x / bw));
+        const targetMs = Math.floor(ratio * dur);
+        try {
+          await soundRef.current.setPositionAsync(targetMs);
+          setAudioPositionMs(targetMs);
+          if (wasPlayingBeforeDragRef.current) {
+            await soundRef.current.playAsync();
+            setIsPlaying(true);
+          }
+        } catch (e) {
+          console.log('[VisitDetails] scrub release failed:', e?.message);
+        }
+        isDraggingRef.current = false;
+      },
+      onPanResponderTerminate: () => { isDraggingRef.current = false; },
+    })
+  ).current;
   const formatMs = (ms) => {
     const total = Math.floor((ms || 0) / 1000);
     const m = Math.floor(total / 60);
@@ -114,13 +192,25 @@ const VisitDetails = ({ navigation, route }) => {
   };
 
   const fetchDetails = async () => {
+    console.log('[VisitDetails-page] opening for visitId=' + visitId);
     try {
       const updatedDetails = await fetchCustomerVisitDetailsOdoo(visitId);
+      console.log('[VisitDetails-page] fetch returned: ' + (updatedDetails ? 'object' : 'null'));
       if (updatedDetails) {
+        console.log('[VisitDetails-page] images count=' + (updatedDetails.images?.length || 0));
+        console.log('[VisitDetails-page] voiceNoteFilename=' + updatedDetails.voiceNoteFilename);
+        const vb = updatedDetails.voiceNoteBase64;
+        console.log('[VisitDetails-page] voiceNoteBase64 typeof=' + typeof vb +
+                    ' length=' + (typeof vb === 'string' ? vb.length : 'n/a'));
+        if (typeof vb === 'string' && vb.length > 0) {
+          console.log('[VisitDetails-page] voiceNoteBase64 head=' + vb.slice(0, 40) + '...');
+        }
+        console.log('[VisitDetails-page] visit_duration=' + updatedDetails.visit_duration +
+                    ' purpose=' + (updatedDetails.purpose?.name || 'null'));
         setDetails(updatedDetails);
       }
     } catch (error) {
-      console.error('Error fetching visit details:', error);
+      console.error('[VisitDetails-page] fetch error:', error?.message, error?.stack);
       showToastMessage('Failed to fetch visit details');
     }
   };
@@ -184,13 +274,36 @@ const VisitDetails = ({ navigation, route }) => {
         logo={false}
       />
       <RoundedScrollContainer>
-        <TouchableOpacity onPress={handleMapIconPress} activeOpacity={0.7}>
-          <Image
-            style={{ alignSelf: 'flex-end', height: 35, width: 30, tintColor: COLORS.orange, marginBottom: 15 }}
-            source={require('@assets/icons/common/map_icon.png')}
-          />
-        </TouchableOpacity>
-        <DetailField label="Date & Time" value={formatDateTime(details?.date_time)} />
+        {/* Status badge (Draft / Done) — colored pill, top-right */}
+        <View style={detailStyles.statusRow}>
+          <View
+            style={[
+              detailStyles.statusBadge,
+              { backgroundColor: STATE_COLORS[(details?.state || 'draft').toLowerCase()] || '#999' },
+            ]}
+          >
+            <Text style={detailStyles.statusBadgeText}>
+              {(details?.state || 'draft').toUpperCase()}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={handleMapIconPress} activeOpacity={0.7}>
+            <Image
+              style={{ height: 35, width: 30, tintColor: COLORS.orange }}
+              source={require('@assets/icons/common/map_icon.png')}
+            />
+          </TouchableOpacity>
+        </View>
+        <DetailField
+          label="Date & Time"
+          value={(() => {
+            // Odoo returns "YYYY-MM-DD HH:MM:SS" UTC. Append T+Z so JS parses
+            // as UTC, then format in user's local timezone — matches Odoo display.
+            const s = details?.date_time;
+            if (!s || typeof s !== 'string') return '-';
+            const dt = new Date(s.replace(' ', 'T') + 'Z');
+            return isNaN(dt.getTime()) ? '-' : formatDateTime(dt);
+          })()}
+        />
         <DetailField label="Employee Name" value={details?.employee?.name?.trim() || '-'} multiline />
         <DetailField label="Customer Name" value={details?.customer?.name?.trim() || '-'} multiline />
         <DetailField label="Location" value={details?.location_name || '-'} />
@@ -207,7 +320,7 @@ const VisitDetails = ({ navigation, route }) => {
           label="Visit Duration"
           value={DURATION_LABELS[details?.visit_duration] || details?.visit_duration || '-'}
         />
-        <DetailField label="Visit Status" value={details?.state || '-'} />
+        {/* Visit Status now shown as colored badge at the top — see statusRow */}
         <DetailField label="Remarks" value={details?.remarks || '-'} multiline numberOfLines={5} textAlignVertical={'top'} />
 
         {/* Photos — always render the card so user knows the section exists */}
@@ -259,12 +372,12 @@ const VisitDetails = ({ navigation, route }) => {
                 >
                   <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
                 </TouchableOpacity>
-                <TouchableOpacity
+                <View
                   style={styles.voiceWaveBar}
-                  activeOpacity={0.7}
                   onLayout={(e) => setWaveBarWidth(e.nativeEvent.layout.width)}
-                  onPress={seekVoiceNote}
+                  {...audioPanResponder.panHandlers}
                 >
+                  <View style={styles.voiceWaveTrack} />
                   <View
                     style={[
                       styles.voiceWaveFill,
@@ -275,7 +388,17 @@ const VisitDetails = ({ navigation, route }) => {
                       },
                     ]}
                   />
-                </TouchableOpacity>
+                  {audioDurationMs > 0 && (
+                    <View
+                      style={[
+                        styles.voiceWaveThumb,
+                        {
+                          left: `${Math.min(100, (audioPositionMs / audioDurationMs) * 100)}%`,
+                        },
+                      ]}
+                    />
+                  )}
+                </View>
                 <Text style={styles.voiceTime}>
                   {formatMs(audioPositionMs)} / {formatMs(audioDurationMs)}
                 </Text>
@@ -352,6 +475,27 @@ const VisitDetails = ({ navigation, route }) => {
   );
 };
 
+// Local styles for the status badge row at the top of the details page
+const detailStyles = StyleSheet.create({
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 15,
+  },
+  statusBadge: {
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  statusBadgeText: {
+    color: '#fff',
+    fontFamily: FONT_FAMILY.urbanistBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+});
+
 const styles = StyleSheet.create({
   attachCard: {
     backgroundColor: '#fff',
@@ -394,13 +538,37 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   voiceWaveBar: {
-    flex: 1, height: 6,
+    flex: 1, height: 22,           // wider hit area — easier to grab while scrubbing
+    justifyContent: 'center',
+    marginRight: 10,
+    position: 'relative',
+  },
+  voiceWaveTrack: {
+    position: 'absolute',
+    left: 0, right: 0,
+    top: 8,
+    height: 6,
     backgroundColor: '#E5E0EE',
     borderRadius: 3,
-    overflow: 'hidden',
-    marginRight: 10,
   },
-  voiceWaveFill: { height: '100%', backgroundColor: COLORS.primaryThemeColor },
+  voiceWaveFill: {
+    position: 'absolute',
+    left: 0,
+    top: 8,
+    height: 6,
+    backgroundColor: COLORS.primaryThemeColor,
+    borderRadius: 3,
+  },
+  voiceWaveThumb: {
+    position: 'absolute',
+    top: 3,
+    width: 16, height: 16, borderRadius: 8,
+    backgroundColor: COLORS.primaryThemeColor,
+    borderWidth: 2, borderColor: '#fff',
+    marginLeft: -8,             // center the thumb on the position
+    elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 2,
+  },
   voiceFilename: { fontSize: 11, color: '#888', marginTop: 6, fontFamily: FONT_FAMILY.urbanistMedium },
   voiceTime: { fontSize: 11, color: '#666', minWidth: 78, textAlign: 'right', fontFamily: FONT_FAMILY.urbanistMedium },
   previewOverlay: {

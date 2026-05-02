@@ -64,10 +64,6 @@ const VisitForm = ({ navigation, route }) => {
   const [imageUris, setImageUris] = useState([]);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceUri, setVoiceUri] = useState(null);
-  // After Stop, the recording lands in `pendingVoiceUri` instead of being
-  // committed straight to `voiceUri`. The user can preview-and-Keep or Discard
-  // before the audio becomes part of the form payload.
-  const [pendingVoiceUri, setPendingVoiceUri] = useState(null);
   // In-app camera modal — replaces the crashy OS launchCameraAsync.
   const [showInAppCamera, setShowInAppCamera] = useState(false);
   const [isCapturingPhoto, setIsCapturingPhoto] = useState(false);
@@ -251,8 +247,10 @@ const VisitForm = ({ navigation, route }) => {
       if (recordingRef.current) {
         await recordingRef.current.stopAndUnloadAsync();
         const uri = recordingRef.current.getURI();
-        // Stage in pending state — user must explicitly tap Keep to commit.
-        setPendingVoiceUri(uri);
+        // Auto-commit: the player UI shows immediately. User can discard via
+        // the delete icon if they want to redo it (same UX as removing a
+        // photo thumbnail from the Photos section).
+        setVoiceUri(uri);
         recordingRef.current = null;
       }
       await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
@@ -512,7 +510,12 @@ const VisitForm = ({ navigation, route }) => {
         const payload = {
           customerId: formData.customer?.id,
           employeeId: formData.visitedBy?.id || false,
-          dateTime: formData.dateAndTime ? formatDate(formData.dateAndTime, 'yyyy-MM-dd HH:mm:ss') : null,
+          // Send UTC: Odoo stores datetimes as UTC and converts on display.
+          // formatDate(local, 'yyyy-MM-dd HH:mm:ss') would send local time
+          // which Odoo would then re-interpret as UTC, shifting the time.
+          dateTime: formData.dateAndTime
+            ? formData.dateAndTime.toISOString().slice(0, 19).replace('T', ' ')
+            : null,
           purposeId: formData.visitPurpose?.id || false,
           visitDuration: formData.visitDuration?.id || false,
           remarks: formData.remarks || '',
@@ -529,15 +532,74 @@ const VisitForm = ({ navigation, route }) => {
           }
           if (images.length > 0) payload.images = images;
         }
-        if (voiceUri) {
-          const voiceBase64 = await fileToBase64(voiceUri);
-          if (voiceBase64) { payload.voiceBase64 = voiceBase64; payload.voiceFilename = 'voice_note.m4a'; }
+        // If the user tapped Save while still recording, finalize the recording
+        // first so the audio is saved (otherwise the recording session is
+        // discarded and no voice note reaches the server).
+        let finalVoiceUri = voiceUri;
+        if (isRecording && recordingRef.current) {
+          console.log('[VisitForm-submit] still recording — auto-stopping before save');
+          try {
+            if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+            await recordingRef.current.stopAndUnloadAsync();
+            finalVoiceUri = recordingRef.current.getURI();
+            recordingRef.current = null;
+            setIsRecording(false);
+            setVoiceUri(finalVoiceUri);
+            console.log('[VisitForm-submit] auto-stopped, finalVoiceUri:', finalVoiceUri);
+          } catch (e) {
+            console.log('[VisitForm-submit] auto-stop failed:', e?.message);
+          }
         }
-        await createCustomerVisitOdoo(payload);
-        showToast({ type: "success", title: "Success", message: "Customer Visit created successfully" });
-        navigation.goBack();
+        if (finalVoiceUri) {
+          console.log('[VisitForm-submit] voiceUri present:', finalVoiceUri);
+          const voiceBase64 = await fileToBase64(finalVoiceUri);
+          console.log('[VisitForm-submit] voiceBase64 result: ' +
+                      (voiceBase64 ? 'length=' + voiceBase64.length : 'NULL'));
+          if (voiceBase64) {
+            payload.voiceBase64 = voiceBase64;
+            payload.voiceFilename = 'voice_note.m4a';
+            console.log('[VisitForm-submit] attached voice to payload');
+          } else {
+            console.log('[VisitForm-submit] voice fileToBase64 returned null — voice NOT uploaded');
+          }
+        } else {
+          console.log('[VisitForm-submit] no voiceUri to upload');
+        }
+        console.log('[VisitForm-submit] payload keys:', Object.keys(payload).join(','));
+        console.log('[VisitForm-submit] payload sizes — images:' +
+                    (payload.images?.length || 0) + ' voiceBase64:' +
+                    (payload.voiceBase64?.length || 0));
+        console.log('[VisitForm-submit] === awaiting createCustomerVisitOdoo ===');
+        const t0 = Date.now();
+        // Race against a 30s timeout so we never hang indefinitely.
+        const created = await Promise.race([
+          createCustomerVisitOdoo(payload),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('createCustomerVisit timeout after 30s')), 30000)
+          ),
+        ]);
+        console.log('[VisitForm-submit] === create returned in ' + (Date.now() - t0) + 'ms ===');
+        // createCustomerVisitOdoo now returns { id, reference } — fall back to
+        // raw scalar if any older code path returned just an id.
+        const newId = (created && typeof created === 'object') ? created.id : created;
+        const newReference = (created && typeof created === 'object') ? created.reference : null;
+        console.log('[VisitForm-submit] created visit id:', newId, 'reference:', newReference);
+        showToast({
+          type: "success",
+          title: "Success",
+          message: newReference
+            ? `Customer Visit created — ${newReference}`
+            : "Customer Visit created successfully",
+        });
+        // Pass a refresh signal so the list screen forces a fresh fetch with
+        // NO filters — guarantees the just-created visit appears at the top.
+        navigation.navigate({
+          name: 'VisitScreen',
+          params: { refreshAt: Date.now(), newVisitId: newId, newVisitReference: newReference },
+          merge: true,
+        });
       } catch (error) {
-        console.error("Error creating Customer Visit:", error);
+        console.error("[VisitForm-submit] create failed:", error?.message, error?.stack);
         showToast({ type: "error", title: "ERROR", message: error?.data?.message || error?.message || "Customer Visit creation failed" });
       } finally {
         setIsSubmitting(false);
@@ -547,7 +609,7 @@ const VisitForm = ({ navigation, route }) => {
 
   const getProximityStatus = () => {
     if (!formData.customer?.id) return { text: 'Select a customer to check proximity', color: '#666' };
-    if (!isProximityCheckRequired) return { text: 'Customer location not set in Odoo', color: '#FF9800' };
+    if (!isProximityCheckRequired) return { text: 'Customer location not set in web server', color: '#FF9800' };
     if (!formData.latitude || !formData.longitude) return { text: 'Fetching your location...', color: '#666' };
     if (isWithinProximity) return { text: `You are ${distance}m away - Within range`, color: '#1B8A2A' };
     return { text: `You are ${distance}m away - Too far (max ${PROXIMITY_LIMIT}m)`, color: '#D32F2F' };
@@ -747,52 +809,6 @@ const VisitForm = ({ navigation, route }) => {
                 <MaterialIcons name="stop" size={18} color="#fff" />
               </View>
             </TouchableOpacity>
-          )}
-
-          {!isRecording && pendingVoiceUri && !voiceUri && (
-            <View>
-              <View style={styles.voicePlayerRow}>
-                <TouchableOpacity
-                  style={styles.voicePlayBtn}
-                  onPress={() => isPlaying ? stopVoicePlayback() : playVoiceNote(pendingVoiceUri)}
-                  activeOpacity={0.8}
-                >
-                  <MaterialIcons name={isPlaying ? 'pause' : 'play-arrow'} size={26} color="#fff" />
-                </TouchableOpacity>
-                <View style={styles.voiceWaveBar}>
-                  <View style={[styles.voiceWaveFill, { width: isPlaying ? '60%' : '100%' }]} />
-                </View>
-                <Text style={styles.voicePreviewHint} numberOfLines={1}>
-                  Preview — tap Keep to save
-                </Text>
-              </View>
-              <View style={styles.voicePreviewActions}>
-                <TouchableOpacity
-                  style={[styles.voicePreviewBtn, styles.voicePreviewBtnDiscard]}
-                  onPress={async () => {
-                    await stopVoicePlayback();
-                    setPendingVoiceUri(null);
-                    setRecordingDuration(0);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="delete" size={18} color="#D32F2F" />
-                  <Text style={[styles.voicePreviewBtnText, { color: '#D32F2F' }]}>Discard</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.voicePreviewBtn, styles.voicePreviewBtnKeep]}
-                  onPress={async () => {
-                    await stopVoicePlayback();
-                    setVoiceUri(pendingVoiceUri);
-                    setPendingVoiceUri(null);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="check" size={18} color="#fff" />
-                  <Text style={[styles.voicePreviewBtnText, { color: '#fff' }]}>Keep</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
           )}
 
           {!isRecording && voiceUri && (

@@ -146,7 +146,12 @@ const EditVisit = ({ navigation, route }) => {
       try {
         await updateCustomerVisitOdoo(details?.id, {
           customerId: formData.customer?.id,
-          dateTime: formData.dateAndTime,
+          // Convert to UTC string so Odoo doesn't shift the time on save.
+          dateTime: formData.dateAndTime
+            ? (formData.dateAndTime instanceof Date
+                ? formData.dateAndTime.toISOString().slice(0, 19).replace('T', ' ')
+                : new Date(formData.dateAndTime).toISOString().slice(0, 19).replace('T', ' '))
+            : null,
           purposeId: formData.visitPurpose?.id,
           remarks: formData.remarks,
           contactPerson: formData.contactPerson,

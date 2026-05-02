@@ -19,7 +19,8 @@ const NavigationHeader = ({
     refreshIcon = false,
     refreshPress = () => { },
     checkIcon = false,
-    checkPress = () => { }
+    checkPress = () => { },
+    headerRight = null,
 }) => {
 
     const logoSource = backgroundColor === COLORS.primaryThemeColor
@@ -61,6 +62,7 @@ const NavigationHeader = ({
                     <Image source={require('@assets/images/header/refresh_button.png')} style={styles.refreshImage} />
                 </TouchableOpacity>
             }
+            {headerRight}
         </View>
     );
 };
