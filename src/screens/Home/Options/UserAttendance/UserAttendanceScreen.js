@@ -9,6 +9,7 @@ import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
 import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
+import { fetchTodayFieldAttendanceOdoo, createFieldAttendanceOdoo } from '@api/services/generalApi';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -80,6 +81,13 @@ const UserAttendanceScreen = ({ navigation }) => {
   const [selectedWaiverAttendanceId, setSelectedWaiverAttendanceId] = useState(null);
   const [waiverReason, setWaiverReason] = useState('');
   const [waiverRequests, setWaiverRequests] = useState([]);
+
+  // Field Attendance state — driven by hr.attendance.get_today_field_attendance
+  // status values: 'loading' | 'no_trip' | 'no_visit' | 'trip_open'
+  //              | 'manual_exists' | 'already_field' | 'eligible'
+  const [fieldStatus, setFieldStatus] = useState('loading');
+  const [fieldData, setFieldData] = useState(null);
+  const [fieldSubmitting, setFieldSubmitting] = useState(false);
 
   // Camera state
   const [cameraPermission, requestCameraPermission] = Camera.useCameraPermissions();
@@ -199,6 +207,30 @@ const UserAttendanceScreen = ({ navigation }) => {
     }
     return () => { if (interval) clearInterval(interval); };
   }, [attendanceMode, isVerified, todayWfhRequest, verifiedEmployee, offline]);
+
+  // Field Attendance — fetch today's trip + visit + attendance state when
+  // entering field mode after PIN/fingerprint verification.
+  useEffect(() => {
+    if (attendanceMode !== 'field' || !isVerified || !verifiedEmployee?.id) return;
+    let cancelled = false;
+    setFieldStatus('loading');
+    setFieldData(null);
+    if (offline) return; // keep status='loading' so the offline banner shows
+    (async () => {
+      try {
+        const result = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id);
+        if (cancelled) return;
+        setFieldStatus(result?.status || 'no_trip');
+        setFieldData(result || null);
+      } catch (e) {
+        console.error('[FieldAttendance] fetch error:', e?.message);
+        if (cancelled) return;
+        setFieldStatus('no_trip');
+        setFieldData(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [attendanceMode, isVerified, verifiedEmployee, offline]);
 
   // Camera countdown and auto-capture
   useEffect(() => {
@@ -1334,6 +1366,21 @@ const UserAttendanceScreen = ({ navigation }) => {
         </View>
         <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
       </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.modeCard}
+        onPress={() => setAttendanceMode('field')}
+        activeOpacity={0.8}
+      >
+        <View style={[styles.modeIconContainer, { backgroundColor: '#E3F2FD' }]}>
+          <MaterialIcons name="map" size={scale(32)} color="#1976D2" />
+        </View>
+        <View style={styles.modeTextContainer}>
+          <Text style={styles.modeCardTitle}>Field Attendance (Customer Visit)</Text>
+          <Text style={styles.modeCardSubtitle}>Mark today using your trip and customer visits</Text>
+        </View>
+        <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
+      </TouchableOpacity>
     </View>
   );
 
@@ -2153,6 +2200,240 @@ const UserAttendanceScreen = ({ navigation }) => {
   );
 
   // =============================================
+  // RENDER: FIELD ATTENDANCE SECTION
+  // =============================================
+  const handleMarkFieldAttendance = async () => {
+    if (fieldSubmitting || !verifiedEmployee?.id) return;
+    setFieldSubmitting(true);
+    try {
+      const result = await createFieldAttendanceOdoo(verifiedEmployee.id);
+      if (result?.success) {
+        showToastMessage('Field attendance marked');
+        // Refresh state by re-querying — keeps the rendered card consistent
+        // with what the server now sees.
+        const refreshed = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id).catch(() => null);
+        setFieldStatus(refreshed?.status || 'already_field');
+        setFieldData(refreshed || { status: 'already_field', attendance_id: result.attendance_id });
+
+        // Trigger the existing late-reason modal if the server flagged it.
+        if (result.needs_late_reason && result.attendance_id) {
+          setLateInfo({
+            isLate: !!result.is_late,
+            lateMinutes: result.late_minutes || 0,
+            lateMinutesDisplay: result.late_minutes_display || '',
+            expectedStartTime: result.expected_start_time || 0,
+          });
+          setPendingLateAttendanceId(result.attendance_id);
+          setShowLateReasonModal(true);
+        }
+      } else {
+        showAlert({
+          message: result?.error || 'Could not mark field attendance.',
+          confirmText: 'OK',
+        });
+      }
+    } catch (e) {
+      showAlert({
+        message: e?.message || 'Network error while marking field attendance.',
+        confirmText: 'OK',
+      });
+    } finally {
+      setFieldSubmitting(false);
+    }
+  };
+
+  const renderFieldSection = () => {
+    const FIELD_COLOR = '#1976D2';
+    const trip = fieldData?.trip;
+    const visits = fieldData?.visits || [];
+
+    const renderEmpty = (icon, title, subtitle, ctaLabel, ctaTarget) => (
+      <View style={[styles.detailsSection, { paddingTop: scale(8) }]}>
+        <View style={{ alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: scale(12), padding: scale(20), marginTop: scale(8) }}>
+          <MaterialIcons name={icon} size={scale(40)} color={FIELD_COLOR} />
+          <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#333', marginTop: scale(10), textAlign: 'center' }}>{title}</Text>
+          <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(4), textAlign: 'center' }}>{subtitle}</Text>
+          {ctaLabel && ctaTarget ? (
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: FIELD_COLOR, borderRadius: scale(10), paddingVertical: scale(10), paddingHorizontal: scale(16), marginTop: scale(14), gap: scale(6) }}
+              onPress={() => navigation.navigate(ctaTarget)}
+            >
+              <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
+              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>{ctaLabel}</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+    );
+
+    return (
+      <View style={styles.detailsSection}>
+        {/* Greeting Card */}
+        <View style={styles.greetingCard}>
+          <View style={styles.avatarContainer}>
+            <View style={[styles.avatar, { backgroundColor: FIELD_COLOR }]}>
+              <Text style={styles.avatarText}>{userName.charAt(0).toUpperCase()}</Text>
+            </View>
+            <View style={[styles.statusDot, { backgroundColor: FIELD_COLOR }]} />
+          </View>
+          <View style={styles.greetingTextContainer}>
+            <Text style={styles.greetingText}>{getGreeting()}</Text>
+            <Text style={styles.userNameText}>{userName}</Text>
+          </View>
+          <View style={[styles.wfhBadge, { backgroundColor: '#E3F2FD' }]}>
+            <Text style={[styles.wfhBadgeText, { color: FIELD_COLOR }]}>FIELD</Text>
+          </View>
+        </View>
+
+        {/* Offline */}
+        {offline && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF3E0', borderRadius: scale(10), padding: scale(10), marginTop: scale(8), gap: scale(8) }}>
+            <MaterialIcons name="wifi-off" size={scale(18)} color="#7a4f00" />
+            <Text style={{ flex: 1, fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#7a4f00' }}>
+              Offline — connect to mark field attendance.
+            </Text>
+          </View>
+        )}
+
+        {/* Loading */}
+        {fieldStatus === 'loading' && !offline && (
+          <View style={{ alignItems: 'center', padding: scale(28) }}>
+            <MaterialIcons name="hourglass-empty" size={scale(36)} color={FIELD_COLOR} />
+            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(10) }}>
+              Checking today's trips and visits…
+            </Text>
+          </View>
+        )}
+
+        {/* No trip */}
+        {fieldStatus === 'no_trip' && !offline && renderEmpty(
+          'directions-car',
+          'No vehicle trip today',
+          'Start a Vehicle Trip first to use field attendance.',
+          'Go to Vehicle Tracking',
+          'VehicleTrackingScreen',
+        )}
+
+        {/* No visit */}
+        {fieldStatus === 'no_visit' && !offline && renderEmpty(
+          'place',
+          'No customer visit yet',
+          'Log at least one customer visit to use field attendance.',
+          'Go to Customer Visits',
+          'VisitScreen',
+        )}
+
+        {/* Trip still in progress */}
+        {fieldStatus === 'trip_open' && !offline && (
+          <View style={{ backgroundColor: '#FFF8E1', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#FFA000' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
+              <MaterialIcons name="schedule" size={scale(20)} color="#FFA000" />
+              <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }}>End your trip first</Text>
+            </View>
+            {trip && (
+              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(6) }}>
+                Trip {trip.ref} started at {trip.start_time?.slice(11, 16) || '—'}. End it before marking attendance.
+              </Text>
+            )}
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: FIELD_COLOR, borderRadius: scale(10), padding: scale(10), marginTop: scale(10), gap: scale(6) }}
+              onPress={() => navigation.navigate('VehicleTrackingScreen')}
+            >
+              <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
+              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>Open Vehicle Tracking</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Manual conflict */}
+        {fieldStatus === 'manual_exists' && !offline && (
+          <View style={{ backgroundColor: '#EFEBE9', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#6D4C41' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
+              <MaterialIcons name="lock" size={scale(20)} color="#6D4C41" />
+              <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }}>Already punched in manually</Text>
+            </View>
+            <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(6) }}>
+              You already have an attendance record for today via Office or Manual mode. Field attendance can't replace it.
+            </Text>
+          </View>
+        )}
+
+        {/* Already marked */}
+        {fieldStatus === 'already_field' && !offline && (
+          <View style={{ backgroundColor: '#E8F5E9', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#2E7D32' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
+              <MaterialIcons name="check-circle" size={scale(22)} color="#2E7D32" />
+              <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#1B5E20' }}>Field attendance marked</Text>
+            </View>
+            {trip && (
+              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#1B5E20', marginTop: scale(6) }}>
+                Trip {trip.ref} · {trip.start_time?.slice(11, 16) || '—'} → {trip.end_time?.slice(11, 16) || '—'}
+              </Text>
+            )}
+            <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#1B5E20', marginTop: scale(2) }}>
+              {visits.length} customer visit{visits.length === 1 ? '' : 's'} linked.
+            </Text>
+          </View>
+        )}
+
+        {/* Eligible — main action */}
+        {fieldStatus === 'eligible' && !offline && (
+          <View style={{ marginTop: scale(8) }}>
+            <View style={{ backgroundColor: '#fff', borderRadius: scale(12), padding: scale(14), borderLeftWidth: 4, borderLeftColor: FIELD_COLOR, ...Platform.select({ android: { elevation: 1 }, ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 2 } }) }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
+                <MaterialIcons name="directions-car" size={scale(20)} color={FIELD_COLOR} />
+                <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }}>{trip?.ref || 'Today\'s trip'}</Text>
+              </View>
+              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(6) }}>
+                {trip?.start_time?.slice(11, 16) || '—'} → {trip?.end_time?.slice(11, 16) || '—'}
+              </Text>
+              {!!trip?.source && (
+                <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(2) }}>
+                  From {trip.source}{trip.destination ? `  →  ${trip.destination}` : ''}
+                </Text>
+              )}
+            </View>
+
+            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#333', marginTop: scale(14), marginBottom: scale(6) }}>
+              Customer Visits ({visits.length})
+            </Text>
+            {visits.map((v, idx) => (
+              <View key={v.id || idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: scale(10), padding: scale(10), marginBottom: scale(6), borderWidth: 1, borderColor: '#E0E0E0', gap: scale(10) }}>
+                <View style={{ width: scale(28), height: scale(28), borderRadius: scale(14), backgroundColor: '#E3F2FD', alignItems: 'center', justifyContent: 'center' }}>
+                  <MaterialIcons name="person" size={scale(16)} color={FIELD_COLOR} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }} numberOfLines={1}>
+                    {v.customer || v.name || 'Customer'}
+                  </Text>
+                  <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(1) }} numberOfLines={1}>
+                    {v.date_time?.slice(11, 16) || ''} · {v.location_name || '—'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+
+            <TouchableOpacity
+              style={{
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                backgroundColor: fieldSubmitting ? '#90CAF9' : FIELD_COLOR,
+                borderRadius: scale(12), padding: scale(14), marginTop: scale(14), gap: scale(8),
+              }}
+              disabled={fieldSubmitting}
+              onPress={handleMarkFieldAttendance}
+            >
+              <MaterialIcons name={fieldSubmitting ? 'hourglass-empty' : 'check'} size={scale(20)} color="#fff" />
+              <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>
+                {fieldSubmitting ? 'Marking…' : 'Mark as Today\'s Attendance'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  // =============================================
   // RENDER: OFFICE SECTION (existing flow)
   // =============================================
   const renderOfficeSection = () => (
@@ -2352,7 +2633,7 @@ const UserAttendanceScreen = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <NavigationHeader
-        title={attendanceMode === 'wfh' ? 'Work From Home' : attendanceMode === 'office' ? 'Office Attendance' : attendanceMode === 'leave' ? 'Leave Request' : attendanceMode === 'waiver' ? 'Late Waiver Request' : 'Attendance'}
+        title={attendanceMode === 'wfh' ? 'Work From Home' : attendanceMode === 'office' ? 'Office Attendance' : attendanceMode === 'leave' ? 'Leave Request' : attendanceMode === 'waiver' ? 'Late Waiver Request' : attendanceMode === 'field' ? 'Field Attendance' : 'Attendance'}
         color={COLORS.black}
         backgroundColor={COLORS.white}
         onBackPress={handleBackPress}
@@ -2408,7 +2689,7 @@ const UserAttendanceScreen = ({ navigation }) => {
                   disabled={loading}
                   activeOpacity={0.7}
                 >
-                  <MaterialIcons name="fingerprint" size={scale(56)} color={attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'leave' ? '#FF9800' : COLORS.primaryThemeColor} />
+                  <MaterialIcons name="fingerprint" size={scale(56)} color={attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'leave' ? '#FF9800' : attendanceMode === 'field' ? '#1976D2' : COLORS.primaryThemeColor} />
                 </TouchableOpacity>
                 <Text style={styles.pinTitle}>Scan Fingerprint</Text>
                 <Text style={styles.pinSubtitle}>Tap to verify your identity</Text>
@@ -2424,7 +2705,7 @@ const UserAttendanceScreen = ({ navigation }) => {
               {/* PIN Input */}
               <View style={styles.pinInputSection}>
                 <View style={styles.pinInputHeader}>
-                  <MaterialIcons name="dialpad" size={scale(20)} color={attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'leave' ? '#FF9800' : COLORS.primaryThemeColor} />
+                  <MaterialIcons name="dialpad" size={scale(20)} color={attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'leave' ? '#FF9800' : attendanceMode === 'field' ? '#1976D2' : COLORS.primaryThemeColor} />
                   <Text style={styles.pinInputTitle}>Enter PIN</Text>
                 </View>
                 <TextInput
@@ -2438,7 +2719,7 @@ const UserAttendanceScreen = ({ navigation }) => {
                   maxLength={10}
                 />
                 <TouchableOpacity
-                  style={[styles.pinVerifyButton, { backgroundColor: attendanceMode === 'wfh' ? '#2196F3' : COLORS.primaryThemeColor }]}
+                  style={[styles.pinVerifyButton, { backgroundColor: attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'field' ? '#1976D2' : COLORS.primaryThemeColor }]}
                   onPress={handlePinVerify}
                   disabled={loading || !pinInput.trim()}
                   activeOpacity={0.8}
@@ -2462,6 +2743,7 @@ const UserAttendanceScreen = ({ navigation }) => {
           {attendanceMode === 'wfh' && isVerified && renderWfhSection()}
           {attendanceMode === 'leave' && isVerified && renderLeaveSection()}
           {attendanceMode === 'waiver' && isVerified && renderWaiverSection()}
+          {attendanceMode === 'field' && isVerified && renderFieldSection()}
         </RoundedScrollContainer>
       </KeyboardAvoidingView>
 

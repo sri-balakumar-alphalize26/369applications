@@ -19,7 +19,7 @@
         - Multiple check-ins per day with daily total hours
     """,
     'author': '369ai',
-    'depends': ['hr_attendance', 'hr'],
+    'depends': ['hr_attendance', 'hr', 'vehicle_tracking', 'customer_visit'],
     'data': [
         'security/ir.model.access.csv',
         'data/late_config_data.xml',
@@ -31,6 +31,7 @@
         'views/public_holiday_views.xml',
         'views/late_waiver_views.xml',
         'views/late_summary_views.xml',
+        'views/field_attendance_views.xml',
         'views/menu.xml',
         'reports/late_attendance_report.xml',
     ],

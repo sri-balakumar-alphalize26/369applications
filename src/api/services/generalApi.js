@@ -489,6 +489,53 @@ export const validateVehicleMaintenanceOdoo = async (id) => {
   return true;
 };
 
+// ---- Field Attendance (trip + customer visit) ----
+// Phase 1 server methods on hr.attendance, both @api.model.
+
+export const fetchTodayFieldAttendanceOdoo = async (employeeId) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'hr.attendance',
+        method: 'get_today_field_attendance',
+        args: [Number(employeeId)],
+        kwargs: {},
+      },
+    },
+    { headers, timeout: 15000 }
+  );
+  if (response.data?.error) {
+    throw new Error(response.data.error.data?.message || 'Odoo error');
+  }
+  return response.data?.result || { status: 'no_trip', trip: null, visits: [], attendance_id: null };
+};
+
+export const createFieldAttendanceOdoo = async (employeeId) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'hr.attendance',
+        method: 'create_field_attendance',
+        args: [Number(employeeId)],
+        kwargs: {},
+      },
+    },
+    { headers, timeout: 20000 }
+  );
+  if (response.data?.error) {
+    throw new Error(response.data.error.data?.message || 'Odoo error');
+  }
+  return response.data?.result || { success: false, error: 'No response from server' };
+};
+
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {

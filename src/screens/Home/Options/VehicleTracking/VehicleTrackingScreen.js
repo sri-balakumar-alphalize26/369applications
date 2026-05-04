@@ -155,6 +155,7 @@ const VehicleTrackingScreen = ({ navigation }) => {
     fetchEntriesForDate(day.dateString);
   };
 
+  const draft      = vehicleEntries.filter(e => !e.start_trip && !e.end_trip && !e.trip_cancel);
   const inProgress = vehicleEntries.filter(e => e.start_trip && !e.end_trip && !e.trip_cancel);
   const completed  = vehicleEntries.filter(e => e.end_trip);
   const cancelled  = vehicleEntries.filter(e => e.trip_cancel);
@@ -176,6 +177,10 @@ const VehicleTrackingScreen = ({ navigation }) => {
         {/* Summary strip */}
         {!loading && vehicleEntries.length > 0 && (
           <View style={styles.summaryRow}>
+            <View style={styles.summaryCard}>
+              <Text style={[styles.summaryNumber, { color: PHASE_META.draft.color }]}>{draft.length}</Text>
+              <Text style={styles.summaryLabel}>Draft</Text>
+            </View>
             <View style={styles.summaryCard}>
               <Text style={[styles.summaryNumber, { color: PHASE_META.in_progress.color }]}>{inProgress.length}</Text>
               <Text style={styles.summaryLabel}>In Progress</Text>
@@ -202,6 +207,19 @@ const VehicleTrackingScreen = ({ navigation }) => {
             </View>
           ) : (
             <View>
+              {draft.length > 0 && (
+                <>
+                  <SectionHeader title="Draft" count={draft.length} color={PHASE_META.draft.color} />
+                  {draft.map(entry => (
+                    <TripCard
+                      key={entry.id}
+                      entry={entry}
+                      onPress={() => navigation.navigate('VehicleTrackingForm', { tripData: entry })}
+                    />
+                  ))}
+                </>
+              )}
+
               {inProgress.length > 0 && (
                 <>
                   <SectionHeader title="In Progress" count={inProgress.length} color={PHASE_META.in_progress.color} />

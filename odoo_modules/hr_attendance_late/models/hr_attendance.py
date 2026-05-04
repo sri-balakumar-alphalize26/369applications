@@ -1,6 +1,6 @@
 from odoo import models, fields, api, _
-from odoo.exceptions import ValidationError
-from datetime import timedelta
+from odoo.exceptions import ValidationError, AccessError
+from datetime import timedelta, datetime, time
 import logging
 import pytz
 from .time_utils import minutes_to_hm
@@ -79,6 +79,22 @@ class HrAttendance(models.Model):
     daily_total_hours = fields.Float(
         string='Daily Total Hours',
         compute='_compute_daily_total_hours',
+    )
+
+    # --- Field attendance (trip + customer visit) ---
+    attendance_source = fields.Selection([
+        ('manual', 'Manual'),
+        ('field', 'Field (Trip + Visit)'),
+    ], string='Source', default='manual')
+    gps_latitude = fields.Float(string='GPS Latitude', digits=(10, 7))
+    gps_longitude = fields.Float(string='GPS Longitude', digits=(10, 7))
+    gps_location_name = fields.Char(string='Location')
+    source_trip_id = fields.Many2one(
+        'vehicle.tracking', string='Source Trip', ondelete='set null',
+    )
+    source_visit_ids = fields.Many2many(
+        'customer.visit', 'hr_attendance_customer_visit_rel',
+        'attendance_id', 'visit_id', string='Source Visits',
     )
 
     # --- Computed fields ---
@@ -557,3 +573,267 @@ class HrAttendance(models.Model):
             'waiver_reason': r.waiver_reason or '',
             'daily_total_hours': r.daily_total_hours,
         } for r in records]
+
+    # --- Field attendance (trip + customer visit) helpers ---
+
+    def _employee_today_window(self, employee):
+        """Return (utc_today_start, utc_today_end) for the employee's local
+        timezone — used to bound today's trips/visits/attendance."""
+        tz = pytz.timezone(employee.tz or self.env.user.tz or 'UTC')
+        local_now = datetime.now(tz)
+        day_start_local = tz.localize(datetime.combine(local_now.date(), time.min))
+        day_end_local = day_start_local + timedelta(days=1)
+        return (
+            day_start_local.astimezone(pytz.utc).replace(tzinfo=None),
+            day_end_local.astimezone(pytz.utc).replace(tzinfo=None),
+            local_now.date(),
+        )
+
+    def _employee_partner_ids(self, employee):
+        """Map an hr.employee to the res.partner ids that may be used as the
+        driver_id on vehicle.tracking. The app uses different mappings depending
+        on how the trip was created, so we accept any of: work_contact_id,
+        user_id.partner_id, address_home_id (legacy)."""
+        partner_ids = []
+        if employee.work_contact_id:
+            partner_ids.append(employee.work_contact_id.id)
+        if employee.user_id and employee.user_id.partner_id:
+            partner_ids.append(employee.user_id.partner_id.id)
+        # Legacy field present on some Odoo versions
+        legacy = getattr(employee, 'address_home_id', False)
+        if legacy:
+            partner_ids.append(legacy.id)
+        return list(set(partner_ids))
+
+    def _check_field_attendance_access(self, employee):
+        """Employee may only mark their own attendance. HR users override."""
+        if self.env.user.has_group('hr.group_hr_user'):
+            return
+        if not employee.user_id or employee.user_id.id != self.env.user.id:
+            raise AccessError(_(
+                "You can only mark field attendance for yourself."
+            ))
+
+    def _serialize_trip(self, trip):
+        return {
+            'id': trip.id,
+            'ref': trip.ref or '',
+            'start_time': str(trip.start_time) if trip.start_time else None,
+            'end_time': str(trip.end_time) if trip.end_time else None,
+            'start_latitude': trip.start_latitude or '',
+            'start_longitude': trip.start_longitude or '',
+            'end_latitude': trip.end_latitude or '',
+            'end_longitude': trip.end_longitude or '',
+            'source': trip.source_id.name if trip.source_id else '',
+            'destination': trip.destination_id.name if trip.destination_id else '',
+            'purpose': trip.purpose_of_visit_id.name if trip.purpose_of_visit_id else '',
+            'trip_status': trip.trip_status,
+        }
+
+    def _serialize_visit(self, visit):
+        return {
+            'id': visit.id,
+            'name': visit.name or '',
+            'customer': visit.partner_id.name if visit.partner_id else '',
+            'date_time': str(visit.date_time) if visit.date_time else None,
+            'latitude': visit.latitude,
+            'longitude': visit.longitude,
+            'location_name': visit.location_name or '',
+            'purpose': visit.purpose_id.name if visit.purpose_id else '',
+            'state': visit.state,
+        }
+
+    @api.model
+    def get_today_field_attendance(self, employee_id):
+        """Inspect today's trips/visits/attendance for the given employee.
+
+        Returns a dict:
+          {
+            'status': 'no_trip' | 'no_visit' | 'trip_open' | 'manual_exists'
+                     | 'already_field' | 'eligible',
+            'trip': {...} | None,
+            'visits': [{...}, ...],
+            'attendance_id': int | None,
+          }
+        """
+        employee = self.env['hr.employee'].sudo().browse(employee_id)
+        if not employee.exists():
+            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
+
+        self._check_field_attendance_access(employee)
+
+        utc_start, utc_end, local_date = self._employee_today_window(employee)
+
+        # 1. Existing attendance for today wins early
+        Attendance = self.env['hr.attendance'].sudo()
+        existing = Attendance.search([
+            ('employee_id', '=', employee.id),
+            ('check_in', '>=', utc_start),
+            ('check_in', '<', utc_end),
+        ], limit=1, order='check_in asc')
+
+        if existing:
+            if existing.attendance_source == 'field':
+                return {
+                    'status': 'already_field',
+                    'trip': self._serialize_trip(existing.source_trip_id) if existing.source_trip_id else None,
+                    'visits': [self._serialize_visit(v) for v in existing.source_visit_ids],
+                    'attendance_id': existing.id,
+                }
+            return {
+                'status': 'manual_exists',
+                'trip': None,
+                'visits': [],
+                'attendance_id': existing.id,
+            }
+
+        # 2. Today's trips for this employee — match via partner candidates
+        partner_ids = self._employee_partner_ids(employee)
+        if not partner_ids:
+            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
+
+        Trip = self.env['vehicle.tracking'].sudo()
+        trips = Trip.search([
+            ('driver_id', 'in', partner_ids),
+            ('date', '=', local_date),
+            ('trip_status', 'in', ['in_progress', 'ended']),
+        ], order='start_time asc')
+
+        if not trips:
+            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
+
+        # 3. Today's visits for this employee
+        Visit = self.env['customer.visit'].sudo()
+        visits = Visit.search([
+            ('employee_id', '=', employee.id),
+            ('date_time', '>=', utc_start),
+            ('date_time', '<', utc_end),
+        ], order='date_time asc')
+
+        if not visits:
+            return {
+                'status': 'no_visit',
+                'trip': self._serialize_trip(trips[0]),
+                'visits': [],
+                'attendance_id': None,
+            }
+
+        # 4. Trip still running?
+        if any(t.trip_status == 'in_progress' for t in trips):
+            return {
+                'status': 'trip_open',
+                'trip': self._serialize_trip(trips[0]),
+                'visits': [self._serialize_visit(v) for v in visits],
+                'attendance_id': None,
+            }
+
+        # 5. Eligible: ≥1 ended trip + ≥1 visit + no existing attendance
+        return {
+            'status': 'eligible',
+            'trip': self._serialize_trip(trips[0]),
+            'visits': [self._serialize_visit(v) for v in visits],
+            'attendance_id': None,
+        }
+
+    def _to_float_or_zero(self, value):
+        """vehicle.tracking stores GPS as Char — coerce to float for storage."""
+        if value in (None, False, ''):
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @api.model
+    def create_field_attendance(self, employee_id):
+        """Create today's hr.attendance row from the employee's trip + visits.
+
+        Idempotent: refuses unless get_today_field_attendance returns 'eligible'.
+        Mirrors the eligibility logic so the conflict check is enforced
+        server-side regardless of stale client state.
+
+        Returns: {'success': True, 'attendance_id': id}
+              or {'success': False, 'error': str}
+        """
+        employee = self.env['hr.employee'].sudo().browse(employee_id)
+        if not employee.exists():
+            return {'success': False, 'error': _('Employee not found.')}
+
+        self._check_field_attendance_access(employee)
+
+        utc_start, utc_end, local_date = self._employee_today_window(employee)
+
+        Attendance = self.env['hr.attendance'].sudo()
+        existing = Attendance.search([
+            ('employee_id', '=', employee.id),
+            ('check_in', '>=', utc_start),
+            ('check_in', '<', utc_end),
+        ], limit=1)
+        if existing:
+            if existing.attendance_source == 'field':
+                return {'success': False, 'error': _('Field attendance already marked for today.')}
+            return {'success': False, 'error': _('Manual attendance already exists for today.')}
+
+        partner_ids = self._employee_partner_ids(employee)
+        if not partner_ids:
+            return {'success': False, 'error': _('No partner mapping for this employee.')}
+
+        Trip = self.env['vehicle.tracking'].sudo()
+        trips = Trip.search([
+            ('driver_id', 'in', partner_ids),
+            ('date', '=', local_date),
+            ('trip_status', 'in', ['in_progress', 'ended']),
+        ], order='start_time asc')
+
+        if not trips:
+            return {'success': False, 'error': _('No vehicle trip found for today.')}
+
+        if any(t.trip_status == 'in_progress' for t in trips):
+            return {'success': False, 'error': _('End your trip before marking attendance.')}
+
+        Visit = self.env['customer.visit'].sudo()
+        visits = Visit.search([
+            ('employee_id', '=', employee.id),
+            ('date_time', '>=', utc_start),
+            ('date_time', '<', utc_end),
+        ], order='date_time asc')
+
+        if not visits:
+            return {'success': False, 'error': _('Log at least one customer visit before marking attendance.')}
+
+        # Span the day: earliest trip start → latest trip end. Only ended trips
+        # reach this point so end_time is guaranteed populated.
+        check_in_dt = min(t.start_time for t in trips if t.start_time)
+        check_out_dt = max(t.end_time for t in trips if t.end_time)
+        primary_trip = trips[0]
+        first_visit = visits[0]
+
+        vals = {
+            'employee_id': employee.id,
+            'check_in': check_in_dt,
+            'check_out': check_out_dt,
+            'attendance_source': 'field',
+            'gps_latitude': self._to_float_or_zero(primary_trip.start_latitude),
+            'gps_longitude': self._to_float_or_zero(primary_trip.start_longitude),
+            'gps_location_name': first_visit.location_name or (
+                primary_trip.source_id.name if primary_trip.source_id else ''
+            ),
+            'source_trip_id': primary_trip.id,
+            'source_visit_ids': [(6, 0, visits.ids)],
+        }
+
+        new_record = Attendance.create(vals)
+        # Force the late-tracking compute chain to flush before we read the
+        # values — `_compute_late_info` runs in the create override above but
+        # the Many2one/Many2many writes can leave stored fields in cache.
+        new_record.flush_recordset()
+        return {
+            'success': True,
+            'attendance_id': new_record.id,
+            'is_late': bool(new_record.is_late),
+            'late_minutes': int(new_record.late_minutes or 0),
+            'late_minutes_display': new_record.late_minutes_display or '',
+            'expected_start_time': float(new_record.expected_start_time or 0.0),
+            'check_in': str(new_record.check_in) if new_record.check_in else None,
+            'needs_late_reason': bool(new_record.is_late) and not new_record.late_reason,
+        }
