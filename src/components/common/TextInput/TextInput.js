@@ -81,8 +81,8 @@ const TextInput = ({
                     {!validate && dropIcon && (
                         <Icon
                             name={dropIcon}
-                            size={30}
-                            style={{ color: COLORS.icon, marginRight: 0 }}
+                            size={24}
+                            style={{ color: COLORS.icon, marginLeft: 'auto', marginRight: 0 }}
                         />
                     )}
 

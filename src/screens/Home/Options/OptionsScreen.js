@@ -111,6 +111,7 @@ const OptionsScreen = ({ navigation }) => {
           : { title: 'My Location', image: require('@assets/images/Home/section/services.png'), onPress: () => navigation.navigate('MyLocation') },
         { title: 'Vehicle Tracking', image: require('@assets/images/Home/section/pickup.png'), onPress: () => navigation.navigate('VehicleTrackingScreen') },
         { title: 'Vehicle Maintenance', image: require('@assets/images/Home/section/service.png'), onPress: () => navigation.navigate('VehicleMaintenanceScreen') },
+        { title: 'Vehicle Location', image: require('@assets/images/Home/section/services.png'), onPress: () => navigation.navigate('VehicleLocationScreen') },
         { title: 'Visits Plan', image: require('@assets/images/Home/options/visits_plan.png'), onPress: () => navigation.navigate('VisitsPlanScreen') },
         { title: 'Customer Visits', image: require('@assets/images/Home/options/attendance/attendance_requests.png'), onPress: () => navigation.navigate('VisitScreen') },
       ],

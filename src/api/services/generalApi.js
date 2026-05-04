@@ -1,6 +1,6 @@
 // Cancel a vehicle tracking trip in Odoo by updating trip_cancel to true
 export const cancelVehicleTrackingTripOdoo = async ({ tripId, username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {
-  const baseUrl = (VEHICLE_TRACKING_BASE_URL || '').replace(/\/$/, '');
+  const baseUrl = (VEHICLE_TRACKING_BASE_URL() || '').replace(/\/$/, '');
   if (!tripId) {
     throw new Error('Trip ID is required to cancel a trip');
   }
@@ -52,14 +52,12 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
   const vehicleIdRaw = params.vehicleId ?? params.vehicle_id ?? vIdFromCamel;
   const vehicleId = vehicleIdRaw != null && vehicleIdRaw !== '' ? (Number.isNaN(Number(vehicleIdRaw)) ? undefined : Number(vehicleIdRaw)) : undefined;
   try {
-    // Filter by date and vehicleId if provided (Odoo often stores `date` as datetime)
-    // Use a date range (start/end of day) so comparisons match datetime values
+    // Filter by date and vehicleId if provided. vehicle.tracking.date is a
+    // Date field (YYYY-MM-DD), so match exactly — comparing against datetime
+    // strings (with HH:MM:SS) returns no rows.
     let domain = [];
     if (date) {
-      const startOfDay = `${date} 00:00:00`;
-      const endOfDay = `${date} 23:59:59`;
-      domain.push(["date", ">=", startOfDay]);
-      domain.push(["date", "<=", endOfDay]);
+      domain.push(["date", "=", date]);
     }
     if (typeof vehicleId !== 'undefined') {
       domain.push(["vehicle_id", "=", vehicleId]);
@@ -76,13 +74,14 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
           args: [domain],
           kwargs: {
             fields: [
-              "id", "vehicle_id", "driver_id", "date", "number_plate", "start_km", "end_km", "start_trip", "end_trip", "source_id", "destination_id",
+              "id", "ref", "state", "vehicle_id", "driver_id", "date", "number_plate", "start_km", "end_km", "start_trip", "end_trip", "source_id", "destination_id",
               "coolant_water", "oil_checking", "tyre_checking", "battery_checking", "fuel_checking", "daily_checks", "purpose_of_visit_id", "estimated_time",
-              "start_latitude", "start_longitude", "trip_cancel", "start_time", "end_time"
+              "start_latitude", "start_longitude", "end_latitude", "end_longitude", "trip_cancel", "start_time", "end_time", "amount", "remarks",
+              "image_url", "km_travelled", "duration", "invoice_number", "fuel_log_ids"
             ],
             offset,
             limit,
-            order: "date desc",
+            order: "date desc, id desc",
           },
         },
       },
@@ -93,13 +92,15 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
       throw new Error("Odoo JSON-RPC error");
     }
     const trips = response.data.result || [];
-    
+
     // Filter out cancelled trips and properly handle many2one fields
-    return trips
+    const mapped = trips
       .filter(trip => !trip.trip_cancel)
       .map(trip => ({
         estimated_time: trip.estimated_time || '',
         id: trip.id,
+        ref: trip.ref || '',
+        state: trip.state || 'draft',
         // ✅ Fix: Handle many2one fields properly (they return [id, name] or false)
         vehicle_id: Array.isArray(trip.vehicle_id) ? trip.vehicle_id[0] : (trip.vehicle_id ? trip.vehicle_id : null),
         vehicle_name: Array.isArray(trip.vehicle_id) ? trip.vehicle_id[1] : '',
@@ -127,13 +128,172 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
         pre_trip_litres: typeof trip.pre_trip_litres !== 'undefined' ? trip.pre_trip_litres : '',
         start_latitude: typeof trip.start_latitude !== 'undefined' ? trip.start_latitude : '',
         start_longitude: typeof trip.start_longitude !== 'undefined' ? trip.start_longitude : '',
+        end_latitude: typeof trip.end_latitude !== 'undefined' ? trip.end_latitude : '',
+        end_longitude: typeof trip.end_longitude !== 'undefined' ? trip.end_longitude : '',
         trip_cancel: trip.trip_cancel || false,
         start_time: trip.start_time || null,
         end_time: trip.end_time || null,
+        amount: trip.amount || 0,
+        remarks: trip.remarks || '',
+        // image_url is a Binary field on Odoo (returns base64 or false). Expose
+        // it as a ready-to-render data URI for <Image> components in the app.
+        image_url: trip.image_url && typeof trip.image_url === 'string' && trip.image_url.length > 0
+          ? `data:image/jpeg;base64,${trip.image_url}`
+          : null,
+        invoice_number: trip.invoice_number || '',
+        km_travelled: typeof trip.km_travelled !== 'undefined' ? trip.km_travelled : 0,
+        duration: typeof trip.duration !== 'undefined' ? trip.duration : 0,
+        // Raw IDs only at this stage; the batched lookup below resolves them.
+        _fuel_log_ids: Array.isArray(trip.fuel_log_ids) ? trip.fuel_log_ids : [],
+        fuel_logs: [],
       }));
+
+    // Batched fuel-log resolve — one extra round-trip for the page, regardless
+    // of how many trips it contains. Mirrors the invoice-line resolve pattern.
+    try {
+      const allFuelIds = mapped.flatMap(t => t._fuel_log_ids || []);
+      if (allFuelIds.length > 0) {
+        const fuelResp = await axios.post(
+          `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+          {
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+              model: 'vehicle.fuel.log',
+              method: 'search_read',
+              args: [[['id', 'in', allFuelIds]]],
+              kwargs: {
+                fields: ['id', 'name', 'amount', 'fuel_level', 'odometer',
+                         'create_date', 'driver_id', 'vehicle_tracking_id',
+                         'gps_lat', 'gps_long',
+                         'odometer_image', 'receipt_image'],
+                // Without `bin_size: false` Odoo returns Binary/Image fields as
+                // human-readable size strings (e.g. "12.5 KB") instead of the
+                // actual base64 bytes — that's why old fuel logs rendered blank
+                // in the app even though the images existed in Odoo.
+                context: { bin_size: false },
+              },
+            },
+          },
+          { headers }
+        );
+        if (!fuelResp.data?.error) {
+          const logs = fuelResp.data.result || [];
+          const byTripId = {};
+          logs.forEach(l => {
+            const tid = Array.isArray(l.vehicle_tracking_id) ? l.vehicle_tracking_id[0] : l.vehicle_tracking_id;
+            if (!tid) return;
+            // Use Odoo's `/web/image/<model>/<id>/<field>` route — bypasses
+            // the unreliable JSON-RPC base64 path. Cache-buster from create_date
+            // keeps URL stable per record version.
+            const v = l.create_date ? `?v=${encodeURIComponent(l.create_date)}` : '';
+            const baseImg = ODOO_BASE_URL();
+            const odoUrl = `${baseImg}/web/image/vehicle.fuel.log/${l.id}/odometer_image${v}`;
+            const rcptUrl = `${baseImg}/web/image/vehicle.fuel.log/${l.id}/receipt_image${v}`;
+            (byTripId[tid] = byTripId[tid] || []).push({
+              id: l.id,
+              name: l.name || '',
+              amount: l.amount || 0,
+              fuel_level: l.fuel_level || 0,
+              odometer: l.odometer || 0,
+              create_date: l.create_date || null,
+              driver_name: Array.isArray(l.driver_id) ? l.driver_id[1] : '',
+              gps_lat: l.gps_lat || '',
+              gps_long: l.gps_long || '',
+              odometer_image: odoUrl,
+              receipt_image: rcptUrl,
+            });
+          });
+          mapped.forEach(t => { t.fuel_logs = byTripId[t.id] || []; });
+        } else {
+          console.warn('Fuel-log batch fetch error:', fuelResp.data.error);
+        }
+      }
+    } catch (fuelErr) {
+      console.warn('Fuel-log batch fetch failed:', fuelErr?.message);
+    }
+    // Drop the temporary id-only field — only the resolved fuel_logs is exposed.
+    mapped.forEach(t => { delete t._fuel_log_ids; });
+
+    // Cache for offline fallback. Filter cache by date scope so we don't
+    // overwrite the full cache when a date-filtered fetch returns a subset.
+    if (!params.date && typeof vehicleId === 'undefined') {
+      try { await AsyncStorage.setItem('@cache:vehicleTrackingTrips', JSON.stringify(mapped)); } catch (_) {}
+    }
+    return await _mergeOfflineVehicleTrackingTrips(mapped, params);
   } catch (error) {
-    console.error("Error fetching vehicle tracking trips from Odoo:", error);
-    throw error;
+    console.error("Error fetching vehicle tracking trips from Odoo:", error?.message || error);
+    // Offline fallback — last cached list + still-pending offline rows.
+    try {
+      const raw = await AsyncStorage.getItem('@cache:vehicleTrackingTrips');
+      const cached = raw ? JSON.parse(raw) : [];
+      const filtered = _filterVehicleTrackingTripsLocal(cached, params);
+      console.log('[fetchVehicleTrackingTrips] OFFLINE — cached=' + cached.length + ' after-filter=' + filtered.length);
+      return await _mergeOfflineVehicleTrackingTrips(filtered, params);
+    } catch (_) {
+      return [];
+    }
+  }
+};
+
+const _filterVehicleTrackingTripsLocal = (rows, { date, vehicleId } = {}) => {
+  if (!Array.isArray(rows)) return [];
+  const dayOf = (s) => (typeof s === 'string' ? s.slice(0, 10) : '');
+  return rows.filter((r) => {
+    if (date && dayOf(r.date) !== date) return false;
+    if (vehicleId != null && vehicleId !== '' && r.vehicle_id !== Number(vehicleId)) return false;
+    return true;
+  });
+};
+
+const _mergeOfflineVehicleTrackingTrips = async (serverList, params = {}) => {
+  try {
+    const offlineQueue = require('@utils/offlineQueue').default;
+    const queue = await offlineQueue.getAll();
+    const pending = (queue || [])
+      .filter(q => q.model === 'vehicle.tracking' && q.operation === 'create')
+      .map(q => ({
+        id: 'offline_' + q.id,
+        ref: q.values?.offline_label || 'OFF',
+        offline_label: q.values?.offline_label || null,
+        state: q.values?.state || 'draft',
+        vehicle_id: q.values?.vehicle_id || null,
+        vehicle_name: q.values?._vehicleName || '',
+        driver_id: q.values?.driver_id || null,
+        driver_name: q.values?._driverName || '',
+        date: q.values?.date || '',
+        number_plate: q.values?.number_plate || '',
+        start_km: q.values?.start_km || 0,
+        end_km: q.values?.end_km || 0,
+        start_trip: q.values?.start_trip || false,
+        end_trip: q.values?.end_trip || false,
+        source_id: q.values?.source_id || null,
+        source_name: q.values?._sourceName || '',
+        destination_id: q.values?.destination_id || null,
+        destination_name: q.values?._destinationName || '',
+        amount: q.values?.amount || 0,
+        remarks: q.values?.remarks || '',
+        offline: true,
+        offlineQueueId: q.id,
+      }));
+    const filteredPending = (params.date || params.vehicleId)
+      ? _filterVehicleTrackingTripsLocal(pending, params)
+      : pending;
+    // Decorate server rows with their preserved OFF labels (so the OFF ref
+    // stays visible alongside the real Odoo ref after sync).
+    let labelMap = {};
+    try {
+      const raw = await AsyncStorage.getItem('@cache:offlineLabels:vehicleTracking');
+      labelMap = raw ? JSON.parse(raw) : {};
+    } catch (_) {}
+    const decoratedServer = (serverList || []).map((v) => ({
+      ...v,
+      offline_label: labelMap[String(v.id)] || v.offline_label || null,
+    }));
+    return [...filteredPending, ...decoratedServer];
+  } catch (e) {
+    console.log('[fetchVehicleTrackingTrips] merge offline failed:', e?.message);
+    return serverList || [];
   }
 };
 
@@ -181,14 +341,196 @@ export const fetchSourcesOdoo = async ({ offset = 0, limit = 50, searchText = ""
     throw error;
   }
 };
+// ---- Vehicle Locations CRUD (vehicle.location) ----
+// fetch, create and update vehicle.location records — used by both the
+// stand-alone Vehicle Location screen and the source/destination dropdowns
+// inside the Vehicle Tracking form. Cached for offline parity.
+export const fetchVehicleLocationsOdoo = async ({ offset = 0, limit = 100, searchText = '' } = {}) => {
+  try {
+    const headers = await getOdooAuthHeaders();
+    let domain = [];
+    if (searchText && searchText.trim() !== '') {
+      domain = [['name', 'ilike', searchText.trim()]];
+    }
+    const response = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0', method: 'call',
+        params: {
+          model: 'vehicle.location',
+          method: 'search_read',
+          args: [domain],
+          kwargs: {
+            fields: ['id', 'name', 'latitude', 'longitude', 'location'],
+            offset, limit, order: 'name asc',
+          },
+        },
+      },
+      { headers }
+    );
+    if (response.data?.error) throw new Error(response.data.error.data?.message || 'Odoo error');
+    const mapped = (response.data?.result || []).map(r => ({
+      id: r.id,
+      name: r.name || '',
+      latitude: r.latitude ?? 0,
+      longitude: r.longitude ?? 0,
+      location: r.location || '',
+    }));
+    if (!searchText) {
+      try { await AsyncStorage.setItem('@cache:vehicleLocations', JSON.stringify(mapped)); } catch (_) {}
+    }
+    return mapped;
+  } catch (err) {
+    console.error('fetchVehicleLocationsOdoo error:', err?.message || err);
+    try {
+      const raw = await AsyncStorage.getItem('@cache:vehicleLocations');
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (searchText) {
+          const q = String(searchText).toLowerCase();
+          return cached.filter((r) => (r.name || '').toLowerCase().includes(q));
+        }
+        return cached;
+      }
+    } catch (_) {}
+    return [];
+  }
+};
+
+export const createVehicleLocationOdoo = async (data) => {
+  const headers = await getOdooAuthHeaders();
+  const vals = {
+    name: data?.name || '',
+    latitude: parseFloat(data?.latitude) || 0,
+    longitude: parseFloat(data?.longitude) || 0,
+    location: data?.location || data?.name || '',
+  };
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'vehicle.location',
+        method: 'create',
+        args: [vals],
+        kwargs: {},
+      },
+    },
+    { headers }
+  );
+  if (response.data?.error) throw new Error(response.data.error.data?.message || 'Odoo error');
+  const id = Array.isArray(response.data?.result) ? response.data.result[0] : response.data.result;
+  return { id, ...vals };
+};
+
+export const updateVehicleLocationOdoo = async (id, data) => {
+  const headers = await getOdooAuthHeaders();
+  const vals = {};
+  if (data?.name !== undefined) vals.name = data.name;
+  if (data?.latitude !== undefined) vals.latitude = parseFloat(data.latitude) || 0;
+  if (data?.longitude !== undefined) vals.longitude = parseFloat(data.longitude) || 0;
+  if (data?.location !== undefined) vals.location = data.location;
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'vehicle.location',
+        method: 'write',
+        args: [[id], vals],
+        kwargs: {},
+      },
+    },
+    { headers }
+  );
+  if (response.data?.error) throw new Error(response.data.error.data?.message || 'Odoo error');
+  return { id, ...vals };
+};
+
+// ---- Validate helpers (state actions) ----
+// Both modules expose `action_validate` on their main model; calling it
+// flips the record into Validated state. Used by the form's admin-only
+// Validate button. Online-only — offline validate isn't supported (rare).
+export const validateVehicleTrackingOdoo = async (id) => {
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'vehicle.tracking',
+        method: 'action_validate',
+        args: [[id]],
+        kwargs: {},
+      },
+    },
+    { headers }
+  );
+  if (response.data?.error) throw new Error(response.data.error.data?.message || 'Odoo error');
+  return true;
+};
+
+export const validateVehicleMaintenanceOdoo = async (id) => {
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'cash.collection',
+        method: 'action_validate',
+        args: [[id]],
+        kwargs: {},
+      },
+    },
+    { headers }
+  );
+  if (response.data?.error) throw new Error(response.data.error.data?.message || 'Odoo error');
+  return true;
+};
+
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {
-  const baseUrl = (VEHICLE_TRACKING_BASE_URL || '').replace(/\/$/, '');
+  const baseUrl = (VEHICLE_TRACKING_BASE_URL() || '').replace(/\/$/, '');
   // Defensive: ensure payload is a valid object
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     console.error('createVehicleTrackingTripOdoo: Invalid payload', payload);
     throw new Error('Trip payload is invalid (must be a non-null object)');
+  }
+
+  // Offline branch — only for fresh creates (no existing payload.id).
+  // Edits/updates of an existing trip require the network.
+  try {
+    const networkStatus = require('@utils/networkStatus').default;
+    const online = await networkStatus.isOnline();
+    if (!online && (typeof payload.id === 'undefined' || payload.id === null || payload.id === '')) {
+      const offlineQueue = require('@utils/offlineQueue').default;
+      const offLabel = await _nextOffLabel({
+        counterKey: '@cache:vt_off_counter',
+        cacheKey: '@cache:vehicleTrackingTrips',
+        scope: 'vehicleTracking',
+      });
+      // Stamp the offline label + denormalized names so the cached pending
+      // row shows them without needing a server fetch.
+      const enrichedValues = {
+        ...payload,
+        offline_label: offLabel,
+        _vehicleName: payload._vehicleName || '',
+        _driverName: payload._driverName || '',
+        _sourceName: payload._sourceName || '',
+        _destinationName: payload._destinationName || '',
+      };
+      const localId = await offlineQueue.enqueue({
+        model: 'vehicle.tracking',
+        operation: 'create',
+        values: enrichedValues,
+      });
+      console.log('[vehicle.tracking] OFFLINE queued create localId=' + localId + ' offLabel=' + offLabel);
+      return { id: 'offline_' + localId, ref: offLabel, offline: true };
+    }
+  } catch (e) {
+    console.log('[vehicle.tracking] offline-branch check failed, falling through to online path:', e?.message);
   }
   // Ensure vehicle_id is present for updates
   if (typeof payload.id !== 'undefined' && (typeof payload.vehicle_id === 'undefined' || payload.vehicle_id === null || payload.vehicle_id === '')) {
@@ -199,12 +541,12 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
   try {
     // Step 1: Authenticate to Odoo
     const loginResp = await loginVehicleTrackingOdoo({ username, password, db });
-    // Build trip payload by removing fields that belong to vehicle.fuel.log or are invalid for vehicle.tracking
-    const tripPayload = { ...payload };
-    
-    // ✅ FIX: Convert many2one field IDs to integers BEFORE removing fuel fields
-    if (tripPayload.vehicle_id) {
-      tripPayload.vehicle_id = typeof tripPayload.vehicle_id === 'string' 
+// Build trip payload by removing fields that belong to vehicle.fuel.log or are invalid for vehicle.tracking
+const tripPayload = { ...payload };
+
+// ✅ FIX: Convert many2one field IDs to integers BEFORE removing fuel fields
+if (tripPayload.vehicle_id) {
+  tripPayload.vehicle_id = typeof tripPayload.vehicle_id === 'string' 
         ? parseInt(tripPayload.vehicle_id, 10) 
         : tripPayload.vehicle_id;
     }
@@ -256,6 +598,13 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
         console.warn('Could not read image_url file for base64 conversion:', readErr?.message || readErr);
       }
     }
+    // CRITICAL: strip empty image_url (and image_filename). Odoo's `fields.Image`
+    // tries to decode the value; an empty string raises
+    // "This file could not be decoded as an image file".
+    if (!tripPayload.image_url || tripPayload.image_url === '') {
+      delete tripPayload.image_url;
+      delete tripPayload.image_filename;
+    }
 
     // Debug: show sanitized trip payload that will be sent to Odoo
     console.log('createVehicleTrackingTripOdoo: Sanitized tripPayload:', JSON.stringify(tripPayload));
@@ -300,7 +649,8 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
         );
         if (resp.data.error) {
           console.error('Odoo JSON-RPC error (update trip):', resp.data.error);
-          throw new Error('Odoo JSON-RPC error');
+          const odooMsg = resp.data.error?.data?.message || resp.data.error?.message || 'Odoo JSON-RPC error';
+          throw new Error(odooMsg);
         }
         // On success, return the id that was updated
         console.log('Odoo updateVehicleTrackingTripOdoo wrote id:', recordId);
@@ -331,7 +681,8 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
       );
       if (response.data.error) {
         console.error('Odoo JSON-RPC error (create trip):', response.data.error);
-        throw new Error('Odoo JSON-RPC error');
+        const odooMsg = response.data.error?.data?.message || response.data.error?.message || 'Odoo JSON-RPC error';
+        throw new Error(odooMsg);
       }
       const tripIdRaw = response.data.result;
       tripId = Array.isArray(tripIdRaw) ? tripIdRaw[0] : (Number.isFinite(Number(tripIdRaw)) ? Number(Number(tripIdRaw)) : tripIdRaw);
@@ -339,6 +690,7 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
     }
 
     // If payload included fuel details, map them to vehicle.fuel.log and create a record
+    let createdFuelLog = null;
     try {
       const hasFuel = payload && (payload.fuel_amount || payload.fuel_liters || payload.fuel_litres || payload.current_odometer);
       if (hasFuel) {
@@ -413,19 +765,42 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
           );
           // Log full response for visibility
           try {
-            console.log('vehicle.fuel.log create response:', JSON.stringify(fuelResp.data));
+            console.log('[fuel.log] create response:', JSON.stringify(fuelResp.data));
           } catch (e) {
-            console.log('vehicle.fuel.log create response (non-json)');
+            console.log('[fuel.log] create response (non-json)');
           }
           if (fuelResp.data && fuelResp.data.result) {
-            console.log('vehicle.fuel.log created id:', fuelResp.data.result);
+            const newLogId = Array.isArray(fuelResp.data.result) ? fuelResp.data.result[0] : fuelResp.data.result;
+            console.log('[fuel.log] created id:', newLogId, 'linked to trip', tripId);
+            // Snapshot the just-created log so the caller can append it to the
+            // form's Fuel List without a re-fetch.
+            createdFuelLog = {
+              id: newLogId,
+              amount: fuelPayload.amount || 0,
+              fuel_level: fuelPayload.fuel_level || 0,
+              odometer: fuelPayload.odometer || 0,
+              create_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
+              driver_name: payload._driverName || '',
+            };
           } else if (fuelResp.data && fuelResp.data.error) {
-            console.warn('vehicle.fuel.log creation error:', fuelResp.data.error);
+            // Surface the Odoo-side reason. Common causes: missing required
+            // field (vehicle_id / driver_id / amount / fuel_level), invalid
+            // many2one id, or fuel_log permissions.
+            const err = fuelResp.data.error;
+            const odooMsg = err?.data?.message || err?.message || 'Unknown Odoo error';
+            console.error('[fuel.log] CREATION FAILED:', odooMsg, 'payload sent was:', JSON.stringify(fuelPayload));
+            throw new Error('Fuel log: ' + odooMsg);
           }
+        } else {
+          console.warn('[fuel.log] payload too sparse — skipping create:', JSON.stringify(fuelPayload));
         }
+      } else {
+        console.log('[fuel.log] hasFuel=false — no fuel data on payload, skipping');
       }
     } catch (e) {
-      console.warn('Failed to create vehicle.fuel.log:', e?.message || e);
+      console.error('[fuel.log] EXCEPTION while creating fuel log:', e?.message || e);
+      // Re-throw so the form's catch block can surface it via toast.
+      throw e;
     }
 
     // Read back the created trip record to verify fields like `image_url` and `vehicle_id` were saved
@@ -453,7 +828,7 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
       console.warn('Failed to read back created vehicle.tracking record:', readErr?.message || readErr);
     }
 
-    return tripId;
+    return { tripId, fuelLog: createdFuelLog };
   } catch (error) {
     console.error('createVehicleTrackingTripOdoo error:', error?.message || error);
     if (error && error.response) {
@@ -462,8 +837,168 @@ export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAUL
     }
     throw error;
   }
-  
+
 };
+
+// Standalone vehicle.fuel.log create — used by the Add Fuel popup which adds
+// one fuel entry against an EXISTING trip without re-saving the whole trip.
+// Returns the created log object on success, throws on failure.
+export const createFuelLogOdoo = async ({
+  tripId,
+  vehicleId,
+  driverId,
+  amount,
+  fuelLevel,
+  odometer,
+  odometerImageUri,
+  fuelInvoiceUri,
+  gpsLat,
+  gpsLong,
+  username = DEFAULT_VEHICLE_TRACKING_USERNAME,
+  password = DEFAULT_VEHICLE_TRACKING_PASSWORD,
+  db = DEFAULT_VEHICLE_TRACKING_DB,
+} = {}) => {
+  if (!tripId) throw new Error('tripId is required to create a fuel log');
+  const baseUrl = (VEHICLE_TRACKING_BASE_URL() || '').replace(/\/$/, '');
+  const loginResp = await loginVehicleTrackingOdoo({ username, password, db });
+  const headers = await getOdooAuthHeaders();
+  if (loginResp && loginResp.cookies) headers.Cookie = loginResp.cookies;
+
+  const fuelPayload = {
+    vehicle_tracking_id: Number(tripId),
+    vehicle_id: vehicleId ? Number(vehicleId) : undefined,
+    driver_id: driverId ? Number(driverId) : undefined,
+    amount: amount != null && amount !== '' ? Number(amount) : undefined,
+    fuel_level: fuelLevel != null && fuelLevel !== '' ? Number(fuelLevel) : undefined,
+    odometer: odometer != null && odometer !== '' ? Number(odometer) : undefined,
+    gps_lat: gpsLat || undefined,
+    gps_long: gpsLong || undefined,
+  };
+
+  // Optional images — convert local file URI to base64.
+  const readB64 = async (uri) => {
+    if (!uri || (!uri.startsWith('file://') && !uri.startsWith('/'))) return null;
+    try {
+      const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+      return b64 && b64.length > 0 ? b64 : null;
+    } catch (e) {
+      console.warn('[fuel.log] failed to read file for base64:', e?.message);
+      return null;
+    }
+  };
+  // Lift these to outer scope so we can reuse the in-memory base64 in the
+  // snapshot return, regardless of whether Odoo's read-back gives us anything.
+  let uploadedOdometerB64 = null;
+  let uploadedReceiptB64 = null;
+  if (odometerImageUri) {
+    const b64 = await readB64(odometerImageUri);
+    if (b64) {
+      uploadedOdometerB64 = b64;
+      fuelPayload.odometer_image = b64;
+      const parts = String(odometerImageUri).split('/');
+      fuelPayload.odometer_image_filename = parts[parts.length - 1] || 'odometer.jpg';
+    }
+  }
+  if (fuelInvoiceUri) {
+    const b64 = await readB64(fuelInvoiceUri);
+    if (b64) {
+      uploadedReceiptB64 = b64;
+      // Receipt now lives on its own Binary field (Odoo `fields.Image`); the
+      // legacy `upload_path` Char is no longer written from the app.
+      fuelPayload.receipt_image = b64;
+      const parts = String(fuelInvoiceUri).split('/');
+      fuelPayload.receipt_image_filename = parts[parts.length - 1] || 'receipt.jpg';
+    }
+  }
+  console.log('[createFuelLogOdoo] uploaded odometer b64 len=', uploadedOdometerB64?.length || 0,
+    'receipt b64 len=', uploadedReceiptB64?.length || 0);
+
+  Object.keys(fuelPayload).forEach(k => fuelPayload[k] === undefined && delete fuelPayload[k]);
+
+  console.log('[createFuelLogOdoo] payload:', JSON.stringify({ ...fuelPayload, odometer_image: fuelPayload.odometer_image ? '<base64 omitted>' : undefined }));
+
+  const resp = await axios.post(
+    `${baseUrl}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        model: 'vehicle.fuel.log',
+        method: 'create',
+        args: [[fuelPayload]],
+        kwargs: {},
+      },
+    },
+    { headers, withCredentials: true, timeout: 15000 }
+  );
+  if (resp.data?.error) {
+    const err = resp.data.error;
+    const msg = err?.data?.message || err?.message || 'Unknown Odoo error';
+    console.error('[createFuelLogOdoo] FAILED:', msg);
+    throw new Error('Fuel log: ' + msg);
+  }
+  const newId = Array.isArray(resp.data?.result) ? resp.data.result[0] : resp.data?.result;
+  if (!newId) throw new Error('Fuel log: no id returned from Odoo');
+  console.log('[createFuelLogOdoo] created id:', newId);
+
+  // Re-read the just-saved log with bin_size:false so we get the canonical
+  // base64 from Odoo. Falls back to the local file URIs if read-back fails.
+  let serverImages = { odometer_image: null, receipt_image: null };
+  try {
+    const readResp = await axios.post(
+      `${baseUrl}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'vehicle.fuel.log',
+          method: 'read',
+          args: [[newId], ['odometer_image', 'receipt_image', 'name', 'create_date']],
+          kwargs: { context: { bin_size: false } },
+        },
+      },
+      { headers, withCredentials: true, timeout: 20000 }
+    );
+    const row = (readResp.data?.result || [])[0];
+    console.log('[createFuelLogOdoo] read-back:',
+      'odometer type=', typeof row?.odometer_image, 'len=', row?.odometer_image ? String(row.odometer_image).length : 0,
+      '| receipt type=', typeof row?.receipt_image, 'len=', row?.receipt_image ? String(row.receipt_image).length : 0);
+    if (row) {
+      if (row.odometer_image && typeof row.odometer_image === 'string' && row.odometer_image.length > 0) {
+        serverImages.odometer_image = `data:image/jpeg;base64,${row.odometer_image}`;
+      }
+      if (row.receipt_image && typeof row.receipt_image === 'string' && row.receipt_image.length > 0) {
+        serverImages.receipt_image = `data:image/jpeg;base64,${row.receipt_image}`;
+      }
+    }
+  } catch (readErr) {
+    console.warn('[createFuelLogOdoo] read-back failed:', readErr?.message);
+  }
+
+  // Use the in-memory base64 we already read for the upload — bulletproof
+  // fallback if the server read-back returns nothing.
+  const localOdometerDataUri = uploadedOdometerB64 ? `data:image/jpeg;base64,${uploadedOdometerB64}` : null;
+  const localReceiptDataUri  = uploadedReceiptB64  ? `data:image/jpeg;base64,${uploadedReceiptB64}`  : null;
+
+  const snapshot = {
+    id: newId,
+    amount: fuelPayload.amount || 0,
+    fuel_level: fuelPayload.fuel_level || 0,
+    odometer: fuelPayload.odometer || 0,
+    create_date: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    driver_name: '',
+    gps_lat: fuelPayload.gps_lat || '',
+    gps_long: fuelPayload.gps_long || '',
+    // Priority: Odoo read-back → in-memory upload base64 → raw local file URI.
+    odometer_image: serverImages.odometer_image || localOdometerDataUri || odometerImageUri || null,
+    receipt_image:  serverImages.receipt_image  || localReceiptDataUri  || fuelInvoiceUri  || null,
+  };
+  console.log('[createFuelLogOdoo] returning snapshot — odometer_image len=',
+    snapshot.odometer_image ? String(snapshot.odometer_image).length : 0,
+    'receipt_image len=', snapshot.receipt_image ? String(snapshot.receipt_image).length : 0);
+  return snapshot;
+};
+
 // api/services/generalApi.js
 import axios from "axios";
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -472,7 +1007,7 @@ import ODOO_BASE_URL, { DEFAULT_ODOO_DB, DEFAULT_USERNAME, DEFAULT_PASSWORD } fr
 import VEHICLE_TRACKING_BASE_URL, { DEFAULT_VEHICLE_TRACKING_DB, DEFAULT_VEHICLE_TRACKING_USERNAME, DEFAULT_VEHICLE_TRACKING_PASSWORD } from '@api/config/vehicleTrackingConfig';
 // Helper: Authenticate to vehicle tracking Odoo DB and return session cookie
 export const loginVehicleTrackingOdoo = async ({ username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {
-  const baseUrl = (VEHICLE_TRACKING_BASE_URL || '').replace(/\/$/, '');
+  const baseUrl = (VEHICLE_TRACKING_BASE_URL() || '').replace(/\/$/, '');
   // Since vehicle tracking uses the same Odoo server, reuse the existing session cookie
   try {
     const stored = await AsyncStorage.getItem('odoo_cookie');
@@ -4426,7 +4961,7 @@ export const fetchVehiclesVehicleTracking = async ({ offset = 0, limit = 50, sea
     const term = searchText.trim();
     domain = [["name", "ilike", term]];
   }
-  const baseUrl = (VEHICLE_TRACKING_BASE_URL || '').replace(/\/$/, '');
+  const baseUrl = (VEHICLE_TRACKING_BASE_URL() || '').replace(/\/$/, '');
   try {
     // Step 1: Authenticate and get session cookie
     const loginResp = await loginVehicleTrackingOdoo({ username, password });
@@ -4478,6 +5013,70 @@ export const fetchVehiclesVehicleTracking = async ({ offset = 0, limit = 50, sea
       try { console.error('fetchVehiclesVehicleTracking response data:', error.response.data); } catch (e) {}
     }
     throw error;
+  }
+};
+
+// Resolve any QR / barcode payload to an invoice. Tries (in order):
+//   1. URL with /customer-invoices/<id> or /web#id=<id>&model=account.move
+//   2. Pure integer string  → match by id
+//   3. Anything else         → match by name first, then ref, then number
+// Returns the same shape as fetchInvoiceByIdOdoo, or null if nothing matches.
+export const fetchInvoiceByQrOdoo = async (rawQr) => {
+  try {
+    if (!rawQr || typeof rawQr !== 'string') return null;
+    const text = rawQr.trim();
+    console.log('[fetchInvoiceByQrOdoo] scanned payload:', text);
+
+    // Strategy 1 — URL containing the id
+    const urlMatch =
+      text.match(/\/customer-invoices\/(\d+)/) ||
+      text.match(/[?#&]id=(\d+)/);
+    if (urlMatch) {
+      const id = parseInt(urlMatch[1], 10);
+      if (id > 0) {
+        const inv = await fetchInvoiceByIdOdoo(id);
+        if (inv) return inv;
+      }
+    }
+
+    // Strategy 2 — pure integer
+    if (/^\d+$/.test(text)) {
+      const inv = await fetchInvoiceByIdOdoo(parseInt(text, 10));
+      if (inv) return inv;
+    }
+
+    // Strategy 3 — search account.move by name / ref
+    const headers = await getOdooAuthHeaders();
+    const domain = ['|', '|',
+      ['name', '=', text],
+      ['ref',  '=', text],
+      ['name', 'ilike', text],
+    ];
+    const resp = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'account.move',
+          method: 'search_read',
+          args: [domain],
+          kwargs: { fields: ['id'], limit: 1 },
+        },
+      },
+      { headers }
+    );
+    if (!resp.data.error) {
+      const hit = (resp.data.result || [])[0];
+      if (hit && hit.id) return await fetchInvoiceByIdOdoo(hit.id);
+    } else {
+      console.log('[fetchInvoiceByQrOdoo] name/ref search error:', resp.data.error);
+    }
+
+    return null;
+  } catch (err) {
+    console.error('fetchInvoiceByQrOdoo error:', err?.message || err);
+    return null;
   }
 };
 
@@ -9225,10 +9824,12 @@ export const fetchVehicleMaintenanceOdoo = async (params = {}) => {
               'id', 'ref', 'date', 'vehicle_id', 'driver_id', 'number_plate',
               'maintenance_type_id', 'company_id', 'current_km', 'amount',
               'handover_from', 'handover_to', 'image_url', 'remarks',
+              'handover_to_partner_id',
+              'is_validated', 'validated_by', 'validation_date',
             ],
             offset,
             limit,
-            order: 'date desc',
+            order: 'date desc, id desc',
           },
         },
       },
@@ -9238,7 +9839,7 @@ export const fetchVehicleMaintenanceOdoo = async (params = {}) => {
       throw new Error(response.data.error.data?.message || 'Odoo JSON-RPC error');
     }
     const records = response.data.result || [];
-    return records.map(r => ({
+    const mapped = records.map(r => ({
       id: r.id,
       ref: r.ref || '',
       date: r.date || '',
@@ -9249,6 +9850,8 @@ export const fetchVehicleMaintenanceOdoo = async (params = {}) => {
       number_plate: r.number_plate || '',
       maintenance_type_id: Array.isArray(r.maintenance_type_id) ? r.maintenance_type_id[0] : null,
       maintenance_type_name: Array.isArray(r.maintenance_type_id) ? r.maintenance_type_id[1] : '',
+      handover_to_partner_id: Array.isArray(r.handover_to_partner_id) ? r.handover_to_partner_id[0] : null,
+      handover_to_partner_name: Array.isArray(r.handover_to_partner_id) ? r.handover_to_partner_id[1] : '',
       company_id: Array.isArray(r.company_id) ? r.company_id[0] : null,
       current_km: r.current_km || 0,
       amount: r.amount || 0,
@@ -9256,15 +9859,117 @@ export const fetchVehicleMaintenanceOdoo = async (params = {}) => {
       handover_to: r.handover_to || null,
       image_url: r.image_url || '',
       remarks: r.remarks || '',
+      is_validated: !!r.is_validated,
+      validated_by: Array.isArray(r.validated_by) ? r.validated_by[1] : '',
+      validation_date: r.validation_date || '',
     }));
+    if (!date) {
+      try { await AsyncStorage.setItem('@cache:vehicleMaintenance', JSON.stringify(mapped)); } catch (_) {}
+    }
+    return await _mergeOfflineVehicleMaintenance(mapped, params);
   } catch (error) {
     console.error('fetchVehicleMaintenanceOdoo error:', error?.message || error);
-    throw error;
+    try {
+      const raw = await AsyncStorage.getItem('@cache:vehicleMaintenance');
+      const cached = raw ? JSON.parse(raw) : [];
+      const filtered = _filterVehicleMaintenanceLocal(cached, params);
+      console.log('[fetchVehicleMaintenance] OFFLINE — cached=' + cached.length + ' after-filter=' + filtered.length);
+      return await _mergeOfflineVehicleMaintenance(filtered, params);
+    } catch (_) {
+      return [];
+    }
+  }
+};
+
+const _filterVehicleMaintenanceLocal = (rows, { date } = {}) => {
+  if (!Array.isArray(rows)) return [];
+  const dayOf = (s) => (typeof s === 'string' ? s.slice(0, 10) : '');
+  return rows.filter((r) => {
+    if (date && dayOf(r.date) !== date) return false;
+    return true;
+  });
+};
+
+const _mergeOfflineVehicleMaintenance = async (serverList, params = {}) => {
+  try {
+    const offlineQueue = require('@utils/offlineQueue').default;
+    const queue = await offlineQueue.getAll();
+    const pending = (queue || [])
+      .filter(q => q.model === 'cash.collection' && q.operation === 'create')
+      .map(q => ({
+        id: 'offline_' + q.id,
+        ref: q.values?.offline_label || 'OFF',
+        offline_label: q.values?.offline_label || null,
+        date: q.values?.date || '',
+        vehicle_id: q.values?.vehicle_id || null,
+        vehicle_name: q.values?._vehicleName || '',
+        driver_id: q.values?.driver_id || null,
+        driver_name: q.values?._driverName || '',
+        number_plate: q.values?.number_plate || '',
+        maintenance_type_id: q.values?.maintenance_type_id || null,
+        maintenance_type_name: q.values?._maintenanceTypeName || '',
+        handover_to_partner_id: q.values?.handover_to_partner_id || null,
+        handover_to_partner_name: q.values?._handoverToPartnerName || '',
+        current_km: q.values?.current_km || 0,
+        amount: q.values?.amount || 0,
+        remarks: q.values?.remarks || '',
+        is_validated: false,
+        validated_by: '',
+        validation_date: '',
+        offline: true,
+        offlineQueueId: q.id,
+      }));
+    const filteredPending = params.date
+      ? _filterVehicleMaintenanceLocal(pending, params)
+      : pending;
+    let labelMap = {};
+    try {
+      const raw = await AsyncStorage.getItem('@cache:offlineLabels:vehicleMaintenance');
+      labelMap = raw ? JSON.parse(raw) : {};
+    } catch (_) {}
+    const decoratedServer = (serverList || []).map((v) => ({
+      ...v,
+      offline_label: labelMap[String(v.id)] || v.offline_label || null,
+    }));
+    return [...filteredPending, ...decoratedServer];
+  } catch (e) {
+    console.log('[fetchVehicleMaintenance] merge offline failed:', e?.message);
+    return serverList || [];
   }
 };
 
 // Create or update a vehicle maintenance record (cash.collection)
 export const createVehicleMaintenanceOdoo = async ({ payload, username, password, db } = {}) => {
+  // Offline branch — fresh creates only.
+  try {
+    const networkStatus = require('@utils/networkStatus').default;
+    const online = await networkStatus.isOnline();
+    if (!online && payload && (typeof payload.id === 'undefined' || payload.id === null || payload.id === '')) {
+      const offlineQueue = require('@utils/offlineQueue').default;
+      const offLabel = await _nextOffLabel({
+        counterKey: '@cache:vm_off_counter',
+        cacheKey: '@cache:vehicleMaintenance',
+        scope: 'vehicleMaintenance',
+      });
+      const enrichedValues = {
+        ...payload,
+        offline_label: offLabel,
+        _vehicleName: payload?._vehicleName || '',
+        _driverName: payload?._driverName || '',
+        _maintenanceTypeName: payload?._maintenanceTypeName || '',
+        _handoverToPartnerName: payload?._handoverToPartnerName || '',
+      };
+      const localId = await offlineQueue.enqueue({
+        model: 'cash.collection',
+        operation: 'create',
+        values: enrichedValues,
+      });
+      console.log('[cash.collection] OFFLINE queued create localId=' + localId + ' offLabel=' + offLabel);
+      return { id: 'offline_' + localId, ref: offLabel, offline: true };
+    }
+  } catch (e) {
+    console.log('[cash.collection] offline-branch check failed, falling through:', e?.message);
+  }
   try {
     const loginResp = await loginVehicleTrackingOdoo({ username, password, db });
     const baseUrl = (ODOO_BASE_URL() || '').replace(/\/$/, '');

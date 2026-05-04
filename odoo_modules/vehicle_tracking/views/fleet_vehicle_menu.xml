@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <menuitem
+      id="menu_vehicle_tracking_vehicles"
+      name="Vehicles"
+      parent="vehicle_tracking.menu_vehicle_tracking_root"
+      action="fleet.fleet_vehicle_action"
+      sequence="15"
+      groups="base.group_user"/>
+</odoo>

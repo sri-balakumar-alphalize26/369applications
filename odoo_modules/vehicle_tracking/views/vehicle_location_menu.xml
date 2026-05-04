@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+  <!-- Vehicle Locations menu inside the Vehicle Tracking module nav,
+       reusing the action defined in the vehicle_location dependency. -->
+  <menuitem
+      id="menu_vehicle_tracking_locations"
+      name="Vehicle Locations"
+      parent="vehicle_tracking.menu_vehicle_tracking_root"
+      action="vehicle_location.vehicle_location_action"
+      sequence="25"
+      groups="base.group_user"/>
+</odoo>

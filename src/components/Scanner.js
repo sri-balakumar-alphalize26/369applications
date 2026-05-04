@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { BarCodeScanner } from 'expo-barcode-scanner';
+import { Camera } from 'expo-camera';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
 import { COLORS, FONT_FAMILY } from '@constants/theme';
@@ -16,7 +16,7 @@ const Scanner = ({ navigation, route }) => {
 
   useEffect(() => {
     (async () => {
-      const { status } = await BarCodeScanner.requestPermissionsAsync();
+      const { status } = await Camera.requestCameraPermissionsAsync();
       setHasPermission(status === 'granted');
     })();
   }, []);
@@ -98,17 +98,19 @@ const Scanner = ({ navigation, route }) => {
       />
       <OfflineBanner message="OFFLINE MODE — scanning from cached products" />
       <View style={styles.cameraContainer}>
-        <BarCodeScanner
+        <Camera
           style={StyleSheet.absoluteFillObject}
-          barCodeTypes={[
-            BarCodeScanner.Constants.BarCodeType.ean13,
-            BarCodeScanner.Constants.BarCodeType.ean8,
-            BarCodeScanner.Constants.BarCodeType.upc_a,
-            BarCodeScanner.Constants.BarCodeType.upc_e,
-            BarCodeScanner.Constants.BarCodeType.code39,
-            BarCodeScanner.Constants.BarCodeType.code128,
-            BarCodeScanner.Constants.BarCodeType.qr,
-          ]}
+          barCodeScannerSettings={{
+            barCodeTypes: [
+              'ean13',
+              'ean8',
+              'upc_a',
+              'upc_e',
+              'code39',
+              'code128',
+              'qr',
+            ],
+          }}
           onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
         />
         <View style={styles.overlay}>

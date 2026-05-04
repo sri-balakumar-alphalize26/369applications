@@ -67,7 +67,7 @@
                     </div>
                     <group>
                         <group string="Fuel Entry">
-                            <field name="fuel_log_id"/>
+                            <field name="fuel_log_id" required="1"/>
                             <field name="driver_id"/>
                             <field name="vehicle_id"/>
                         </group>

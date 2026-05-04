@@ -7,6 +7,8 @@ import * as ImagePicker from 'expo-image-picker';
 import SignatureScreen from 'react-native-signature-canvas';
 import { NavigationHeader } from '@components/Header';
 import { SafeAreaView } from '@components/containers';
+import OfflineBanner from '@components/common/OfflineBanner';
+import StyledAlertModal from '@components/Modal/StyledAlertModal';
 import { TextInput as FormInput } from '@components/common/TextInput';
 import { LoadingButton } from '@components/common/Button';
 import Text from '@components/Text';
@@ -20,7 +22,9 @@ import {
   fetchPartnersOdoo,
   createVehicleMaintenanceOdoo,
   fetchMaintenanceTypesOdoo,
+  validateVehicleMaintenanceOdoo,
 } from '@api/services/generalApi';
+import { useAuthStore } from '@stores/auth';
 
 const VehicleMaintenanceForm = ({ navigation, route }) => {
   const existingData = route?.params?.maintenanceData || null;
@@ -62,6 +66,41 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
   const [loading, setLoading] = useState(false);
   const [signatureModal, setSignatureModal] = useState({ visible: false, field: null });
   const signatureRef = useRef(null);
+
+  // Validate-confirm popup state for the admin Validate button.
+  const [validateModalVisible, setValidateModalVisible] = useState(false);
+  const [recordState, setRecordState] = useState({
+    is_validated: !!existingData?.is_validated,
+    validated_by: existingData?.validated_by || '',
+    validation_date: existingData?.validation_date || '',
+  });
+  const currentUser = useAuthStore((state) => state.user);
+  const isAdmin = !!(currentUser?.is_admin || currentUser?.related_profile?.is_admin
+    || (Array.isArray(currentUser?.roles) && currentUser.roles.includes('admin')));
+
+  const handleValidate = async () => {
+    if (!existingData?.id || typeof existingData.id !== 'number') {
+      showToastMessage('Save the record first before validating');
+      setValidateModalVisible(false);
+      return;
+    }
+    setValidateModalVisible(false);
+    setLoading(true);
+    try {
+      await validateVehicleMaintenanceOdoo(existingData.id);
+      setRecordState({
+        is_validated: true,
+        validated_by: currentUser?.name || 'You',
+        validation_date: new Date().toISOString().slice(0, 10),
+      });
+      showToastMessage('Record validated');
+    } catch (e) {
+      console.log('[VehicleMaintenanceForm] validate failed:', e?.message);
+      showToastMessage('Validate failed: ' + (e?.message || ''));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     loadDropdowns();
@@ -295,6 +334,59 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
         backgroundColor={COLORS.white}
         onBackPress={() => navigation.goBack()}
       />
+      <OfflineBanner message="OFFLINE — new maintenance records will sync when online" />
+
+      {/* Reference + validation header — only when editing an existing record */}
+      {isEditMode && (existingData?.ref || existingData?.offline_label || recordState.is_validated) ? (
+        <View style={{
+          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+          paddingHorizontal: 14, paddingVertical: 10,
+          backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+        }}>
+          <View style={{ flex: 1 }}>
+            {existingData?.ref ? (
+              <Text style={{ color: COLORS.primaryThemeColor, fontFamily: FONT_FAMILY.urbanistBold, fontSize: 13 }}>
+                {existingData.ref}
+              </Text>
+            ) : null}
+            {existingData?.offline_label && existingData.offline_label !== existingData.ref ? (
+              <Text style={{ color: '#888', fontFamily: FONT_FAMILY.urbanistMedium, fontSize: 11 }}>
+                Offline ref: {existingData.offline_label}
+              </Text>
+            ) : null}
+            {recordState.is_validated ? (
+              <Text style={{ color: '#666', fontFamily: FONT_FAMILY.urbanistMedium, fontSize: 11, marginTop: 2 }}>
+                Validated by {recordState.validated_by || '-'}{recordState.validation_date ? ' on ' + recordState.validation_date : ''}
+              </Text>
+            ) : null}
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View style={{
+              paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10,
+              backgroundColor: recordState.is_validated ? '#4CAF50' : '#FF9800',
+              marginRight: 8,
+            }}>
+              <Text style={{ color: '#fff', fontFamily: FONT_FAMILY.urbanistBold, fontSize: 10, letterSpacing: 0.5 }}>
+                {recordState.is_validated ? 'VALIDATED' : 'PENDING'}
+              </Text>
+            </View>
+            {isAdmin && !recordState.is_validated && typeof existingData?.id === 'number' ? (
+              <TouchableOpacity
+                onPress={() => setValidateModalVisible(true)}
+                style={{
+                  paddingHorizontal: 12, paddingVertical: 7,
+                  backgroundColor: COLORS.primaryThemeColor, borderRadius: 6,
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={{ color: '#fff', fontFamily: FONT_FAMILY.urbanistBold, fontSize: 12 }}>
+                  Validate
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
 
       <ScrollView
         style={styles.scrollView}
@@ -578,6 +670,16 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
       </Modal>
 
       <OverlayLoader visible={loading} />
+
+      {/* Admin validate confirmation popup */}
+      <StyledAlertModal
+        isVisible={validateModalVisible}
+        message={'Validate this maintenance record? Once validated, it will be locked.'}
+        confirmText="VALIDATE"
+        cancelText="CANCEL"
+        onConfirm={handleValidate}
+        onCancel={() => setValidateModalVisible(false)}
+      />
     </SafeAreaView>
   );
 };

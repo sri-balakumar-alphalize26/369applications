@@ -1,4 +1,6 @@
-<odoo>
+<odoo noupdate="1">
+    <!-- noupdate="1" prevents Odoo from resetting `number_next` to 1 on every
+         module upgrade — without it, upgrades produce duplicate VT-0001 refs. -->
     <record id="seq_vehicle_tracking" model="ir.sequence">
         <field name="name">Vehicle Tracking Sequence</field>
         <field name="code">vehicle.tracking.seq</field>

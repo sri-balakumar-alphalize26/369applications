@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+  <!-- LIST VIEW -->
+  <record id="view_vehicle_purpose_list" model="ir.ui.view">
+    <field name="name">vehicle.purpose.list</field>
+    <field name="model">vehicle.purpose</field>
+    <field name="arch" type="xml">
+      <list string="Purposes of Visit" editable="bottom">
+        <field name="name" required="1"/>
+      </list>
+    </field>
+  </record>
+
+  <!-- FORM VIEW -->
+  <record id="view_vehicle_purpose_form" model="ir.ui.view">
+    <field name="name">vehicle.purpose.form</field>
+    <field name="model">vehicle.purpose</field>
+    <field name="arch" type="xml">
+      <form string="Purpose of Visit">
+        <sheet>
+          <group>
+            <field name="name" required="1"/>
+          </group>
+        </sheet>
+      </form>
+    </field>
+  </record>
+
+  <!-- WINDOW ACTION -->
+  <record id="action_vehicle_purpose" model="ir.actions.act_window">
+    <field name="name">Purposes of Visit</field>
+    <field name="res_model">vehicle.purpose</field>
+    <field name="view_mode">list,form</field>
+    <field name="help" type="html">
+      <p class="o_view_nocontent_smiling_face">
+        Add a new Purpose of Visit
+      </p>
+      <p>
+        Purposes appear in the "Purpose of Visit" dropdown on Vehicle Tracking trips.
+      </p>
+    </field>
+  </record>
+
+  <!-- MENU under Vehicle Tracking root -->
+  <menuitem
+      id="menu_vehicle_purpose"
+      name="Purposes of Visit"
+      parent="vehicle_tracking.menu_vehicle_tracking_root"
+      action="vehicle_tracking.action_vehicle_purpose"
+      sequence="20"
+      groups="base.group_user"/>
+
+</odoo>

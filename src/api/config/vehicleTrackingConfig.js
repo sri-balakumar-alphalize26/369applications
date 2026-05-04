@@ -1,20 +1,17 @@
 // src/api/config/vehicleTrackingConfig.js
 // Uses the same Odoo server as the main app (odooConfig.js)
 
-import ODOO_BASE_URL, { DEFAULT_ODOO_DB, DEFAULT_USERNAME, DEFAULT_PASSWORD } from './odooConfig';
+import getOdooBaseUrl, { DEFAULT_ODOO_DB, DEFAULT_USERNAME, DEFAULT_PASSWORD } from './odooConfig';
 
-const VEHICLE_TRACKING_BASE_URL = ODOO_BASE_URL;
 const DEFAULT_VEHICLE_TRACKING_DB = DEFAULT_ODOO_DB;
 const DEFAULT_VEHICLE_TRACKING_USERNAME = DEFAULT_USERNAME;
 const DEFAULT_VEHICLE_TRACKING_PASSWORD = DEFAULT_PASSWORD;
 
-// Named export for default base URL for backward compatibility
-const DEFAULT_VEHICLE_TRACKING_BASE_URL = VEHICLE_TRACKING_BASE_URL;
-
 export {
-  DEFAULT_VEHICLE_TRACKING_BASE_URL,
   DEFAULT_VEHICLE_TRACKING_DB,
   DEFAULT_VEHICLE_TRACKING_USERNAME,
   DEFAULT_VEHICLE_TRACKING_PASSWORD,
 };
-export default VEHICLE_TRACKING_BASE_URL;
+
+// Default export is the getter function — callers must invoke it: VEHICLE_TRACKING_BASE_URL()
+export default getOdooBaseUrl;

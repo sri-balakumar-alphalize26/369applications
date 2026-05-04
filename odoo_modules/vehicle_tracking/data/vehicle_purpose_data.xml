@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+  <record id="vehicle_purpose_delivery" model="vehicle.purpose">
+    <field name="name">Delivery</field>
+  </record>
+
+  <record id="vehicle_purpose_pickup" model="vehicle.purpose">
+    <field name="name">Pickup</field>
+  </record>
+
+  <record id="vehicle_purpose_customer_visit" model="vehicle.purpose">
+    <field name="name">Customer Visit</field>
+  </record>
+
+  <record id="vehicle_purpose_site_visit" model="vehicle.purpose">
+    <field name="name">Site Visit</field>
+  </record>
+
+  <record id="vehicle_purpose_meeting" model="vehicle.purpose">
+    <field name="name">Meeting</field>
+  </record>
+
+  <record id="vehicle_purpose_service" model="vehicle.purpose">
+    <field name="name">Service / Maintenance</field>
+  </record>
+
+  <record id="vehicle_purpose_office" model="vehicle.purpose">
+    <field name="name">Office Visit</field>
+  </record>
+
+  <record id="vehicle_purpose_other" model="vehicle.purpose">
+    <field name="name">Other</field>
+  </record>
+
+</odoo>

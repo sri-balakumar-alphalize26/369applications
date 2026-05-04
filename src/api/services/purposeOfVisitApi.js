@@ -13,7 +13,7 @@ export const fetchPurposeOfVisitDropdown = async () => {
       // ignore
     }
     const response = await axios.post(
-      `${ODOO_BASE_URL}/web/dataset/call_kw`,
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
       {
         jsonrpc: '2.0',
         method: 'call',

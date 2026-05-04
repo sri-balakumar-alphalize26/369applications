@@ -553,6 +553,164 @@ const syncItemDirectly = async (item) => {
         return targetId;
     }
 
+    // vehicle.tracking create — fresh trip created while offline.
+    if (item.model === 'vehicle.tracking' && item.operation === 'create') {
+        const cleanVals = { ...values };
+        ['_vehicleName', '_driverName', '_sourceName', '_destinationName'].forEach(k => delete cleanVals[k]);
+        const offlineLabel = cleanVals.offline_label;
+        delete cleanVals.offline_label;
+        const createResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0', method: 'call',
+                params: {
+                    model: 'vehicle.tracking',
+                    method: 'create',
+                    args: [cleanVals],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 30000 }
+        );
+        if (createResp.data?.error) {
+            const msg = createResp.data.error?.data?.message || createResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        const newId = Array.isArray(createResp.data?.result) ? createResp.data.result[0] : createResp.data.result;
+        console.log('[OfflineSyncService] Created vehicle.tracking id:', newId, 'offline_label:', offlineLabel);
+        try {
+            const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+            const map = mapRaw ? JSON.parse(mapRaw) : {};
+            map[String(item.id)] = newId;
+            await AsyncStorage.setItem('@sync:localToServer', JSON.stringify(map));
+        } catch (_) {}
+        if (offlineLabel) {
+            try {
+                const labelRaw = await AsyncStorage.getItem('@cache:offlineLabels:vehicleTracking');
+                const labelMap = labelRaw ? JSON.parse(labelRaw) : {};
+                labelMap[String(newId)] = offlineLabel;
+                await AsyncStorage.setItem('@cache:offlineLabels:vehicleTracking', JSON.stringify(labelMap));
+            } catch (_) {}
+        }
+        logSyncHistory(baseUrl, headers, { model: 'vehicle.tracking', operation: 'create', values: cleanVals, syncedRecordId: newId }).catch(() => {});
+        return newId;
+    }
+
+    // vehicle.tracking method — for offline action_validate.
+    if (item.model === 'vehicle.tracking' && item.operation === 'method') {
+        let targetId = values.id;
+        if (typeof targetId === 'string' && targetId.startsWith('offline_')) {
+            const localId = targetId.replace(/^offline_/, '');
+            try {
+                const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+                const map = mapRaw ? JSON.parse(mapRaw) : {};
+                const resolved = map[String(localId)];
+                if (!resolved) throw new Error('parent vehicle.tracking not synced yet');
+                targetId = resolved;
+            } catch (e) {
+                throw new Error('vehicle.tracking method resolve failed: ' + e?.message);
+            }
+        }
+        const methodResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0', method: 'call',
+                params: {
+                    model: 'vehicle.tracking',
+                    method: values.method,
+                    args: [[targetId]],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 15000 }
+        );
+        if (methodResp.data?.error) {
+            const msg = methodResp.data.error?.data?.message || methodResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        console.log('[OfflineSyncService] vehicle.tracking.' + values.method + ' on id=' + targetId);
+        return targetId;
+    }
+
+    // cash.collection create — vehicle maintenance record (model is misnamed cash.collection).
+    if (item.model === 'cash.collection' && item.operation === 'create') {
+        const cleanVals = { ...values };
+        ['_vehicleName', '_driverName', '_maintenanceTypeName', '_handoverToPartnerName'].forEach(k => delete cleanVals[k]);
+        const offlineLabel = cleanVals.offline_label;
+        delete cleanVals.offline_label;
+        const createResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0', method: 'call',
+                params: {
+                    model: 'cash.collection',
+                    method: 'create',
+                    args: [cleanVals],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 30000 }
+        );
+        if (createResp.data?.error) {
+            const msg = createResp.data.error?.data?.message || createResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        const newId = Array.isArray(createResp.data?.result) ? createResp.data.result[0] : createResp.data.result;
+        console.log('[OfflineSyncService] Created cash.collection id:', newId, 'offline_label:', offlineLabel);
+        try {
+            const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+            const map = mapRaw ? JSON.parse(mapRaw) : {};
+            map[String(item.id)] = newId;
+            await AsyncStorage.setItem('@sync:localToServer', JSON.stringify(map));
+        } catch (_) {}
+        if (offlineLabel) {
+            try {
+                const labelRaw = await AsyncStorage.getItem('@cache:offlineLabels:vehicleMaintenance');
+                const labelMap = labelRaw ? JSON.parse(labelRaw) : {};
+                labelMap[String(newId)] = offlineLabel;
+                await AsyncStorage.setItem('@cache:offlineLabels:vehicleMaintenance', JSON.stringify(labelMap));
+            } catch (_) {}
+        }
+        logSyncHistory(baseUrl, headers, { model: 'cash.collection', operation: 'create', values: cleanVals, syncedRecordId: newId }).catch(() => {});
+        return newId;
+    }
+
+    // cash.collection method — for offline action_validate.
+    if (item.model === 'cash.collection' && item.operation === 'method') {
+        let targetId = values.id;
+        if (typeof targetId === 'string' && targetId.startsWith('offline_')) {
+            const localId = targetId.replace(/^offline_/, '');
+            try {
+                const mapRaw = await AsyncStorage.getItem('@sync:localToServer');
+                const map = mapRaw ? JSON.parse(mapRaw) : {};
+                const resolved = map[String(localId)];
+                if (!resolved) throw new Error('parent cash.collection not synced yet');
+                targetId = resolved;
+            } catch (e) {
+                throw new Error('cash.collection method resolve failed: ' + e?.message);
+            }
+        }
+        const methodResp = await axios.post(
+            `${baseUrl}/web/dataset/call_kw`,
+            {
+                jsonrpc: '2.0', method: 'call',
+                params: {
+                    model: 'cash.collection',
+                    method: values.method,
+                    args: [[targetId]],
+                    kwargs: {},
+                },
+            },
+            { headers, timeout: 15000 }
+        );
+        if (methodResp.data?.error) {
+            const msg = methodResp.data.error?.data?.message || methodResp.data.error?.message || 'Odoo error';
+            throw new Error(msg);
+        }
+        console.log('[OfflineSyncService] cash.collection.' + values.method + ' on id=' + targetId);
+        return targetId;
+    }
+
     // Banner create
     if (item.model === 'app.banner' && item.operation === 'create') {
         const response = await axios.post(

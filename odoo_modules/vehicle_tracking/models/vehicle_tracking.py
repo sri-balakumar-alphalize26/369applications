@@ -6,7 +6,7 @@ from datetime import datetime
 class VehicleTracking(models.Model):
     _name = 'vehicle.tracking'
     _description = 'Vehicle Tracking'
-    _rec_name = 'vehicle_id'
+    _rec_name = 'ref'
 
     # Header info
     ref = fields.Char(string='Ref', readonly=True, copy=False, default='New')
@@ -64,13 +64,46 @@ class VehicleTracking(models.Model):
     end_latitude = fields.Char(string='End Latitude')
     end_longitude = fields.Char(string='End Longitude')
 
-    image_url = fields.Char(string='Image URL')
+    # `fields.Image` is the proper choice for an image upload widget — it
+    # auto-validates the bytes are a recognised image, sets the right mimetype
+    # on the ir.attachment, and renders cleanly via /web/image/... .
+    # The React Native app already sends base64-encoded image bytes to this
+    # field; Image accepts that the same way Binary does — no app-side change.
+    image_url = fields.Image(string='Trip Image')
+    image_filename = fields.Char(string='Image Filename')
     remarks = fields.Text(string='Remarks')
 
     state = fields.Selection([
         ('draft', 'Draft'),
         ('validated', 'Validated'),
     ], default='draft', string='Status', readonly=True)
+
+    # Lifecycle status derived from start_trip / end_trip / trip_cancel.
+    # Mirrors the React Native app's UI states so the list view shows
+    # "Trip Started", "Trip Ended", "Cancelled" instead of just draft/validated.
+    trip_status = fields.Selection([
+        ('draft', 'Draft'),
+        ('in_progress', 'Trip Started'),
+        ('ended', 'Trip Ended'),
+        ('cancelled', 'Cancelled'),
+    ], string='Trip Status', compute='_compute_trip_status', store=True, readonly=True)
+
+    # Transient (non-stored) flag that the form view watches to enable the
+    # Update Trip button only when the user has unsaved changes. Reset to
+    # False on every record load (default) and after each successful write.
+    is_dirty = fields.Boolean(string='Is Dirty', store=False, default=False)
+
+    @api.depends('start_trip', 'end_trip', 'trip_cancel')
+    def _compute_trip_status(self):
+        for rec in self:
+            if rec.trip_cancel:
+                rec.trip_status = 'cancelled'
+            elif rec.end_trip:
+                rec.trip_status = 'ended'
+            elif rec.start_trip:
+                rec.trip_status = 'in_progress'
+            else:
+                rec.trip_status = 'draft'
 
     # Compute fields
     @api.depends('start_km', 'end_km')
@@ -86,6 +119,19 @@ class VehicleTracking(models.Model):
                 rec.duration = round(delta.total_seconds() / 3600, 2)
             else:
                 rec.duration = 0.0
+
+    @api.onchange(
+        'date', 'vehicle_id', 'driver_id', 'number_plate',
+        'source_id', 'destination_id', 'start_km', 'end_km', 'purpose_of_visit_id',
+        'start_time', 'end_time', 'invoice_number', 'amount', 'estimated_time',
+        'coolant_water', 'oil_checking', 'tyre_checking',
+        'battery_checking', 'daily_checks', 'fuel_checking',
+        'image_url', 'remarks', 'invoice_line_ids',
+    )
+    def _onchange_mark_dirty(self):
+        # Flip the transient flag so the view's `disabled="not is_dirty"` on the
+        # Update Trip button enables instantly when the user edits any field.
+        self.is_dirty = True
 
     @api.onchange('vehicle_id')
     def _onchange_vehicle_id(self):
@@ -125,9 +171,19 @@ class VehicleTracking(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
-            # Assign sequence
+            # Assign sequence — and skip past any ref that already exists on
+            # another record (defensive: a previously-reset sequence could
+            # otherwise hand out a duplicate VT-0001).
             if vals.get('ref', 'New') == 'New' or not vals.get('ref'):
-                vals['ref'] = self.env['ir.sequence'].next_by_code('vehicle.tracking.seq')
+                seq = self.env['ir.sequence']
+                next_ref = seq.next_by_code('vehicle.tracking.seq') or 'New'
+                # Up to 50 retries should be more than enough to walk past
+                # any existing duplicates on a freshly-reset sequence.
+                for _ in range(50):
+                    if not self.search_count([('ref', '=', next_ref)]):
+                        break
+                    next_ref = seq.next_by_code('vehicle.tracking.seq') or 'New'
+                vals['ref'] = next_ref
             # Set tank capacity from vehicle
             if vals.get('vehicle_id'):
                 vehicle = self.env['fleet.vehicle'].browse(vals['vehicle_id'])
@@ -135,9 +191,28 @@ class VehicleTracking(models.Model):
             # Fuel checking validation
             if not vals.get('fuel_checking'):
                 raise UserError("Fuel checking is not updated")
+            # Default image_filename when the app sends image_url without one.
+            if vals.get('image_url') and not vals.get('image_filename'):
+                vals['image_filename'] = 'trip_image.jpg'
         return super(VehicleTracking, self).create(vals_list)
 
+    # Fields that lifecycle buttons (End / Cancel / Reset to Draft) are allowed
+    # to change even on a finalized record. Anything else is locked.
+    _LIFECYCLE_FIELDS = {'start_trip', 'end_trip', 'trip_cancel', 'state', 'end_time'}
+
     def write(self, vals):
+        # Lock guard: once a trip is ended or cancelled it becomes immutable.
+        # Only lifecycle transitions (Reset to Draft, etc.) are allowed.
+        for rec in self:
+            if (rec.end_trip or rec.trip_cancel) and not self.env.context.get('bypass_lock'):
+                invalid = set(vals.keys()) - self._LIFECYCLE_FIELDS
+                if invalid:
+                    raise UserError(
+                        "This trip is finalized and cannot be edited. "
+                        "Use 'Reset to Draft' first if you need to change %s."
+                        % ', '.join(sorted(invalid))
+                    )
+
         # Set tank capacity from vehicle
         if vals.get('vehicle_id'):
             vehicle = self.env['fleet.vehicle'].browse(vals['vehicle_id'])
@@ -146,6 +221,9 @@ class VehicleTracking(models.Model):
         fuel_checking_value = vals.get('fuel_checking', self.fuel_checking)
         if not fuel_checking_value:
             raise UserError("Fuel checking is not updated")
+        # Default image_filename when the app sends image_url without one.
+        if 'image_url' in vals and vals.get('image_url') and not vals.get('image_filename'):
+            vals['image_filename'] = 'trip_image.jpg'
         return super(VehicleTracking, self).write(vals)
 
     def action_add_fuel_log(self):
@@ -181,20 +259,97 @@ class VehicleTracking(models.Model):
 
             rec.state = 'validated'
 
+    # --- Trip lifecycle (mirrors the React Native app's Start / Update / End flow) ---
+
+    def _notify(self, title, message, kind='success'):
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': title,
+                'message': message,
+                'type': kind,
+                'sticky': False,
+            },
+        }
+
+    def action_start_trip(self):
+        self.ensure_one()
+        if self.trip_cancel:
+            raise UserError("This trip is cancelled and cannot be started.")
+        if self.end_trip:
+            raise UserError("This trip is already ended.")
+        if self.start_trip:
+            raise UserError("This trip is already in progress.")
+        # Force fuel_checking=True so the create/write constraint passes,
+        # matches what the app does when the driver taps Start Trip.
+        self.write({
+            'start_trip': True,
+            'fuel_checking': True,
+            'start_time': self.start_time or fields.Datetime.now(),
+        })
+        # Returning None lets Odoo's web client refresh the record in place
+        # — fastest path so the buttons' invisible expressions re-evaluate
+        # immediately without a toast render pass.
+
+    def action_update_trip(self):
+        self.ensure_one()
+        # The form auto-saves edits before invoking the button.
+        self.write({})
+
+    def action_end_trip(self):
+        self.ensure_one()
+        if self.trip_cancel:
+            raise UserError("This trip is cancelled.")
+        if not self.start_trip:
+            raise UserError("Start the trip before ending it.")
+        if self.end_trip:
+            raise UserError("This trip is already ended.")
+        self.write({
+            'end_trip': True,
+            'end_time': self.end_time or fields.Datetime.now(),
+        })
+
+    def action_cancel_trip(self):
+        self.ensure_one()
+        if self.end_trip:
+            raise UserError("Completed trips cannot be cancelled.")
+        if self.trip_cancel:
+            raise UserError("This trip is already cancelled.")
+        self.write({
+            'trip_cancel': True,
+            'start_trip': False,
+        })
+
+    def action_reset_to_draft(self):
+        self.ensure_one()
+        # Bring the trip back to its initial Draft state — clears every
+        # lifecycle flag and the validation state so the user can re-edit
+        # and re-trigger Start Trip from scratch.
+        self.write({
+            'start_trip': False,
+            'end_trip': False,
+            'trip_cancel': False,
+            'state': 'draft',
+            'end_time': False,
+        })
+
     def action_save_fuel_log(self):
         """Close the popup window after saving."""
         return {'type': 'ir.actions.act_window_close'}
 
     def action_discard_custom(self):
-        """Custom discard button – redirect to list view"""
+        """Custom discard button – redirect to list view with a clean breadcrumb."""
         self.ensure_one()
         return {
             'type': 'ir.actions.act_window',
             'name': 'Vehicle Tracking',
             'res_model': 'vehicle.tracking',
-            'view_mode': 'list',
+            'view_mode': 'list,form',
             'view_id': False,
-            'target': 'current',
+            # `target: main` resets the breadcrumb stack so we land on a fresh
+            # list view without `VT-0002` lingering at the top.
+            'target': 'main',
             'context': self.env.context,
         }
 
@@ -206,7 +361,9 @@ class VehicleTracking(models.Model):
             'type': 'ir.actions.act_window',
             'name': 'Vehicle Tracking',
             'res_model': 'vehicle.tracking',
-            'view_mode': 'list',
-            'target': 'current',
+            'view_mode': 'list,form',
+            # `target: main` resets the breadcrumb stack so we land on a fresh
+            # list view (matches `/odoo/action-923`) without `VT-0002` lingering.
+            'target': 'main',
             'context': self.env.context,
         }

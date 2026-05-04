@@ -27,7 +27,7 @@ import { VisitList } from '@components/CRM';
 const STATE_FILTER_COLORS = {
   all:   '#6C7A89',
   draft: '#FF9800',
-  done:  '#4CAF50',
+done:  '#4CAF50',
 };
 const STATE_FILTERS = [
   { key: 'all',   label: 'All' },

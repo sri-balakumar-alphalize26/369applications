@@ -8,6 +8,7 @@ import { OptionsScreen } from "@screens/Home/Options";
 import { CustomersPage1Screen, CustomersPage2Screen, CustomerCategoryScreen, LeadsListScreen, CreateCustomerScreen } from "@screens/Home/Options/Customers";
 import { VehicleTrackingScreen, VehicleTrackingForm } from "@screens/Home/Options/VehicleTracking";
 import { VehicleMaintenanceScreen, VehicleMaintenanceForm } from "@screens/Home/Options/VehicleMaintenance";
+import { VehicleLocationScreen, VehicleLocationForm } from "@screens/Home/Options/VehicleLocation";
 import { StaffTrackingScreen, StaffTrackingForm, StaffTrackingDetails, UserLiveLocation, MyLocation } from "@screens/Home/Options/StaffTracking";
 
 import { TaskManagerScreen } from "@screens/Home/Options/TaskManager";
@@ -297,6 +298,18 @@ const StackNavigator = () => {
       <Stack.Screen
         name="VehicleMaintenanceForm"
         component={VehicleMaintenanceForm}
+        options={{ headerShown: false }}
+      />
+
+      {/* Vehicle Location */}
+      <Stack.Screen
+        name="VehicleLocationScreen"
+        component={VehicleLocationScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="VehicleLocationForm"
+        component={VehicleLocationForm}
         options={{ headerShown: false }}
       />
 

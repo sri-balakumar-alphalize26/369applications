@@ -35,10 +35,14 @@ class VehicleFuelLog(models.Model):
     fuel_level = fields.Float(string='Fuel Level (Litres)', required=True)
     odometer = fields.Float(string='Odometer Reading', help="Reading at fuel stop")
 
-    # Upload image
-    upload_path = fields.Char(string='Upload Path')
-    odometer_image = fields.Binary(string='Odometer Image', required=False)
-    odometer_image_filename = fields.Char(string="Document Name")
+    # Images — odometer photo (existing) + fuel receipt (new).
+    # `upload_path` is kept on the model for backward-compat with legacy rows
+    # but is removed from the form view (it used to print raw base64).
+    upload_path = fields.Char(string='Upload Path (legacy)')
+    odometer_image = fields.Image(string='Odometer Image')
+    odometer_image_filename = fields.Char(string="Odometer Filename")
+    receipt_image = fields.Image(string='Fuel Receipt')
+    receipt_image_filename = fields.Char(string='Receipt Filename')
 
     # GPS Tracking
     gps_lat = fields.Char(string='GPS Latitude')
@@ -53,10 +57,14 @@ class VehicleFuelLog(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
-        """Auto sequence for reference"""
+        """Auto sequence for reference + auto-set image filenames."""
         for vals in vals_list:
             if vals.get('name', 'New') == 'New':
                 vals['name'] = self.env['ir.sequence'].next_by_code('vehicle.fuel.log') or 'New'
+            if vals.get('odometer_image') and not vals.get('odometer_image_filename'):
+                vals['odometer_image_filename'] = 'odometer.jpg'
+            if vals.get('receipt_image') and not vals.get('receipt_image_filename'):
+                vals['receipt_image_filename'] = 'receipt.jpg'
         return super(VehicleFuelLog, self).create(vals_list)
 
     def action_save_fuel_log(self):

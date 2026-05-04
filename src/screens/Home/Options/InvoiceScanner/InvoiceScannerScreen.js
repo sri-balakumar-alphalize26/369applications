@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, Text } from 'react-native';
-import { BarCodeScanner } from 'expo-barcode-scanner';
+import { Camera } from 'expo-camera';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
 import { OverlayLoader } from '@components/Loader';
@@ -17,7 +17,7 @@ const InvoiceScannerScreen = ({ navigation, route }) => {
 
   useEffect(() => {
     (async () => {
-      const { status } = await BarCodeScanner.requestPermissionsAsync();
+      const { status } = await Camera.requestCameraPermissionsAsync();
       setHasPermission(status === 'granted');
     })();
   }, []);
@@ -107,9 +107,9 @@ const InvoiceScannerScreen = ({ navigation, route }) => {
         onBackPress={() => navigation.goBack()}
       />
       <View style={styles.cameraContainer}>
-        <BarCodeScanner
+        <Camera
           style={StyleSheet.absoluteFillObject}
-          barCodeTypes={[BarCodeScanner.Constants.BarCodeType.qr]}
+          barCodeScannerSettings={{ barCodeTypes: ['qr'] }}
           onBarCodeScanned={scanned ? undefined : handleBarCodeScanned}
         />
         <View style={styles.overlay}>
