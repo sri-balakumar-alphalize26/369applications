@@ -1,5 +1,10 @@
+import logging
+import pytz
+
 from odoo import models, fields, api
 from markupsafe import Markup
+
+_logger = logging.getLogger(__name__)
 
 
 class CustomerVisit(models.Model):
@@ -128,7 +133,96 @@ class CustomerVisit(models.Model):
         for vals in vals_list:
             if vals.get('name', 'New') == 'New':
                 vals['name'] = self.env['ir.sequence'].next_by_code('customer.visit') or 'New'
-        return super().create(vals_list)
+        records = super().create(vals_list)
+        try:
+            records._sync_vehicle_tracking_visits()
+        except Exception:
+            _logger.exception("[customer.visit] post-create vehicle.tracking sync failed")
+        return records
+
+    def write(self, vals):
+        res = super().write(vals)
+        if any(k in vals for k in ('employee_id', 'date_time', 'location_name', 'partner_id')):
+            try:
+                self._sync_vehicle_tracking_visits()
+            except Exception:
+                _logger.exception("[customer.visit] post-write vehicle.tracking sync failed")
+        return res
+
+    def unlink(self):
+        # Capture (employee_id, date_time) tuples before delete so we can
+        # nudge the right trips to recompute after the rows are gone.
+        snapshot = [(v.employee_id, v.date_time) for v in self if v.employee_id and v.date_time]
+        res = super().unlink()
+        if not snapshot or 'vehicle.tracking' not in self.env:
+            return res
+        try:
+            Tracking = self.env['vehicle.tracking'].sudo()
+            for emp, dt in snapshot:
+                partner_ids = []
+                if emp.work_contact_id:
+                    partner_ids.append(emp.work_contact_id.id)
+                if emp.user_id and emp.user_id.partner_id:
+                    partner_ids.append(emp.user_id.partner_id.id)
+                if 'address_home_id' in emp._fields and emp.address_home_id:
+                    partner_ids.append(emp.address_home_id.id)
+                if not partner_ids:
+                    continue
+                tz = pytz.timezone(emp.tz or 'UTC')
+                local_date = pytz.utc.localize(dt).astimezone(tz).date()
+                trips = Tracking.search([
+                    ('driver_id', 'in', partner_ids),
+                    ('date', '=', local_date),
+                ])
+                if not trips:
+                    continue
+                trips._compute_visit_ids()
+                trips._compute_visited_stops_display()
+                trips._compute_visited_stop_count()
+                trips.flush_recordset()
+        except Exception:
+            _logger.exception("[customer.visit] post-unlink vehicle.tracking sync failed")
+        return res
+
+    def _sync_vehicle_tracking_visits(self):
+        """Re-trigger the visit_ids compute on any vehicle.tracking row that
+        spans this visit's employee + local date.
+
+        vehicle.tracking depends on (driver_id, date) — neither of which a
+        customer.visit edit changes — so the ORM won't fire the compute on
+        its own. We nudge it manually here.
+
+        Soft dependency: customer_visit can be installed without
+        vehicle_tracking, in which case this is a no-op.
+        """
+        if 'vehicle.tracking' not in self.env:
+            return
+        Tracking = self.env['vehicle.tracking'].sudo()
+        for visit in self:
+            if not visit.employee_id or not visit.date_time:
+                continue
+            emp = visit.employee_id
+            partner_ids = []
+            if emp.work_contact_id:
+                partner_ids.append(emp.work_contact_id.id)
+            if emp.user_id and emp.user_id.partner_id:
+                partner_ids.append(emp.user_id.partner_id.id)
+            if 'address_home_id' in emp._fields and emp.address_home_id:
+                partner_ids.append(emp.address_home_id.id)
+            if not partner_ids:
+                continue
+            tz = pytz.timezone(emp.tz or 'UTC')
+            local_date = pytz.utc.localize(visit.date_time).astimezone(tz).date()
+            trips = Tracking.search([
+                ('driver_id', 'in', partner_ids),
+                ('date', '=', local_date),
+            ])
+            if not trips:
+                continue
+            trips._compute_visit_ids()
+            trips._compute_visited_stops_display()
+            trips._compute_visited_stop_count()
+            trips.flush_recordset()
 
     def action_done(self):
         self.filtered(lambda r: r.state == 'draft').write({'state': 'done'})

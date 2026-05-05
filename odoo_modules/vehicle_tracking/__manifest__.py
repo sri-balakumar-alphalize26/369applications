@@ -16,7 +16,7 @@ New in v1.1 - AI Fraud Detection:
     'author': 'Danat Oman',
     'company': 'DANAT OMAN',
     'category': 'Fleet',
-    'depends': ['base', 'fleet', 'vehicle_location'],
+    'depends': ['base', 'hr', 'fleet', 'vehicle_location', 'customer_visit'],
     'data': [
         'security/security.xml',
         'security/ir.model.access.csv',

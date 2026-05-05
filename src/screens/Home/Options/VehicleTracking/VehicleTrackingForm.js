@@ -267,6 +267,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     destinations: [],
     purposesOfVisit: [],
   });
+  // Per-type loading flags so a popup can show a spinner while its fetch is
+  // in flight, instead of rendering an empty list.
+  const [dropdownsLoading, setDropdownsLoading] = useState({
+    vehicles: false,
+    sourceLocations: false,
+    destinations: false,
+    purposesOfVisit: false,
+  });
 
   // Purpose of Visit state
   const [purposeOfVisit, setPurposeOfVisit] = useState(existingTripData?.purpose_of_visit || '');
@@ -345,134 +353,142 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const [sourceDistance, setSourceDistance] = useState(null);
   const SOURCE_MATCH_THRESHOLD = 100; // meters
 
-  // Load dropdown data with demo vehicles
-  useEffect(() => {
-    const loadDropdowns = async () => {
-      try {
-        // Fetch vehicles from Odoo JSON-RPC
-        let vehicles = [];
-        try {
-          const odooVehicles = await fetchVehiclesVehicleTracking({ offset: 0, limit: 200, searchText: '' });
-          // Map Odoo shape to the dropdown shape expected by this form
-          vehicles = (odooVehicles || []).map(v => ({
-            _id: String(v.id),
-            name: v.name || '',
-            driver: v.driver ? { id: v.driver.id, name: v.driver.name } : null,
-            plate_number: v.license_plate || '',
-            tankCapacity: v.tank_capacity || '',
-            image_url: v.image_url || null,
-          }));
-          console.log('Loaded vehicles from Odoo:', vehicles.length);
-          try {
-            // Remove image_url from each vehicle before logging sample
-            const sampleVehicles = vehicles.slice(0, 5).map(({ image_url, ...rest }) => rest);
-            console.log('Vehicle dropdown sample (first 5):', sampleVehicles);
-            if (vehicles.length <= 20) {
-              // Remove image_url from each vehicle before logging
-              const vehiclesWithoutImg = vehicles.map(({ image_url, ...rest }) => rest);
-              console.log('All fetched vehicles:', vehiclesWithoutImg);
-            }
-          } catch (e) {
-            // ignore logging errors
-          }
-        } catch (err) {
-          console.error('Failed to load vehicles from Odoo:', err?.message || err);
-          showToastMessage('Could not load vehicles from Odoo', 'error');
-          vehicles = [];
-        }
+  // ---- Per-type dropdown loaders ----
+  // Each loader is independent so the four fetches run in parallel and any
+  // single failure doesn't block the others. The popup reads the live state
+  // from `dropdowns` directly, so when a fetch lands the open popup updates
+  // in place without the user having to dismiss + re-tap.
 
-        // Fetch sources from Odoo (vehicle.location)
-        let sourceLocations = [];
-        try {
-          const odooSources = await fetchSourcesOdoo({ offset: 0, limit: 100 });
-          sourceLocations = odooSources;
-          console.log('Loaded sources from Odoo:', sourceLocations.length);
-          if (sourceLocations.length > 0) {
-            console.log('Odoo sources sample:', sourceLocations.slice(0, 5));
-          }
-        } catch (err) {
-          console.warn('Failed to load sources from Odoo, using defaults', err);
-          sourceLocations = [
-            { _id: 'src1', name: 'Warehouse', latitude: 8.8861225, longitude: 76.5900631 },
-            { _id: 'src2', name: 'Depot', latitude: 8.8850000, longitude: 76.5910000 },
-            { _id: 'src3', name: 'Office', latitude: 8.8870000, longitude: 76.5890000 },
-          ];
-        }
-
-        // Fetch destinations from Odoo (vehicle.location)
-        let destinations = [];
-        try {
-          const odooDestinations = await fetchSourcesOdoo({ offset: 0, limit: 100 });
-          destinations = odooDestinations;
-          console.log('Loaded destinations from Odoo:', destinations.length);
-          if (destinations.length > 0) {
-            console.log('Odoo destinations sample:', destinations.slice(0, 5));
-          }
-        } catch (err) {
-          console.warn('Failed to load destinations from Odoo, using defaults', err);
-          destinations = [
-            { _id: 'dest1', name: 'Client Site' },
-            { _id: 'dest2', name: 'Service Center' },
-            { _id: 'dest3', name: 'Main Office' },
-          ];
-        }
-
-        // Fetch Purpose of Visit dropdown
-        let purposesOfVisit = [];
-        try {
-          purposesOfVisit = await fetchPurposeOfVisitDropdown();
-        } catch (err) {
-          console.warn('Failed to load Purpose of Visit dropdown', err);
-        }
-        setDropdowns({
-          vehicles,
-          sourceLocations,
-          destinations,
-          purposesOfVisit,
-        });
-
-        // If editing an existing trip, try to auto-match the vehicle in the loaded dropdowns
-        if (isEditMode && existingTripData?.vehicle_id) {
-          try {
-            const match = (vehicles || []).find(v => String(v._id) === String(existingTripData.vehicle_id) || String(v._id) === String(existingTripData.vehicle_id?.toString()));
-            if (match) {
-              setFormData(prev => ({
-                ...prev,
-                vehicle: match.name || prev.vehicle,
-                driver: match.driver?.name || prev.driver,
-                plateNumber: match.plate_number || prev.plateNumber,
-              }));
-              console.log('[VehicleTrackingForm] Auto-matched vehicle from dropdowns for edit:', match.name, match._id);
-            } else {
-              console.log('[VehicleTrackingForm] No vehicle match found in dropdowns for vehicle_id:', existingTripData.vehicle_id);
-              // Fallback: fetch vehicle details by id and populate form fields
-              try {
-                const details = await fetchVehicleDetailsOdoo({ vehicle_id: existingTripData.vehicle_id });
-                if (details) {
-                  setFormData(prev => ({
-                    ...prev,
-                    vehicle: details.name || prev.vehicle || existingTripData.vehicle_name || '',
-                    driver: details.driver?.name || prev.driver || existingTripData.driver_name || '',
-                    plateNumber: details.license_plate || prev.plateNumber || existingTripData.number_plate || '',
-                    tankCapacity: prev.tankCapacity || details.tank_capacity || prev.tankCapacity || '',
-                  }));
-                  console.log('[VehicleTrackingForm] Populated vehicle from fetchVehicleDetailsOdoo fallback:', details.name, existingTripData.vehicle_id);
-                }
-              } catch (fetchErr) {
-                console.warn('Failed to fetch vehicle details fallback for vehicle_id:', existingTripData.vehicle_id, fetchErr);
-              }
-            }
-          } catch (e) {
-            console.warn('Error auto-matching vehicle for edit:', e);
-          }
-        }
-      } catch (error) {
-        console.error('Error loading dropdowns:', error);
-      }
-    };
-
-    loadDropdowns();
+  const loadVehicles = useCallback(async () => {
+    setDropdownsLoading(p => ({ ...p, vehicles: true }));
+    try {
+      const odooVehicles = await fetchVehiclesVehicleTracking({ offset: 0, limit: 200, searchText: '' });
+      const vehicles = (odooVehicles || []).map(v => ({
+        _id: String(v.id),
+        name: v.name || '',
+        driver: v.driver ? { id: v.driver.id, name: v.driver.name } : null,
+        plate_number: v.license_plate || '',
+        tankCapacity: v.tank_capacity || '',
+        image_url: v.image_url || null,
+      }));
+      console.log('Loaded vehicles from Odoo:', vehicles.length);
+      setDropdowns(prev => ({ ...prev, vehicles }));
+    } catch (err) {
+      console.error('Failed to load vehicles from Odoo:', err?.message || err);
+      showToastMessage('Could not load vehicles from Odoo', 'error');
+    } finally {
+      setDropdownsLoading(p => ({ ...p, vehicles: false }));
+    }
   }, []);
+
+  const loadSources = useCallback(async () => {
+    setDropdownsLoading(p => ({ ...p, sourceLocations: true }));
+    try {
+      const odooSources = await fetchSourcesOdoo({ offset: 0, limit: 100 });
+      console.log('Loaded sources from Odoo:', (odooSources || []).length);
+      setDropdowns(prev => ({ ...prev, sourceLocations: odooSources || [] }));
+    } catch (err) {
+      console.warn('Failed to load sources from Odoo, using defaults', err);
+      setDropdowns(prev => ({
+        ...prev,
+        sourceLocations: [
+          { _id: 'src1', name: 'Warehouse', latitude: 8.8861225, longitude: 76.5900631 },
+          { _id: 'src2', name: 'Depot', latitude: 8.8850000, longitude: 76.5910000 },
+          { _id: 'src3', name: 'Office', latitude: 8.8870000, longitude: 76.5890000 },
+        ],
+      }));
+    } finally {
+      setDropdownsLoading(p => ({ ...p, sourceLocations: false }));
+    }
+  }, []);
+
+  const loadDestinations = useCallback(async () => {
+    setDropdownsLoading(p => ({ ...p, destinations: true }));
+    try {
+      const odooDestinations = await fetchSourcesOdoo({ offset: 0, limit: 100 });
+      console.log('Loaded destinations from Odoo:', (odooDestinations || []).length);
+      setDropdowns(prev => ({ ...prev, destinations: odooDestinations || [] }));
+    } catch (err) {
+      console.warn('Failed to load destinations from Odoo, using defaults', err);
+      setDropdowns(prev => ({
+        ...prev,
+        destinations: [
+          { _id: 'dest1', name: 'Client Site' },
+          { _id: 'dest2', name: 'Service Center' },
+          { _id: 'dest3', name: 'Main Office' },
+        ],
+      }));
+    } finally {
+      setDropdownsLoading(p => ({ ...p, destinations: false }));
+    }
+  }, []);
+
+  const loadPurposes = useCallback(async () => {
+    setDropdownsLoading(p => ({ ...p, purposesOfVisit: true }));
+    try {
+      const purposesOfVisit = await fetchPurposeOfVisitDropdown();
+      setDropdowns(prev => ({ ...prev, purposesOfVisit: purposesOfVisit || [] }));
+    } catch (err) {
+      console.warn('Failed to load Purpose of Visit dropdown', err);
+    } finally {
+      setDropdownsLoading(p => ({ ...p, purposesOfVisit: false }));
+    }
+  }, []);
+
+  // Mount: kick off all four dropdown fetches in parallel.
+  useEffect(() => {
+    loadVehicles();
+    loadSources();
+    loadDestinations();
+    loadPurposes();
+  }, [loadVehicles, loadSources, loadDestinations, loadPurposes]);
+
+  // Edit-mode: once vehicles are loaded, try to auto-match the current trip's
+  // vehicle_id and populate the form fields. Re-runs whenever `dropdowns.vehicles`
+  // changes (so it kicks in after the async fetch lands, not just on mount).
+  useEffect(() => {
+    if (!isEditMode || !existingTripData?.vehicle_id) return;
+    if (!dropdowns.vehicles || dropdowns.vehicles.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const match = (dropdowns.vehicles || []).find(v =>
+          String(v._id) === String(existingTripData.vehicle_id) ||
+          String(v._id) === String(existingTripData.vehicle_id?.toString())
+        );
+        if (cancelled) return;
+        if (match) {
+          setFormData(prev => ({
+            ...prev,
+            vehicle: match.name || prev.vehicle,
+            driver: match.driver?.name || prev.driver,
+            plateNumber: match.plate_number || prev.plateNumber,
+          }));
+          console.log('[VehicleTrackingForm] Auto-matched vehicle from dropdowns for edit:', match.name, match._id);
+        } else {
+          console.log('[VehicleTrackingForm] No vehicle match found in dropdowns for vehicle_id:', existingTripData.vehicle_id);
+          // Fallback: fetch vehicle details by id and populate form fields
+          try {
+            const details = await fetchVehicleDetailsOdoo({ vehicle_id: existingTripData.vehicle_id });
+            if (cancelled || !details) return;
+            setFormData(prev => ({
+              ...prev,
+              vehicle: details.name || prev.vehicle || existingTripData.vehicle_name || '',
+              driver: details.driver?.name || prev.driver || existingTripData.driver_name || '',
+              plateNumber: details.license_plate || prev.plateNumber || existingTripData.number_plate || '',
+              tankCapacity: prev.tankCapacity || details.tank_capacity || prev.tankCapacity || '',
+            }));
+            console.log('[VehicleTrackingForm] Populated vehicle from fetchVehicleDetailsOdoo fallback:', details.name, existingTripData.vehicle_id);
+          } catch (fetchErr) {
+            console.warn('Failed to fetch vehicle details fallback for vehicle_id:', existingTripData.vehicle_id, fetchErr);
+          }
+        }
+      } catch (e) {
+        console.warn('Error auto-matching vehicle for edit:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dropdowns.vehicles, isEditMode, existingTripData?.vehicle_id]);
 
   // Helper functions to determine field states
   const isFieldDisabled = (fieldName) => {
@@ -966,17 +982,37 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     }
   };
 
-  const openDropdown = (type, data) => {
-    if (type === 'vehicle') {
-      // Remove image_url and add tankCapacity to log output
-      const sanitizedData = (data || []).map(({ image_url, ...rest }) => ({
-        ...rest,
-        tankCapacity: rest.tankCapacity || rest.tank_capacity || ''
-      }));
-      console.log('Vehicle dropdown data:', sanitizedData);
+  // Live source-of-truth data lookup. The popup reads from this so it
+  // re-renders automatically as `dropdowns` updates in the background.
+  const dropdownDataFor = (type) => {
+    switch (type) {
+      case 'vehicle':         return dropdowns.vehicles || [];
+      case 'source':          return dropdowns.sourceLocations || [];
+      case 'destination':     return dropdowns.destinations || [];
+      case 'purposeOfVisit':  return dropdowns.purposesOfVisit || [];
+      default:                return [];
     }
-    setSelectedType({ type, data });
+  };
+
+  // If a dropdown is opened while empty (initial fetch failed silently or
+  // hasn't started), kick off a load so the popup eventually populates.
+  const ensureDropdownLoaded = (type) => {
+    const map = {
+      vehicle:         { current: dropdowns.vehicles,         loading: dropdownsLoading.vehicles,         load: loadVehicles },
+      source:          { current: dropdowns.sourceLocations,  loading: dropdownsLoading.sourceLocations,  load: loadSources },
+      destination:     { current: dropdowns.destinations,     loading: dropdownsLoading.destinations,     load: loadDestinations },
+      purposeOfVisit:  { current: dropdowns.purposesOfVisit,  loading: dropdownsLoading.purposesOfVisit,  load: loadPurposes },
+    };
+    const m = map[type];
+    if (m && (m.current?.length || 0) === 0 && !m.loading) {
+      m.load();
+    }
+  };
+
+  const openDropdown = (type) => {
+    setSelectedType({ type });
     setIsVisible(true);
+    ensureDropdownLoaded(type);
   };
 
   const calculateTravelledKM = () => {
@@ -1742,7 +1778,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <Text style={styles.fieldLabel}>Vehicle <Text style={{ color: 'red' }}>*</Text></Text>
           <Pressable
             style={[styles.selectBox, errors.vehicle ? styles.selectBoxError : null]}
-            onPress={() => openDropdown('vehicle', dropdowns.vehicles)}
+            onPress={() => openDropdown('vehicle')}
           >
             <Text style={[styles.selectBoxText, { color: formData.vehicle ? COLORS.black : COLORS.gray }]}>
               {formData.vehicle || 'Select vehicle'}
@@ -1849,7 +1885,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <FormInput
             label="Source:"
             value={formData.source}
-            onPress={isFieldDisabled('source') ? null : () => openDropdown('source', dropdowns.sourceLocations)}
+            onPress={isFieldDisabled('source') ? null : () => openDropdown('source')}
             error={errors.source}
             dropIcon="chevron-down"
             required
@@ -1875,7 +1911,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <FormInput
             label="Destination:"
             value={formData.destination}
-            onPress={isFieldDisabled('destination') ? null : () => openDropdown('destination', dropdowns.destinations)}
+            onPress={isFieldDisabled('destination') ? null : () => openDropdown('destination')}
             error={errors.destination}
             dropIcon="chevron-down"
             required
@@ -1982,7 +2018,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <FormInput
             label="Purpose of Visit:"
             value={purposeOfVisit}
-            onPress={() => openDropdown('purposeOfVisit', dropdowns.purposesOfVisit)}
+            onPress={() => openDropdown('purposeOfVisit')}
             dropIcon="chevron-down"
             placeholder="Select purpose of visit"
             required
@@ -2423,7 +2459,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
               </Pressable>
             </View>
             <FlatList
-              data={selectedType?.data || []}
+              data={dropdownDataFor(selectedType?.type)}
               keyExtractor={(item) => item._id?.toString() || item.name}
               renderItem={({ item }) => (
                 <TouchableOpacity
@@ -2433,7 +2469,24 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                   <Text style={styles.modalItemText}>{item.name}</Text>
                 </TouchableOpacity>
               )}
-              ListEmptyComponent={<Text style={styles.modalEmpty}>No items</Text>}
+              ListEmptyComponent={(() => {
+                const type = selectedType?.type;
+                const loadingMap = {
+                  vehicle: dropdownsLoading.vehicles,
+                  source: dropdownsLoading.sourceLocations,
+                  destination: dropdownsLoading.destinations,
+                  purposeOfVisit: dropdownsLoading.purposesOfVisit,
+                };
+                const isLoading = !!loadingMap[type];
+                return isLoading ? (
+                  <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                    <ActivityIndicator color={COLORS.primaryThemeColor} />
+                    <Text style={[styles.modalEmpty, { marginTop: 8 }]}>Loading…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.modalEmpty}>No items</Text>
+                );
+              })()}
             />
           </Pressable>
         </Pressable>

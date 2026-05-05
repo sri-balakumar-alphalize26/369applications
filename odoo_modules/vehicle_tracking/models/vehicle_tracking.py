@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
+import logging
+import pytz
+from datetime import datetime, time, timedelta
+
 from odoo import api, fields, models
 from odoo.exceptions import UserError
-from datetime import datetime
+
+_logger = logging.getLogger(__name__)
 
 class VehicleTracking(models.Model):
     _name = 'vehicle.tracking'
@@ -93,6 +98,47 @@ class VehicleTracking(models.Model):
     # False on every record load (default) and after each successful write.
     is_dirty = fields.Boolean(string='Is Dirty', store=False, default=False)
 
+    # Auto-derived: the customer.visit rows logged by this trip's driver on
+    # the same date. Stored so HR list views can sort/filter by stop count
+    # without a per-record fan-out search. Kept live by the recompute hook
+    # on customer.visit.create / write (see customer_visit.py).
+    visit_ids = fields.Many2many(
+        'customer.visit',
+        relation='vehicle_tracking_customer_visit_rel',
+        column1='tracking_id', column2='visit_id',
+        string='Visits',
+        compute='_compute_visit_ids', store=True,
+    )
+    visited_stops_display = fields.Char(
+        string='Visited Stops',
+        compute='_compute_visited_stops_display', store=True,
+        help="Auto-filled from today's customer visits for this driver.",
+    )
+    visited_stop_count = fields.Integer(
+        string='Stop Count',
+        compute='_compute_visited_stop_count', store=True,
+    )
+
+    # Aggregates over fuel_log_ids — exposed as related fields on
+    # hr.attendance so the Field Attendance form can show one tidy
+    # "Trip Totals" row without re-walking the One2many on every render.
+    total_fuel_litres = fields.Float(
+        string='Total Fuel (Litres)',
+        compute='_compute_fuel_totals', store=True,
+        digits=(12, 2),
+    )
+    total_fuel_amount = fields.Float(
+        string='Total Fuel Amount',
+        compute='_compute_fuel_totals', store=True,
+        digits=(12, 2),
+    )
+
+    @api.depends('fuel_log_ids', 'fuel_log_ids.fuel_level', 'fuel_log_ids.amount')
+    def _compute_fuel_totals(self):
+        for rec in self:
+            rec.total_fuel_litres = sum(rec.fuel_log_ids.mapped('fuel_level')) or 0.0
+            rec.total_fuel_amount = sum(rec.fuel_log_ids.mapped('amount')) or 0.0
+
     @api.depends('start_trip', 'end_trip', 'trip_cancel')
     def _compute_trip_status(self):
         for rec in self:
@@ -119,6 +165,108 @@ class VehicleTracking(models.Model):
                 rec.duration = round(delta.total_seconds() / 3600, 2)
             else:
                 rec.duration = 0.0
+
+    # --- Visited stops (auto-derived from customer.visit) -----------------
+
+    def _resolve_employee_from_driver(self):
+        """Find the hr.employee for driver_id (a res.partner).
+
+        Tries work_contact_id, then user_id.partner_id, then address_home_id
+        (older Odoo). Returns an empty recordset if no link can be made —
+        callers handle that as "no visits".
+        """
+        self.ensure_one()
+        if not self.driver_id:
+            return self.env['hr.employee']
+        Employee = self.env['hr.employee'].sudo()
+        emp = Employee.search([('work_contact_id', '=', self.driver_id.id)], limit=1)
+        if not emp:
+            emp = Employee.search([('user_id.partner_id', '=', self.driver_id.id)], limit=1)
+        if not emp and 'address_home_id' in Employee._fields:
+            emp = Employee.search([('address_home_id', '=', self.driver_id.id)], limit=1)
+        return emp
+
+    @api.depends('driver_id', 'date')
+    def _compute_visit_ids(self):
+        """Stops on this trip = union of two sources:
+
+        1. Visits already linked to a field-attendance whose source_trip_id
+           is this trip — that's the canonical link recorded by
+           create_field_attendance, and it's authoritative even when the
+           visit's employee is NOT the same person as the trip's driver
+           (common case: a dispatcher drives, a salesperson logs visits).
+
+        2. Visits whose employee is the driver's resolved employee on the
+           same calendar day — covers the in-progress case where the
+           field-attendance hasn't been created yet (trip is still
+           running, no attendance row exists to provide the M2M link).
+
+        Storing the union gives HR the stops view from the moment the
+        first visit is logged, and stays stable once the attendance
+        wraps things up at end-of-day.
+        """
+        Visit = self.env['customer.visit'].sudo()
+        Attendance = self.env['hr.attendance'].sudo() if 'hr.attendance' in self.env else None
+        for rec in self:
+            visit_ids = set()
+
+            # Source 1: visits already linked via field-attendance
+            if Attendance is not None and rec.id:
+                attendances = Attendance.search([('source_trip_id', '=', rec.id)])
+                for att in attendances:
+                    visit_ids.update(att.source_visit_ids.ids)
+
+            # Source 2: same-day visits for the driver's resolved employee
+            employee = rec._resolve_employee_from_driver()
+            if employee and rec.date:
+                tz = pytz.timezone(employee.tz or 'UTC')
+                local_start = tz.localize(datetime.combine(rec.date, time.min))
+                local_end = local_start + timedelta(days=1)
+                utc_start = local_start.astimezone(pytz.utc).replace(tzinfo=None)
+                utc_end = local_end.astimezone(pytz.utc).replace(tzinfo=None)
+                visits = Visit.search([
+                    ('employee_id', '=', employee.id),
+                    ('date_time', '>=', utc_start),
+                    ('date_time', '<', utc_end),
+                ], order='date_time asc')
+                visit_ids.update(visits.ids)
+
+            if not visit_ids:
+                rec.visit_ids = [(5, 0, 0)]
+                continue
+
+            # Re-sort by date_time so visited_stops_display is chronological
+            ordered = Visit.search(
+                [('id', 'in', list(visit_ids))],
+                order='date_time asc',
+            )
+            rec.visit_ids = [(6, 0, ordered.ids)]
+
+    @api.depends('visit_ids', 'visit_ids.location_name', 'visit_ids.partner_id')
+    def _compute_visited_stops_display(self):
+        for rec in self:
+            names = []
+            for v in rec.visit_ids:
+                label = v.location_name or (v.partner_id.name if v.partner_id else '')
+                if label:
+                    names.append(label)
+            rec.visited_stops_display = ', '.join(names)
+
+    @api.depends('visit_ids')
+    def _compute_visited_stop_count(self):
+        for rec in self:
+            rec.visited_stop_count = len(rec.visit_ids)
+
+    def action_view_visits(self):
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Visits — %s' % (self.ref or ''),
+            'res_model': 'customer.visit',
+            'view_mode': 'list,form',
+            'domain': [('id', 'in', self.visit_ids.ids)],
+            'context': {'create': False},
+        }
 
     @api.onchange(
         'date', 'vehicle_id', 'driver_id', 'number_plate',
@@ -281,6 +429,12 @@ class VehicleTracking(models.Model):
             raise UserError("This trip is already ended.")
         if self.start_trip:
             raise UserError("This trip is already in progress.")
+        # Block the action if the driver hasn't entered the start odometer
+        # reading. Without it the trip's km_travelled compute can't run and
+        # downstream Trip Totals on hr.attendance show 0. Surface a popup so
+        # the user is forced to fix it before continuing.
+        if not self.start_km or self.start_km <= 0:
+            raise UserError("Please enter the Start KM before starting the trip.")
         # Force fuel_checking=True so the create/write constraint passes,
         # matches what the app does when the driver taps Start Trip.
         self.write({
@@ -305,6 +459,18 @@ class VehicleTracking(models.Model):
             raise UserError("Start the trip before ending it.")
         if self.end_trip:
             raise UserError("This trip is already ended.")
+        # Block End Trip until the driver has entered the end-of-trip
+        # odometer reading. Same reasoning as action_start_trip — required
+        # for km_travelled / Trip Totals to be meaningful, and the Field
+        # Attendance close-previous-trip popup explicitly tells the user
+        # to fill End KM before clicking End Trip.
+        if not self.end_km or self.end_km <= 0:
+            raise UserError("Please enter the End KM before ending the trip.")
+        if self.end_km < self.start_km:
+            raise UserError(
+                "End KM (%s) cannot be less than Start KM (%s)."
+                % (self.end_km, self.start_km)
+            )
         self.write({
             'end_trip': True,
             'end_time': self.end_time or fields.Datetime.now(),

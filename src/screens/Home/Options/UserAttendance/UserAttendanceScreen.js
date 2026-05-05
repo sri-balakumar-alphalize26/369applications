@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { StyledAlertModal } from '@components/Modal';
 import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView } from 'react-native';
 import { SafeAreaView } from '@components/containers';
@@ -208,29 +209,47 @@ const UserAttendanceScreen = ({ navigation }) => {
     return () => { if (interval) clearInterval(interval); };
   }, [attendanceMode, isVerified, todayWfhRequest, verifiedEmployee, offline]);
 
-  // Field Attendance — fetch today's trip + visit + attendance state when
-  // entering field mode after PIN/fingerprint verification.
+  // Field Attendance — fetch today's trip + visit + attendance state.
+  // Encapsulated as a callback so we can reuse it from both an effect (when
+  // mode/verification changes) and a focus listener (when the user comes
+  // back from Vehicle Tracking / Customer Visit screens after creating a
+  // new entry).
+  const refreshFieldAttendance = useCallback(async ({ silent = false } = {}) => {
+    if (!verifiedEmployee?.id) return;
+    if (offline) {
+      if (!silent) setFieldStatus('loading');
+      return;
+    }
+    if (!silent) {
+      setFieldStatus('loading');
+      setFieldData(null);
+    }
+    try {
+      const result = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id);
+      setFieldStatus(result?.status || 'no_trip');
+      setFieldData(result || null);
+    } catch (e) {
+      console.error('[FieldAttendance] fetch error:', e?.message);
+      setFieldStatus('no_trip');
+      setFieldData(null);
+    }
+  }, [verifiedEmployee, offline]);
+
   useEffect(() => {
     if (attendanceMode !== 'field' || !isVerified || !verifiedEmployee?.id) return;
-    let cancelled = false;
-    setFieldStatus('loading');
-    setFieldData(null);
-    if (offline) return; // keep status='loading' so the offline banner shows
-    (async () => {
-      try {
-        const result = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id);
-        if (cancelled) return;
-        setFieldStatus(result?.status || 'no_trip');
-        setFieldData(result || null);
-      } catch (e) {
-        console.error('[FieldAttendance] fetch error:', e?.message);
-        if (cancelled) return;
-        setFieldStatus('no_trip');
-        setFieldData(null);
+    refreshFieldAttendance();
+  }, [attendanceMode, isVerified, verifiedEmployee, offline, refreshFieldAttendance]);
+
+  // Re-run when the screen regains focus (e.g. user just came back from
+  // Vehicle Tracking after creating a new trip). Silent refresh — keeps the
+  // current rendered card on screen and updates in place.
+  useFocusEffect(
+    useCallback(() => {
+      if (attendanceMode === 'field' && isVerified && verifiedEmployee?.id && !offline) {
+        refreshFieldAttendance({ silent: true });
       }
-    })();
-    return () => { cancelled = true; };
-  }, [attendanceMode, isVerified, verifiedEmployee, offline]);
+    }, [attendanceMode, isVerified, verifiedEmployee, offline, refreshFieldAttendance])
+  );
 
   // Camera countdown and auto-capture
   useEffect(() => {
@@ -2253,15 +2272,24 @@ const UserAttendanceScreen = ({ navigation }) => {
           <MaterialIcons name={icon} size={scale(40)} color={FIELD_COLOR} />
           <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#333', marginTop: scale(10), textAlign: 'center' }}>{title}</Text>
           <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(4), textAlign: 'center' }}>{subtitle}</Text>
-          {ctaLabel && ctaTarget ? (
+          <View style={{ flexDirection: 'row', gap: scale(8), marginTop: scale(14) }}>
+            {ctaLabel && ctaTarget ? (
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: FIELD_COLOR, borderRadius: scale(10), paddingVertical: scale(10), paddingHorizontal: scale(14), gap: scale(6) }}
+                onPress={() => navigation.navigate(ctaTarget)}
+              >
+                <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
+                <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>{ctaLabel}</Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
-              style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: FIELD_COLOR, borderRadius: scale(10), paddingVertical: scale(10), paddingHorizontal: scale(16), marginTop: scale(14), gap: scale(6) }}
-              onPress={() => navigation.navigate(ctaTarget)}
+              style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderWidth: 1, borderColor: FIELD_COLOR, borderRadius: scale(10), paddingVertical: scale(10), paddingHorizontal: scale(14), gap: scale(6) }}
+              onPress={() => refreshFieldAttendance()}
             >
-              <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
-              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>{ctaLabel}</Text>
+              <MaterialIcons name="refresh" size={scale(16)} color={FIELD_COLOR} />
+              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR }}>Refresh</Text>
             </TouchableOpacity>
-          ) : null}
+          </View>
         </View>
       </View>
     );

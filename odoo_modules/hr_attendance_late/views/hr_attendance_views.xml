@@ -39,7 +39,6 @@
                 </header>
             </xpath>
             <xpath expr="//sheet" position="inside">
-                <field name="attendance_source" invisible="1"/>
                 <group string="Late Tracking">
                     <group>
                         <field name="is_first_checkin_of_day" invisible="1"/>
@@ -68,28 +67,6 @@
                                invisible="not is_waived"/>
                         <field name="daily_total_hours" widget="float_time" readonly="1"/>
                     </group>
-                </group>
-                <group string="Field Attendance" invisible="attendance_source != 'field'">
-                    <group>
-                        <field name="source_trip_id"
-                               options="{'no_create': True}"/>
-                        <field name="gps_location_name"/>
-                    </group>
-                    <group>
-                        <field name="gps_latitude"/>
-                        <field name="gps_longitude"/>
-                    </group>
-                    <field name="source_visit_ids"
-                           options="{'no_create': True, 'no_quick_create': True}"
-                           colspan="2">
-                        <list>
-                            <field name="name"/>
-                            <field name="partner_id"/>
-                            <field name="date_time"/>
-                            <field name="location_name"/>
-                            <field name="state"/>
-                        </list>
-                    </field>
                 </group>
             </xpath>
         </field>

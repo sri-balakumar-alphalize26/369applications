@@ -1,0 +1,602 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Inherit vehicle.tracking form view to add a disclaimer banner that
+         appears ONLY when the form is opened with context flag
+         show_end_disclaimer=True (set by hr.attendance.action_add_additional_trip
+         when the user is closing a previous trip before adding a new one). -->
+    <record id="view_vehicle_tracking_form_inherit_disclaimer" model="ir.ui.view">
+        <field name="name">vehicle.tracking.form.inherit.disclaimer</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="inherit_id" ref="vehicle_tracking.view_vehicle_tracking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <div class="alert alert-warning" role="alert"
+                     invisible="not context.get('show_end_disclaimer')">
+                    <strong>⚠ Closing previous trip</strong> &#8212; you're starting the next trip.
+                    Please enter the <strong>End KM</strong> below and click the
+                    green <strong>End Trip</strong> button at the top.
+                    The next trip's popup will then open automatically.
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Custom list view used inside the Source Trip picker dialog.
+         Each row has an Edit button that opens the trip in a popup
+         form so HR can fix trip details without leaving the picker. -->
+    <record id="view_vehicle_tracking_picker" model="ir.ui.view">
+        <field name="name">vehicle.tracking.picker.list</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <list string="Pick a Trip" create="false">
+                <field name="ref"/>
+                <field name="date"/>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="source_id" string="Source"/>
+                <field name="destination_id" string="Destination"/>
+                <field name="km_travelled" string="KM"/>
+                <field name="trip_status" widget="badge"
+                       decoration-muted="trip_status == 'draft'"
+                       decoration-info="trip_status == 'in_progress'"
+                       decoration-success="trip_status == 'ended'"
+                       decoration-danger="trip_status == 'cancelled'"/>
+                <button name="action_open_picker_edit" type="object"
+                        string="Edit" icon="fa-pencil" class="btn-link"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Inherit hr.attendance FORM view to add the Field Attendance group.
+         Loaded AFTER hr_attendance_late's inherit so the Field Attendance
+         block sits below the Late Tracking block. -->
+    <record id="view_attendance_form_inherit_field" model="ir.ui.view">
+        <field name="name">hr.attendance.form.inherit.field</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.hr_attendance_view_form"/>
+        <field name="arch" type="xml">
+            <!-- Workflow guidance banner — inserted as the FIRST thing inside
+                 the sheet (above Employee / Check In). Only visible for
+                 field attendance records; hidden for manual attendance. -->
+            <xpath expr="//sheet/*[1]" position="before">
+                <field name="attendance_source" invisible="1"/>
+                <div class="alert alert-warning" role="alert"
+                     invisible="attendance_source != 'field'">
+                    <h5 class="alert-heading mb-2">👋 How to fill your Field Attendance for today</h5>
+                    <p class="mb-2">Just follow these steps in order — each step unlocks the next:</p>
+                    <ol class="mb-0">
+                        <li>
+                            <strong>Were you late today?</strong>
+                            If yes, scroll down to <strong>Late Tracking</strong> and click the
+                            <strong>Enter Late Reason</strong> button. Type why you were late and save.
+                            If you arrived on time, skip this step.
+                        </li>
+                        <li>
+                            <strong>Add your first trip of the day.</strong>
+                            Click the <strong>Setup Primary Trip</strong> button in the
+                            Field Attendance section below.
+                            In the popup, pick the vehicle trip you used and add the customer visits you made on that trip.
+                            Click <strong>Save</strong> when done.
+                        </li>
+                        <li>
+                            <strong>Did you make more than one trip today?</strong>
+                            Click <strong>Add Additional Trips</strong>.
+                            A small window will appear asking you to close your previous trip first —
+                            just type the <strong>End KM</strong> reading and click Save.
+                            Then click <strong>Add Additional Trips</strong> again to add the next trip.
+                            Repeat for every extra trip.
+                        </li>
+                        <li>
+                            <strong>Done for the day?</strong>
+                            Click <strong>Check Out Now</strong> at the top.
+                            Your last trip will close automatically and all your visits will be marked as Done.
+                            After check-out the record is locked — you cannot edit it anymore.
+                        </li>
+                    </ol>
+                </div>
+            </xpath>
+            <xpath expr="//sheet" position="inside">
+                <group string="Field Attendance" invisible="attendance_source != 'field'">
+                    <field name="source_visit_count" invisible="1"/>
+                    <field name="source_trip_ended" invisible="1"/>
+                    <!-- Empty state: only show the Setup Primary Trip button. -->
+                    <div colspan="2" class="text-center my-3"
+                         invisible="source_trip_id">
+                        <button name="action_edit_primary_trip"
+                                type="object"
+                                string="Setup Primary Trip"
+                                class="btn-primary"
+                                icon="fa-plus"/>
+                    </div>
+                    <!-- Has-trip state: bordered card with details + Edit/Open/View buttons. -->
+                    <div colspan="2" class="card mb-3"
+                         invisible="not source_trip_id"
+                         style="border:2px solid #b0b0b0 !important; border-radius:8px !important; padding:16px !important; background-color:#fafafa !important; box-shadow:0 1px 3px rgba(0,0,0,0.08) !important;">
+                        <group>
+                            <group>
+                                <field name="source_trip_id" readonly="1"/>
+                                <field name="source_trip_source_location" readonly="1"/>
+                                <field name="source_trip_destination_location" readonly="1"/>
+                                <field name="trip_total_km"
+                                       string="KM Travelled" readonly="1"/>
+                            </group>
+                            <group>
+                                <field name="gps_latitude"/>
+                                <field name="gps_longitude"/>
+                                <field name="gps_location_name"/>
+                                <field name="trip_total_duration"
+                                       string="Duration (Hrs)" widget="float_time" readonly="1"/>
+                            </group>
+                        </group>
+                        <div class="mt-2">
+                            <button name="action_edit_primary_trip"
+                                    type="object"
+                                    string="Edit Primary Trip"
+                                    class="btn-primary me-2"
+                                    icon="fa-pencil"
+                                    invisible="source_trip_ended"/>
+                            <button name="action_open_source_trip"
+                                    type="object"
+                                    string="Open Source Trip"
+                                    class="btn-secondary me-2"
+                                    icon="fa-truck"/>
+                            <button name="action_view_source_visits"
+                                    type="object"
+                                    string="View Visits"
+                                    class="btn-secondary"
+                                    icon="fa-map-marker"
+                                    invisible="source_visit_count == 0"/>
+                        </div>
+                    </div>
+                    <group string="Additional Trips" colspan="2"
+                           invisible="not source_trip_id">
+                        <field name="trip_line_ids" nolabel="1">
+                            <kanban class="o_kanban_mobile" create="0" delete="0">
+                                <field name="trip_id"/>
+                                <field name="gps_latitude"/>
+                                <field name="gps_longitude"/>
+                                <field name="km_travelled"/>
+                                <field name="duration"/>
+                                <field name="source_location"/>
+                                <field name="destination_location"/>
+                                <templates>
+                                    <t t-name="card">
+                                        <div class="oe_kanban_card oe_kanban_global_click"
+                                             style="padding:12px; margin-bottom:10px; border:1px solid #d0d0d0; border-radius:6px; width:100%;">
+                                            <div class="row">
+                                                <div class="col-6">
+                                                    <strong>Source Trip: </strong>
+                                                    <field name="trip_id"/>
+                                                </div>
+                                                <div class="col-6">
+                                                    <strong>GPS Latitude: </strong>
+                                                    <field name="gps_latitude"/>
+                                                </div>
+                                            </div>
+                                            <div class="row mt-1">
+                                                <div class="col-6">
+                                                    <strong>Source Location: </strong>
+                                                    <field name="source_location"/>
+                                                </div>
+                                                <div class="col-6">
+                                                    <strong>GPS Longitude: </strong>
+                                                    <field name="gps_longitude"/>
+                                                </div>
+                                            </div>
+                                            <div class="row mt-1">
+                                                <div class="col-6">
+                                                    <strong>Destination Location: </strong>
+                                                    <field name="destination_location"/>
+                                                </div>
+                                                <div class="col-6">
+                                                    <strong>KM Travelled: </strong>
+                                                    <field name="km_travelled"/>
+                                                </div>
+                                            </div>
+                                            <div class="row mt-1">
+                                                <div class="col-12">
+                                                    <strong>Duration (Hrs): </strong>
+                                                    <field name="duration" widget="float_time"/>
+                                                </div>
+                                            </div>
+                                            <div class="mt-2">
+                                                <button name="action_open_trip" type="object"
+                                                        class="btn btn-secondary btn-sm me-2"
+                                                        icon="fa-truck">
+                                                    Open Source Trip
+                                                </button>
+                                                <button name="action_view_visits" type="object"
+                                                        class="btn btn-secondary btn-sm"
+                                                        icon="fa-map-marker">
+                                                    View Visits
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </t>
+                                </templates>
+                            </kanban>
+                            <form string="Add New Trip">
+                                <sheet>
+                                    <field name="has_visits" invisible="1"/>
+                                    <field name="trip_ended" invisible="1"/>
+                                    <div class="alert alert-info" role="alert"
+                                         invisible="not trip_ended">
+                                        This trip has been ended and is now read-only.
+                                    </div>
+                                    <group>
+                                        <group>
+                                            <field name="trip_id"
+                                                   readonly="trip_ended"
+                                                   domain="[('trip_status', 'not in', ('ended', 'cancelled')), ('id', 'in', parent.available_trip_ids)]"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                            <field name="source_location" readonly="1"
+                                                   invisible="not trip_id"/>
+                                            <field name="destination_location" readonly="1"
+                                                   invisible="not trip_id"/>
+                                        </group>
+                                        <group>
+                                            <field name="gps_latitude" readonly="1"
+                                                   invisible="not trip_id"/>
+                                            <field name="gps_longitude" readonly="1"
+                                                   invisible="not trip_id"/>
+                                        </group>
+                                    </group>
+                                    <group colspan="2" invisible="not trip_id">
+                                        <button name="action_open_trip"
+                                                type="object"
+                                                string="Open Source Trip"
+                                                class="btn-secondary"
+                                                icon="fa-truck"/>
+                                        <button name="action_view_visits"
+                                                type="object"
+                                                string="View Visits"
+                                                class="btn-secondary"
+                                                icon="fa-map-marker"/>
+                                    </group>
+                                    <separator string="Visits" colspan="2"
+                                               invisible="not trip_id"/>
+                                    <!-- Visit list — NEVER shows Add a line per user request.
+                                         X-delete still works to remove a visit if needed. -->
+                                    <field name="visit_ids" colspan="2"
+                                           invisible="not trip_id"
+                                           readonly="trip_ended"
+                                           domain="[('state', '=', 'draft')]"
+                                           options="{'no_create': True, 'no_quick_create': True}">
+                                        <list create="false">
+                                            <field name="name"/>
+                                            <field name="partner_id"/>
+                                            <field name="date_time"/>
+                                            <field name="location_name"/>
+                                            <field name="state"/>
+                                        </list>
+                                    </field>
+                                </sheet>
+                                <footer>
+                                    <button string="Save" special="save" class="btn-primary"
+                                            data-hotkey="q"/>
+                                    <button string="Discard" special="cancel"
+                                            class="btn-secondary" data-hotkey="z"/>
+                                    <button name="action_delete_self" type="object"
+                                            string="Delete" class="btn-danger ms-auto"
+                                            icon="fa-trash"
+                                            invisible="not id"
+                                            confirm="Delete this additional trip from this attendance?"/>
+                                </footer>
+                            </form>
+                        </field>
+                        <div colspan="2" class="text-center my-3">
+                            <button name="action_add_additional_trip"
+                                    type="object"
+                                    string="Add Additional Trips"
+                                    class="btn-primary"
+                                    icon="fa-plus"/>
+                        </div>
+                    </group>
+                    <group string="Trip Totals" colspan="2"
+                           invisible="not source_trip_id">
+                        <group>
+                            <field name="trip_total_km" readonly="1"/>
+                            <field name="trip_total_duration" widget="float_time" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="trip_total_fuel_litres" readonly="1"/>
+                            <field name="trip_total_fuel_amount" readonly="1"/>
+                        </group>
+                    </group>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Standalone form view for creating a NEW field.attendance.trip.line
+         from the "Add Additional Trips" button on hr.attendance. Mirrors
+         the inline kanban-embedded form so the popup looks identical. -->
+    <record id="view_field_attendance_trip_line_form" model="ir.ui.view">
+        <field name="name">field.attendance.trip.line.form</field>
+        <field name="model">field.attendance.trip.line</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <form string="Add Additional Trip">
+                <sheet>
+                    <field name="has_visits" invisible="1"/>
+                    <field name="trip_ended" invisible="1"/>
+                    <div class="alert alert-info" role="alert"
+                         invisible="not trip_ended">
+                        This trip has been ended and is now read-only.
+                    </div>
+                    <group>
+                        <group>
+                            <field name="trip_id"
+                                   readonly="trip_ended"
+                                   domain="[('trip_status', 'not in', ('ended', 'cancelled'))]"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                            <field name="source_location" readonly="1"
+                                   invisible="not trip_id"/>
+                            <field name="destination_location" readonly="1"
+                                   invisible="not trip_id"/>
+                        </group>
+                        <group>
+                            <field name="gps_latitude" readonly="1"
+                                   invisible="not trip_id"/>
+                            <field name="gps_longitude" readonly="1"
+                                   invisible="not trip_id"/>
+                        </group>
+                    </group>
+                    <group colspan="2" invisible="not trip_id">
+                        <button name="action_open_trip"
+                                type="object"
+                                string="Open Source Trip"
+                                class="btn-secondary"
+                                icon="fa-truck"/>
+                        <button name="action_view_visits"
+                                type="object"
+                                string="View Visits"
+                                class="btn-secondary"
+                                icon="fa-map-marker"/>
+                    </group>
+                    <separator string="Visits" colspan="2"
+                               invisible="not trip_id"/>
+                    <!-- Visit list — never shows Add a line. X-delete works. -->
+                    <field name="visit_ids" colspan="2"
+                           invisible="not trip_id"
+                           readonly="trip_ended"
+                           domain="[('state', '=', 'draft')]"
+                           options="{'no_create': True, 'no_quick_create': True}">
+                        <list create="false">
+                            <field name="name"/>
+                            <field name="partner_id"/>
+                            <field name="date_time"/>
+                            <field name="location_name"/>
+                            <field name="state"/>
+                        </list>
+                    </field>
+                </sheet>
+                <footer>
+                    <button string="Save" special="save" class="btn-primary"
+                            data-hotkey="q"/>
+                    <button string="Discard" special="cancel"
+                            class="btn-secondary" data-hotkey="z"/>
+                    <!-- Delete this trip line if it was added by mistake.
+                         Hidden when the line is brand new (no id yet). -->
+                    <button name="action_delete_self" type="object"
+                            string="Delete" class="btn-danger ms-auto"
+                            icon="fa-trash"
+                            invisible="not id"
+                            confirm="Delete this additional trip from this attendance?"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Standalone dialog form view for editing the primary trip on a
+         field-attendance: pick Source Trip + manage source_visit_ids
+         (with Add a line) inside a popup, mirroring the additional-trip
+         popup so both flows feel identical to HR. -->
+    <record id="view_attendance_primary_trip_dialog" model="ir.ui.view">
+        <field name="name">hr.attendance.primary.trip.dialog</field>
+        <field name="model">hr.attendance</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <form string="Primary Trip">
+                <sheet>
+                    <field name="has_source_visits" invisible="1"/>
+                    <field name="available_trip_ids" invisible="1"/>
+                    <field name="source_trip_ended" invisible="1"/>
+                    <div class="alert alert-info" role="alert"
+                         invisible="not source_trip_ended">
+                        This trip has been ended and is now read-only.
+                    </div>
+                    <group>
+                        <group>
+                            <field name="source_trip_id"
+                                   readonly="source_trip_ended"
+                                   domain="['|', '&amp;', ('trip_status', 'not in', ('ended', 'cancelled')), ('id', 'in', available_trip_ids), ('id', '=', source_trip_id)]"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                            <field name="source_trip_source_location" readonly="1"
+                                   invisible="not source_trip_id"/>
+                            <field name="source_trip_destination_location" readonly="1"
+                                   invisible="not source_trip_id"/>
+                            <field name="gps_location_name"
+                                   readonly="source_trip_ended"/>
+                        </group>
+                        <group>
+                            <field name="gps_latitude"
+                                   readonly="source_trip_ended"/>
+                            <field name="gps_longitude"
+                                   readonly="source_trip_ended"/>
+                        </group>
+                    </group>
+                    <group colspan="2" invisible="not source_trip_id">
+                        <button name="action_open_source_trip"
+                                type="object"
+                                string="Open Source Trip"
+                                class="btn-secondary"
+                                icon="fa-truck"/>
+                        <button name="action_view_source_visits"
+                                type="object"
+                                string="View Visits"
+                                class="btn-secondary"
+                                icon="fa-map-marker"/>
+                    </group>
+                    <separator string="Visits" colspan="2"
+                               invisible="not source_trip_id"/>
+                    <!-- Empty state: editable list with Add a line so the user can pick the FIRST visit. -->
+                    <field name="source_visit_ids" colspan="2"
+                           invisible="not source_trip_id or has_source_visits"
+                           readonly="source_trip_ended"
+                           domain="[('state', '=', 'draft')]"
+                           options="{'no_create': True, 'no_quick_create': True}">
+                        <list>
+                            <field name="name"/>
+                            <field name="partner_id"/>
+                            <field name="date_time"/>
+                            <field name="location_name"/>
+                            <field name="state"/>
+                        </list>
+                    </field>
+                    <!-- Has-rows state: no Add a line, but X-delete still works so the user can swap. -->
+                    <field name="source_visit_ids" colspan="2"
+                           invisible="not source_trip_id or not has_source_visits"
+                           readonly="source_trip_ended"
+                           domain="[('state', '=', 'draft')]"
+                           options="{'no_create': True, 'no_quick_create': True}">
+                        <list create="false">
+                            <field name="name"/>
+                            <field name="partner_id"/>
+                            <field name="date_time"/>
+                            <field name="location_name"/>
+                            <field name="state"/>
+                        </list>
+                    </field>
+                </sheet>
+                <footer>
+                    <button string="Save" special="save" class="btn-primary"
+                            data-hotkey="q"/>
+                    <button string="Discard" special="cancel"
+                            class="btn-secondary" data-hotkey="z"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Dedicated LIST view for field-attendance rows -->
+    <record id="view_field_attendance_list" model="ir.ui.view">
+        <field name="name">hr.attendance.field.list</field>
+        <field name="model">hr.attendance</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <list string="Field Attendance">
+                <field name="employee_id"/>
+                <field name="check_in"/>
+                <field name="check_out"/>
+                <field name="daily_total_hours" widget="float_time" string="Hours"/>
+                <field name="source_trip_id" string="Trip"/>
+                <field name="gps_location_name" string="Location"/>
+                <field name="is_late"/>
+                <field name="late_minutes_display" string="Late Time"/>
+                <field name="deduction_amount"/>
+                <field name="late_reason" optional="hide"/>
+                <field name="is_waived" string="Waived" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Dedicated SEARCH view -->
+    <record id="view_field_attendance_search" model="ir.ui.view">
+        <field name="name">hr.attendance.field.search</field>
+        <field name="model">hr.attendance</field>
+        <field name="arch" type="xml">
+            <search string="Field Attendance">
+                <field name="employee_id"/>
+                <field name="department_id" operator="child_of"/>
+                <field name="source_trip_id" string="Trip"/>
+                <field name="gps_location_name" string="Location"/>
+                <field name="check_in"/>
+                <separator/>
+                <filter string="My Records" name="my_records" domain="[('employee_id.user_id', '=', uid)]"/>
+                <filter string="Late Only" name="late_only" domain="[('is_late', '=', True)]"/>
+                <filter string="With Deduction" name="with_deduction" domain="[('deduction_amount', '&gt;', 0)]"/>
+                <filter string="Waived" name="waived" domain="[('is_waived', '=', True)]"/>
+                <separator/>
+                <filter string="Date" name="date_filter" date="check_in"/>
+                <group>
+                    <filter string="Employee" name="group_employee" context="{'group_by': 'employee_id'}"/>
+                    <filter string="Department" name="group_department" context="{'group_by': 'department_id'}"/>
+                    <filter string="Trip" name="group_trip" context="{'group_by': 'source_trip_id'}"/>
+                    <filter string="Date" name="group_date" context="{'group_by': 'date'}"/>
+                    <filter string="Month" name="group_month" context="{'group_by': 'date:month'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- ALL Field Attendance — visible to HR / managers -->
+    <record id="action_field_attendance" model="ir.actions.act_window">
+        <field name="name">Field Attendance</field>
+        <field name="res_model">hr.attendance</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('attendance_source', '=', 'field')]</field>
+        <field name="search_view_id" ref="view_field_attendance_search"/>
+        <field name="view_id" ref="view_field_attendance_list"/>
+        <field name="context">{'default_attendance_source': 'field'}</field>
+    </record>
+
+    <!-- MY Field Attendance — visible to employees, filtered to their own records -->
+    <record id="action_my_field_attendance" model="ir.actions.act_window">
+        <field name="name">My Field Attendance</field>
+        <field name="res_model">hr.attendance</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('attendance_source', '=', 'field'), ('employee_id.user_id', '=', uid)]</field>
+        <field name="search_view_id" ref="view_field_attendance_search"/>
+        <field name="view_id" ref="view_field_attendance_list"/>
+        <field name="context">{'default_attendance_source': 'field'}</field>
+    </record>
+
+    <!-- Parent menu under Attendance — clicking it opens the My Field
+         Attendance list directly so the menu is functional even if the
+         sub-items are hidden by group permissions. -->
+    <menuitem id="menu_field_attendance_root"
+              name="Field Attendance"
+              parent="hr_attendance.menu_hr_attendance_root"
+              action="action_my_field_attendance"
+              sequence="35"/>
+
+    <!-- All Field Records — HR / managers -->
+    <menuitem id="menu_field_attendance_all"
+              name="All Field Records"
+              parent="menu_field_attendance_root"
+              action="action_field_attendance"
+              sequence="10"
+              groups="hr.group_hr_user,base.group_system"/>
+
+    <!-- My Field Attendance — every employee -->
+    <menuitem id="menu_my_field_attendance"
+              name="My Field Attendance"
+              parent="menu_field_attendance_root"
+              action="action_my_field_attendance"
+              sequence="20"/>
+
+    <!-- App-launcher root: makes hr_field_attendance show as its own app
+         icon in the 9-dot Apps grid (top-left), alongside Vehicle Tracking,
+         Customer Visit, etc. Clicking it opens My Field Attendance. -->
+    <menuitem id="menu_field_attendance_app_root"
+              name="Field Attendance"
+              action="action_my_field_attendance"
+              sequence="50"/>
+
+    <menuitem id="menu_field_attendance_app_all"
+              name="All Field Records"
+              parent="menu_field_attendance_app_root"
+              action="action_field_attendance"
+              sequence="10"
+              groups="hr.group_hr_user,base.group_system"/>
+
+    <menuitem id="menu_field_attendance_app_my"
+              name="My Field Attendance"
+              parent="menu_field_attendance_app_root"
+              action="action_my_field_attendance"
+              sequence="20"/>
+
+</odoo>
