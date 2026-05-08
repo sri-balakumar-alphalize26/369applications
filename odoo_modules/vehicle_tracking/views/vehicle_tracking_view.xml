@@ -79,7 +79,14 @@
             <group>
               <field name="source_id" placeholder="Select Source Location" required="1" readonly="end_trip or trip_cancel"/>
               <field name="start_km" required="1" readonly="end_trip or trip_cancel"/>
-              <field name="end_km" required="end_trip" readonly="end_trip or trip_cancel"/>
+              <label for="end_km"/>
+              <div>
+                  <field name="end_km" required="end_trip" nolabel="1"
+                         readonly="not start_trip or end_trip or trip_cancel"/>
+                  <div class="text-danger small mt-1" invisible="start_trip or trip_cancel">
+                      After Start Trip you can use this field.
+                  </div>
+              </div>
               <field name="km_travelled" readonly="1"/>
               <field name="purpose_of_visit_id" required="1" readonly="end_trip or trip_cancel"/>
             </group>
@@ -89,7 +96,14 @@
               <field name="visited_stops_display" readonly="1"
                      invisible="visited_stop_count == 0"/>
               <field name="start_time" readonly="end_trip or trip_cancel"/>
-              <field name="end_time" required="end_trip" readonly="end_trip or trip_cancel"/>
+              <label for="end_time"/>
+              <div>
+                  <field name="end_time" required="end_trip" nolabel="1"
+                         readonly="not start_trip or end_trip or trip_cancel"/>
+                  <div class="text-danger small mt-1" invisible="start_trip or trip_cancel">
+                      After Start Trip you can use this field.
+                  </div>
+              </div>
               <field name="duration" readonly="1"/>
               <field name="invoice_number" readonly="end_trip or trip_cancel"/>
 

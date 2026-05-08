@@ -159,6 +159,23 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   // Get existing trip data from route params (when editing/continuing a trip)
   const existingTripData = route?.params?.tripData;
   const isEditMode = !!existingTripData;
+
+  // Prewarm GPS cache as soon as the form opens. Fire LOW (cell/WiFi, fast)
+  // and BALANCED (slower, more accurate) in parallel — whichever returns
+  // first lands in the device's last-known cache. Subsequent
+  // getCurrentLocation calls then resolve from cache in ~10ms.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled || status !== 'granted') return;
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }).catch(() => {});
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(() => {});
+      } catch (_) { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   
   // Determine initial trip state based on existing data.
   // Note: the Odoo field is `trip_cancel` (no trailing -led).
@@ -214,13 +231,16 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     travelledKM: existingTripData?.travelledKM || '0',
     invoiceNumbers: existingTripData?.invoiceNumbers || '',
     amount: existingTripData?.amount || '0',
+    // Read from the nested camelCase object (built by fetchVehicleTrackingTripsOdoo
+    // or our flattenTripForForm); fall back to the flat snake_case server fields
+    // so any caller that doesn't pre-build vehicleChecklist still works.
     vehicleChecklist: {
-      coolentWater: existingTripData?.vehicleChecklist?.coolentWater || false,
-      oilChecking: existingTripData?.vehicleChecklist?.oilChecking || false,
-      tyreChecking: existingTripData?.vehicleChecklist?.tyreChecking || false,
-      batteryChecking: existingTripData?.vehicleChecklist?.batteryChecking || false,
-      fuelChecking: existingTripData?.vehicleChecklist?.fuelChecking || false,
-      dailyChecks: existingTripData?.vehicleChecklist?.dailyChecks || false,
+      coolentWater:    !!(existingTripData?.vehicleChecklist?.coolentWater    ?? existingTripData?.coolant_water),
+      oilChecking:     !!(existingTripData?.vehicleChecklist?.oilChecking     ?? existingTripData?.oil_checking),
+      tyreChecking:    !!(existingTripData?.vehicleChecklist?.tyreChecking    ?? existingTripData?.tyre_checking),
+      batteryChecking: !!(existingTripData?.vehicleChecklist?.batteryChecking ?? existingTripData?.battery_checking),
+      fuelChecking:    !!(existingTripData?.vehicleChecklist?.fuelChecking    ?? existingTripData?.fuel_checking),
+      dailyChecks:     !!(existingTripData?.vehicleChecklist?.dailyChecks     ?? existingTripData?.daily_checks),
     },
     cancelTrip: existingTripData?.trip_cancelled || false,
     remarks: existingTripData?.remarks || '',
@@ -517,6 +537,10 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   // Convenience: a single boolean for "everything is locked" — used to gate
   // text inputs that don't go through isFieldDisabled.
   const isTripLocked = formData.tripStatus === 'completed' || formData.tripStatus === 'cancelled';
+  // End KM / End Time stay readonly until Start Trip is pressed (mirrors the
+  // module's view modifier `readonly="not start_trip or end_trip or trip_cancel"`).
+  const tripStartedFlag = !!(formData.startTrip || formData.isTripStarted);
+  const endFieldsLocked = isTripLocked || !tripStartedFlag;
 
   const isFieldEditable = (fieldName) => {
     const { tripStatus, isTripStarted } = formData;
@@ -1091,8 +1115,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   };
 
   // Function to get current GPS location using expo-location.
-  // Fast path: cached fix (≤120s) → quick Balanced fetch (3s timeout) → stale cache.
-  // Designed to return in <1s in the typical case (mirrors AttendanceService).
+  // 4-step ladder: cached (≤5min) → LOW live (cell/wifi, ~1s) → BALANCED live
+  // (8s timeout) → any-age stale cache. Designed to always return real coords
+  // (or last-known) instead of falling through to the fallback.
   const getCurrentLocation = async (logAddressLabel = '') => {
     const FALLBACK = { latitude: 25.2048, longitude: 55.2708 };
     try {
@@ -1104,21 +1129,37 @@ const VehicleTrackingForm = ({ navigation, route }) => {
 
       let coords = null;
 
-      // 1) Cached fix
+      // 1) Cached fix — widened to 5min so we don't churn on near-stale data.
       try {
-        const last = await Location.getLastKnownPositionAsync({ maxAge: 120_000 });
+        const last = await Location.getLastKnownPositionAsync({ maxAge: 300_000 });
         if (last?.coords) {
           coords = last.coords;
           console.log('[VehicleTrackingForm] CACHED GPS:', coords.latitude, coords.longitude);
         }
       } catch (_) { /* fall through */ }
 
-      // 2) Quick Balanced live fetch with 3s timeout
+      // 2) LOW-accuracy live fetch — cell + WiFi only, ~1s on most networks.
+      if (!coords) {
+        try {
+          const live = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout-low')), 4000)),
+          ]);
+          if (live?.coords) {
+            coords = live.coords;
+            console.log('[VehicleTrackingForm] LIVE-LOW GPS:', coords.latitude, coords.longitude);
+          }
+        } catch (err) {
+          console.log('[VehicleTrackingForm] live LOW fetch failed:', err?.message);
+        }
+      }
+
+      // 3) BALANCED live fetch with 8s timeout — only if LOW also failed.
       if (!coords) {
         try {
           const live = await Promise.race([
             Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout')), 3000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout-balanced')), 8000)),
           ]);
           if (live?.coords) {
             coords = live.coords;
@@ -1129,7 +1170,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         }
       }
 
-      // 3) Any-age cache, last resort
+      // 4) Any-age cache, last resort
       if (!coords) {
         try {
           const anyLast = await Location.getLastKnownPositionAsync({});
@@ -1212,16 +1253,23 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         daily_checks: checklist.dailyChecks,
       };
 
+      // Helper: extract a primitive id from either an Odoo m2o pair [id, name]
+      // or an already-primitive id. Handles both raw read() output and our
+      // flattenTripForForm output uniformly.
+      const m2oId = (val) => Array.isArray(val) ? val[0] : (val || null);
+
       // Find selected vehicle object from dropdowns. When editing, preserve existing vehicle_id
       const selectedVehicle = (dropdowns.vehicles || []).find(v => v.name === formData.vehicle);
       // Extract vehicle_id: if it's an array (from API response), take first element
       let vehicle_id = selectedVehicle ? selectedVehicle._id : null;
       if (!vehicle_id && isEditMode && existingTripData?.vehicle_id) {
-        vehicle_id = Array.isArray(existingTripData.vehicle_id) ? existingTripData.vehicle_id[0] : existingTripData.vehicle_id;
+        vehicle_id = m2oId(existingTripData.vehicle_id);
         console.log('[VehicleTrackingForm] Using vehicle_id from existingTripData:', vehicle_id, 'original:', existingTripData.vehicle_id);
       }
-      // Try to get driver_id from selected vehicle or fallback to existing trip driver id
-      const driver_id = selectedVehicle?.driver?.id || (Array.isArray(existingTripData?.driver_id) ? existingTripData.driver_id[0] : existingTripData?.driver_id) || null;
+      // Driver: prefer dropdown's selected vehicle's driver, fallback to existing.
+      const driver_id = selectedVehicle?.driver?.id
+        || (isEditMode ? m2oId(existingTripData?.driver_id) : null)
+        || null;
 
       // Map form fields to Odoo model fields
       let submitData = {
@@ -1234,14 +1282,18 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         daily_checks: checklistSnake.daily_checks,
         date: formatDateOdoo(formData.date),
         destination_id: (() => {
-          // Find selected destination object from dropdowns
           const selectedDestination = (dropdowns.destinations || []).find(d => d.name === formData.destination);
-          return selectedDestination ? selectedDestination._id : null;
+          if (selectedDestination?._id) return selectedDestination._id;
+          // Fallback: when editing, preserve the previously-saved id rather
+          // than nulling the field if the dropdown lookup didn't match.
+          if (isEditMode && existingTripData?.destination_id) return m2oId(existingTripData.destination_id);
+          return null;
         })(),
         source_id: (() => {
-          // Find selected source object from dropdowns
           const selectedSource = (dropdowns.sourceLocations || []).find(s => s.name === formData.source);
-          return selectedSource ? selectedSource._id : null;
+          if (selectedSource?._id) return selectedSource._id;
+          if (isEditMode && existingTripData?.source_id) return m2oId(existingTripData.source_id);
+          return null;
         })(),
         driver_id: driver_id,
         end_km: parseInt(formData.endKM) || 0,
@@ -1269,7 +1321,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         // Add purpose_of_visit_id as id (many2one)
         purpose_of_visit_id: (() => {
           const selectedPurpose = (dropdowns.purposesOfVisit || []).find(p => p.name === purposeOfVisit);
-          return selectedPurpose ? selectedPurpose._id : null;
+          if (selectedPurpose?._id) return selectedPurpose._id;
+          if (isEditMode && existingTripData?.purpose_of_visit_id) return m2oId(existingTripData.purpose_of_visit_id);
+          return null;
         })(),
         // pre_trip_litres removed: not a valid Odoo field
         // Add Fuel fields (if provided)
@@ -1672,6 +1726,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             : "New Vehicle Tracking"
         }
         navigation={navigation}
+        onBackPress={() => navigation.goBack()}
       />
       <OfflineBanner message="OFFLINE — new trips will sync when online" />
 
@@ -1972,16 +2027,22 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             keyboardType="numeric"
             selectTextOnFocus
             error={errors.endKM}
-            editable={!isTripLocked}
+            editable={!endFieldsLocked}
           />
+          {!tripStartedFlag && !isTripLocked ? (
+            <Text style={styles.helperDanger}>After Start Trip you can use this field.</Text>
+          ) : null}
 
           {/* End Time */}
           <FormInput
             label="End Time :"
             value={formatDateTime(formData.endTime)}
-            onPress={() => setIsEndTimePickerVisible(true)}
+            onPress={() => { if (endFieldsLocked) return; setIsEndTimePickerVisible(true); }}
             editable={false}
           />
+          {!tripStartedFlag && !isTripLocked ? (
+            <Text style={styles.helperDanger}>After Start Trip you can use this field.</Text>
+          ) : null}
 
           {/* Travelled KM */}
           <FormInput
@@ -3126,6 +3187,14 @@ const styles = StyleSheet.create({
   },
   readOnlyInput: {
     backgroundColor: COLORS.lightGray,
+  },
+  helperDanger: {
+    fontFamily: FONT_FAMILY.urbanistMedium,
+    fontSize: 11,
+    color: '#E53935',
+    marginTop: -8,
+    marginBottom: 8,
+    marginLeft: 4,
   },
   remarksInput: {
     height: 100,

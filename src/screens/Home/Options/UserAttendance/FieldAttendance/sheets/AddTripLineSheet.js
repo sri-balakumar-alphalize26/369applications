@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -28,6 +28,8 @@ const AddTripLineSheet = ({
   onClose,
   saving,
   onCreateNewTrip,
+  autoOpenPicker,
+  onAutoOpenConsumed,
 }) => {
   const [tripId, setTripId] = useState(null);
   const [tripLabel, setTripLabel] = useState('');
@@ -52,6 +54,22 @@ const AddTripLineSheet = ({
       setVisitLabels([]);
     }
   }, [visible]);
+
+  // One-shot auto-open of the inner trip picker — fires when the parent
+  // requests it (e.g., user just came back from creating a new trip).
+  const autoFiredRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      autoFiredRef.current = false;
+      return;
+    }
+    if (autoOpenPicker && !autoFiredRef.current) {
+      autoFiredRef.current = true;
+      openTripPicker();
+      if (onAutoOpenConsumed) onAutoOpenConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, autoOpenPicker]);
 
   const openTripPicker = async () => {
     setTripsLoading(true);
@@ -205,6 +223,8 @@ const AddTripLineSheet = ({
         onClose={() => setTripPickerOpen(false)}
         title="Pick a Trip"
         onCreateNew={onCreateNewTrip ? () => {
+          // Close the inner picker; the parent saves context + closes the
+          // outer sheet, then the focus-return effect re-opens both.
           setTripPickerOpen(false);
           onCreateNewTrip();
         } : undefined}

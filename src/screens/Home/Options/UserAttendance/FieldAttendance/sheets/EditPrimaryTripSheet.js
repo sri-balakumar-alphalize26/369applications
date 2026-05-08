@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -30,9 +30,18 @@ const tripIdOf = (t) => {
   return Number(t.id);
 };
 
-// Edit the primary trip (source_trip_id, gps_*, source_visit_ids) on an
-// existing field attendance. Mirrors the Odoo "Edit Primary Trip" popup
-// (view_attendance_primary_trip_dialog).
+const fmtDateTime = (s) => {
+  if (!s) return '—';
+  const d = new Date(String(s).replace(' ', 'T') + 'Z');
+  if (isNaN(d.getTime())) return String(s).slice(0, 16);
+  return d.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+};
+
+// Edit / Setup the primary trip on a field attendance.
+// Layout mirrors Odoo's view_attendance_primary_trip_dialog: source trip
+// picker, source/destination location read-only rows, GPS, location name,
+// Open Source Trip + View Visits buttons, then a VISITS table with X-row
+// removal + "+ Add a line" link at the bottom.
 const EditPrimaryTripSheet = ({
   visible,
   attendance,
@@ -43,14 +52,20 @@ const EditPrimaryTripSheet = ({
   onClose,
   saving,
   onCreateNewTrip,
+  autoOpenPicker,
+  onAutoOpenConsumed,
+  onOpenSourceTrip,
+  onViewVisits,
 }) => {
   const [tripId, setTripId] = useState(null);
   const [tripLabel, setTripLabel] = useState('');
+  const [sourceLocLabel, setSourceLocLabel] = useState('');
+  const [destLocLabel, setDestLocLabel] = useState('');
   const [gpsLat, setGpsLat] = useState('');
   const [gpsLng, setGpsLng] = useState('');
   const [gpsName, setGpsName] = useState('');
-  const [visitIds, setVisitIds] = useState([]);
-  const [visitLabels, setVisitLabels] = useState([]); // [{id, label}]
+  // Full visit row objects so we can render the table (ref / customer / time / location / state)
+  const [visitRows, setVisitRows] = useState([]);
 
   const [trips, setTrips] = useState([]);
   const [tripsLoading, setTripsLoading] = useState(false);
@@ -61,38 +76,54 @@ const EditPrimaryTripSheet = ({
   const [visitPickerOpen, setVisitPickerOpen] = useState(false);
 
   // Hydrate state from the attendance record each time the sheet opens.
-  // Tolerant of a null `attendance` prop: opens with a blank form so the
-  // user can still pick a trip / link visits via the picker sheets even
-  // before the parent's rich-detail fetch returns.
+  // Tolerant of a null `attendance` prop: opens with a blank form so the user
+  // can still pick a trip / link visits via the picker sheets even before the
+  // parent's rich-detail fetch returns.
   useEffect(() => {
     if (!visible) return;
     if (!attendance) {
       setTripId(null);
       setTripLabel('');
+      setSourceLocLabel('');
+      setDestLocLabel('');
       setGpsLat('');
       setGpsLng('');
       setGpsName('');
-      setVisitIds([]);
-      setVisitLabels([]);
+      setVisitRows([]);
       return;
     }
     setTripId(tripIdOf(attendance.source_trip_id));
     setTripLabel(tripRefOf(attendance.source_trip_id));
+    setSourceLocLabel(String(attendance.source_trip_source_location ?? ''));
+    setDestLocLabel(String(attendance.source_trip_destination_location ?? ''));
     setGpsLat(String(attendance.gps_latitude ?? ''));
     setGpsLng(String(attendance.gps_longitude ?? ''));
     setGpsName(String(attendance.gps_location_name ?? ''));
     const ids = Array.isArray(attendance.source_visit_ids) ? attendance.source_visit_ids.map(Number) : [];
-    setVisitIds(ids);
-    setVisitLabels([]);
     if (ids.length > 0 && loadVisitsByIds) {
       loadVisitsByIds(ids).then((rows) => {
-        setVisitLabels(rows.map((r) => ({
-          id: Number(r.id),
-          label: Array.isArray(r.partner_id) ? r.partner_id[1] : (r.name || `Visit #${r.id}`),
-        })));
-      }).catch(() => {});
+        setVisitRows(rows || []);
+      }).catch(() => setVisitRows([]));
+    } else {
+      setVisitRows([]);
     }
   }, [visible, attendance, loadVisitsByIds]);
+
+  // One-shot auto-open of the trip picker — parent sets autoOpenPicker=true
+  // when the user is returning from creating a brand-new trip.
+  const autoFiredRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      autoFiredRef.current = false;
+      return;
+    }
+    if (autoOpenPicker && !autoFiredRef.current) {
+      autoFiredRef.current = true;
+      openTripPicker();
+      if (onAutoOpenConsumed) onAutoOpenConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, autoOpenPicker]);
 
   const openTripPicker = async () => {
     setTripsLoading(true);
@@ -110,6 +141,8 @@ const EditPrimaryTripSheet = ({
   const onTripSelected = (trip) => {
     setTripId(Number(trip.id));
     setTripLabel(trip.ref || `Trip #${trip.id}`);
+    setSourceLocLabel(Array.isArray(trip.source_id) ? (trip.source_id[1] || '') : '');
+    setDestLocLabel(Array.isArray(trip.destination_id) ? (trip.destination_id[1] || '') : '');
     // Auto-fill GPS from trip when current GPS is empty (mirrors Odoo onchange).
     const numLat = parseFloat(gpsLat);
     const numLng = parseFloat(gpsLng);
@@ -120,6 +153,8 @@ const EditPrimaryTripSheet = ({
     if (!gpsName && Array.isArray(trip.source_id)) {
       setGpsName(trip.source_id[1] || '');
     }
+    // Picking a trip does NOT auto-populate visits — user must add via the
+    // "+ Add a line" button below. Mirrors the trip-line module convention.
     setTripPickerOpen(false);
   };
 
@@ -128,10 +163,10 @@ const EditPrimaryTripSheet = ({
     setVisitPickerOpen(true);
     try {
       const draft = await loadDraftVisits();
-      // Merge currently-selected visits (which may not be in draft state any more)
-      // so the user can de-select them.
+      // Merge currently-selected visits so the picker shows them as already-checked.
       const draftIds = new Set((draft || []).map((v) => Number(v.id)));
-      const missing = visitIds.filter((id) => !draftIds.has(id));
+      const existingIds = visitRows.map((v) => Number(v.id));
+      const missing = existingIds.filter((id) => !draftIds.has(id));
       let extra = [];
       if (missing.length > 0 && loadVisitsByIds) {
         extra = await loadVisitsByIds(missing);
@@ -144,17 +179,23 @@ const EditPrimaryTripSheet = ({
     }
   };
 
-  const onVisitsConfirmed = (ids) => {
-    setVisitIds(ids);
-    const map = new Map();
-    visits.forEach((v) => {
-      map.set(Number(v.id), {
-        id: Number(v.id),
-        label: Array.isArray(v.partner_id) ? v.partner_id[1] : (v.name || `Visit #${v.id}`),
-      });
-    });
-    setVisitLabels(ids.map((id) => map.get(Number(id)) || { id, label: `Visit #${id}` }));
+  const onVisitsConfirmed = async (newIds) => {
+    // Keep rows the user kept selected; fetch any newly-added rows we don't
+    // yet have full data for.
+    const haveIds = new Set(visitRows.map((v) => Number(v.id)));
+    const toFetch = newIds.filter((id) => !haveIds.has(Number(id)));
+    let added = [];
+    if (toFetch.length > 0 && loadVisitsByIds) {
+      try { added = await loadVisitsByIds(toFetch); } catch (_) { added = []; }
+    }
+    const newSet = new Set(newIds.map(Number));
+    const keep = visitRows.filter((v) => newSet.has(Number(v.id)));
+    setVisitRows([...keep, ...added]);
     setVisitPickerOpen(false);
+  };
+
+  const removeVisit = (id) => {
+    setVisitRows((prev) => prev.filter((v) => Number(v.id) !== Number(id)));
   };
 
   const handleSave = () => {
@@ -167,9 +208,11 @@ const EditPrimaryTripSheet = ({
       gps_latitude: parseFloat(gpsLat) || 0,
       gps_longitude: parseFloat(gpsLng) || 0,
       gps_location_name: gpsName || '',
-      source_visit_ids: visitIds,
+      source_visit_ids: visitRows.map((v) => Number(v.id)),
     });
   };
+
+  const visitIds = visitRows.map((v) => Number(v.id));
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -189,15 +232,50 @@ const EditPrimaryTripSheet = ({
             </View>
 
             <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+              {/* Source Trip picker */}
               <Text style={styles.label}>Source Trip *</Text>
-              <TouchableOpacity style={styles.input} activeOpacity={0.85} onPress={openTripPicker}>
-                <MaterialIcons name="directions-car" size={16} color={FIELD_COLOR} />
-                <Text style={[styles.inputText, !tripLabel && { color: '#999' }]} numberOfLines={1}>
-                  {tripLabel || 'Tap to pick a trip'}
-                </Text>
-                <MaterialIcons name="chevron-right" size={18} color="#999" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity style={[styles.input, { flex: 1 }]} activeOpacity={0.85} onPress={openTripPicker}>
+                  <MaterialIcons name="directions-car" size={16} color={FIELD_COLOR} />
+                  <Text style={[styles.inputText, !tripLabel && { color: '#999' }]} numberOfLines={1}>
+                    {tripLabel || 'Tap to pick a trip'}
+                  </Text>
+                  <MaterialIcons name="chevron-right" size={18} color="#999" />
+                </TouchableOpacity>
+                {tripId && onOpenSourceTrip ? (
+                  <TouchableOpacity
+                    style={styles.openIconBtn}
+                    onPress={() => onOpenSourceTrip(tripId)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <MaterialIcons name="open-in-new" size={18} color={FIELD_COLOR} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
 
+              {/* Source Location (read-only) */}
+              <View style={styles.kvRow}>
+                <Text style={styles.kvKey}>Source Location</Text>
+                <Text style={styles.kvVal} numberOfLines={2}>{sourceLocLabel || '—'}</Text>
+              </View>
+
+              {/* Destination Location (read-only) */}
+              <View style={styles.kvRow}>
+                <Text style={styles.kvKey}>Destination</Text>
+                <Text style={styles.kvVal} numberOfLines={2}>{destLocLabel || '—'}</Text>
+              </View>
+
+              {/* Location name (editable) */}
+              <Text style={styles.label}>Location</Text>
+              <TextInput
+                value={gpsName}
+                onChangeText={setGpsName}
+                placeholder="e.g. Customer warehouse, depot, branch"
+                placeholderTextColor="#999"
+                style={styles.textInput}
+              />
+
+              {/* GPS lat/lng */}
               <View style={styles.row2}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>GPS Latitude</Text>
@@ -223,40 +301,79 @@ const EditPrimaryTripSheet = ({
                 </View>
               </View>
 
-              <Text style={styles.label}>Location Name</Text>
-              <TextInput
-                value={gpsName}
-                onChangeText={setGpsName}
-                placeholder="e.g. Customer warehouse, depot, branch"
-                placeholderTextColor="#999"
-                style={styles.textInput}
-              />
-
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, marginBottom: 6 }}>
-                <Text style={[styles.label, { marginBottom: 0 }]}>Visits ({visitIds.length})</Text>
-                <TouchableOpacity onPress={openVisitPicker} style={styles.linkBtn}>
-                  <MaterialIcons name="edit" size={14} color={FIELD_COLOR} />
-                  <Text style={styles.linkText}>Pick / Edit</Text>
+              {/* Open Source Trip + View Visits buttons */}
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, !tripId && styles.actionBtnDisabled]}
+                  disabled={!tripId}
+                  activeOpacity={0.85}
+                  onPress={() => onOpenSourceTrip && onOpenSourceTrip(tripId)}
+                >
+                  <MaterialIcons name="local-shipping" size={14} color={tripId ? FIELD_COLOR : '#BDBDBD'} />
+                  <Text style={[styles.actionBtnText, !tripId && { color: '#BDBDBD' }]}>Open Source Trip</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, visitRows.length === 0 && styles.actionBtnDisabled]}
+                  disabled={visitRows.length === 0}
+                  activeOpacity={0.85}
+                  onPress={() => onViewVisits && onViewVisits(visitIds)}
+                >
+                  <MaterialIcons name="place" size={14} color={visitRows.length > 0 ? FIELD_COLOR : '#BDBDBD'} />
+                  <Text style={[styles.actionBtnText, visitRows.length === 0 && { color: '#BDBDBD' }]}>View Visits</Text>
                 </TouchableOpacity>
               </View>
-              {visitLabels.length === 0 ? (
+
+              {/* VISITS table */}
+              <Text style={styles.sectionHeader}>VISITS</Text>
+              {visitRows.length === 0 ? (
                 <View style={styles.emptyVisits}>
                   <MaterialIcons name="people-outline" size={18} color="#BDBDBD" />
-                  <Text style={styles.emptyVisitsText}>No visits selected.</Text>
+                  <Text style={styles.emptyVisitsText}>No visits yet. Tap "+ Add a line" to add.</Text>
                 </View>
               ) : (
-                visitLabels.map((v) => (
-                  <View key={v.id} style={styles.visitChip}>
-                    <MaterialIcons name="person" size={13} color={FIELD_COLOR} />
-                    <Text style={styles.visitChipText} numberOfLines={1}>{v.label}</Text>
+                visitRows.map((v) => (
+                  <View key={v.id} style={styles.visitRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.visitRef} numberOfLines={1}>
+                        {v.name || `Visit #${v.id}`}
+                      </Text>
+                      <Text style={styles.visitMeta} numberOfLines={1}>
+                        {Array.isArray(v.partner_id) ? v.partner_id[1] : '—'}
+                        {' · '}{fmtDateTime(v.date_time)}
+                        {' · '}{v.location_name || '—'}
+                      </Text>
+                    </View>
+                    <View style={styles.statePill}>
+                      <Text style={styles.statePillText}>{(v.state || 'draft').toUpperCase()}</Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => removeVisit(v.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <MaterialIcons name="close" size={18} color="#888" />
+                    </TouchableOpacity>
                   </View>
                 ))
               )}
+
+              {/* + Add a line */}
+              <TouchableOpacity
+                style={[styles.addLineBtn, !tripId && styles.addLineBtnDisabled]}
+                disabled={!tripId}
+                activeOpacity={0.85}
+                onPress={openVisitPicker}
+              >
+                <MaterialIcons name="add" size={16} color={tripId ? FIELD_COLOR : '#BDBDBD'} />
+                <Text style={[styles.addLineText, !tripId && { color: '#BDBDBD' }]}>Add a line</Text>
+              </TouchableOpacity>
+              {!tripId ? (
+                <Text style={styles.addLineHint}>Pick a Source Trip first to add visits.</Text>
+              ) : null}
             </ScrollView>
 
             <View style={styles.footer}>
               <TouchableOpacity style={styles.btnSecondary} onPress={onClose} disabled={saving}>
-                <Text style={styles.btnSecondaryText}>Cancel</Text>
+                <Text style={styles.btnSecondaryText}>Discard</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.btnPrimary, (saving || !tripId) && { opacity: 0.6 }]}
@@ -280,6 +397,8 @@ const EditPrimaryTripSheet = ({
         onClose={() => setTripPickerOpen(false)}
         title="Pick Source Trip"
         onCreateNew={onCreateNewTrip ? () => {
+          // Close the inner picker; the parent saves context + closes the
+          // outer sheet, then the focus-return effect re-opens both.
           setTripPickerOpen(false);
           onCreateNewTrip();
         } : undefined}
@@ -291,7 +410,7 @@ const EditPrimaryTripSheet = ({
         selectedIds={visitIds}
         onConfirm={onVisitsConfirmed}
         onClose={() => setVisitPickerOpen(false)}
-        title="Select Visits"
+        title="Add Visits"
       />
     </Modal>
   );
@@ -330,24 +449,59 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 12,
   },
   inputText: { flex: 1, fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#222' },
+  openIconBtn: {
+    width: 40, height: 44, borderRadius: 10, borderWidth: 1, borderColor: FIELD_COLOR,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff',
+  },
+  kvRow: {
+    flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between',
+    paddingVertical: 6, gap: 12,
+  },
+  kvKey: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', flexShrink: 0, paddingTop: 2 },
+  kvVal: { flex: 1, fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#333', textAlign: 'right' },
   textInput: {
     backgroundColor: '#F5F9FF', borderRadius: 10, borderWidth: 1, borderColor: '#E3F2FD',
     paddingHorizontal: 12, paddingVertical: Platform.OS === 'ios' ? 12 : 8,
     fontSize: 13, fontFamily: FONT_FAMILY.urbanistMedium, color: '#222',
   },
   row2: { flexDirection: 'row', gap: 8 },
-  linkBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 6 },
-  linkText: { fontSize: 12, color: FIELD_COLOR, fontFamily: FONT_FAMILY.urbanistBold },
+  actionRow: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  actionBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#fff', borderColor: FIELD_COLOR, borderWidth: 1, borderRadius: 10,
+    paddingVertical: 9,
+  },
+  actionBtnDisabled: { borderColor: '#E0E0E0', backgroundColor: '#FAFAFA' },
+  actionBtnText: { fontSize: 12, color: FIELD_COLOR, fontFamily: FONT_FAMILY.urbanistBold },
+  sectionHeader: {
+    fontSize: 11, fontFamily: FONT_FAMILY.urbanistBold, color: '#888',
+    letterSpacing: 1, marginTop: 18, marginBottom: 6,
+  },
   emptyVisits: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#FAFAFA', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed',
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FAFAFA', borderRadius: 8, padding: 10,
+    borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed',
   },
-  emptyVisitsText: { fontSize: 12, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium },
-  visitChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#E3F2FD', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, marginTop: 4,
+  emptyVisitsText: { flex: 1, fontSize: 12, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium },
+  visitRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#fff', borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: '#E0E0E0', marginVertical: 3,
   },
-  visitChipText: { fontSize: 12, color: '#222', fontFamily: FONT_FAMILY.urbanistBold, flexShrink: 1 },
+  visitRef: { fontSize: 12.5, fontFamily: FONT_FAMILY.urbanistBold, color: '#222' },
+  visitMeta: { fontSize: 11, fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: 2 },
+  statePill: {
+    backgroundColor: '#E8F5E9', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2,
+    borderWidth: 1, borderColor: '#43A047',
+  },
+  statePillText: { fontSize: 9, color: '#43A047', fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.4 },
+  addLineBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingVertical: 10, paddingHorizontal: 4, marginTop: 4,
+  },
+  addLineBtnDisabled: { opacity: 0.6 },
+  addLineText: { fontSize: 13, color: FIELD_COLOR, fontFamily: FONT_FAMILY.urbanistBold },
+  addLineHint: { fontSize: 11, color: '#999', fontFamily: FONT_FAMILY.urbanistMedium, marginLeft: 4 },
   footer: {
     flexDirection: 'row', justifyContent: 'flex-end', gap: 8,
     padding: 14, borderTopWidth: 1, borderTopColor: '#EEE',

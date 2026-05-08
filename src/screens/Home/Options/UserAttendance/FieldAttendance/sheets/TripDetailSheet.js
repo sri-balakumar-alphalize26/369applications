@@ -98,13 +98,6 @@ const TripDetailSheet = ({ visible, trip, loading, onClose, onOpenInVehicleTrack
                     ? `${trip.start_latitude || '0'}, ${trip.start_longitude || '0'}`
                     : '—'}
                 />
-                <Row
-                  icon="location-searching"
-                  label="End GPS"
-                  value={trip.end_latitude || trip.end_longitude
-                    ? `${trip.end_latitude || '0'}, ${trip.end_longitude || '0'}`
-                    : '—'}
-                />
               </View>
 
               <View style={styles.statsGrid}>

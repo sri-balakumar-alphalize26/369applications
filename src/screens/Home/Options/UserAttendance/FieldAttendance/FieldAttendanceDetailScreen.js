@@ -52,6 +52,53 @@ const fmtDateOnly = (s) => {
   return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+// Flatten raw vehicle.tracking m2o pairs + set legacy lowercase keys so
+// VehicleTrackingForm's state-conditional destructure picks up the values
+// regardless of trip status (draft vs in_progress). Checklist booleans + photo
+// + notes pass through unchanged via `...trip`.
+const flattenTripForForm = (trip) => {
+  if (!trip) return null;
+  const flatten = (m2o) => Array.isArray(m2o)
+    ? { id: m2o[0], name: m2o[1] || '' }
+    : { id: m2o || '', name: '' };
+  const veh = flatten(trip.vehicle_id);
+  const drv = flatten(trip.driver_id);
+  const src = flatten(trip.source_id);
+  const dst = flatten(trip.destination_id);
+  const purp = flatten(trip.purpose_of_visit_id);
+  return {
+    ...trip,
+    vehicle_id: veh.id,
+    vehicle_name: veh.name,
+    vehicle: veh.name,
+    driver_id: drv.id,
+    driver_name: drv.name,
+    driver: drv.name,
+    source_id: src.id,
+    source_name: src.name,
+    source: src.name,
+    destination_id: dst.id,
+    destination_name: dst.name,
+    destination: dst.name,
+    purpose_of_visit_id: purp.id,
+    purpose_of_visit_name: purp.name,
+    purpose_of_visit: purp.name,
+    plateNumber: trip.number_plate || '',
+    startKM: trip.start_km != null ? String(trip.start_km) : '',
+    endKM: trip.end_km != null ? String(trip.end_km) : '',
+    estimatedTime: trip.estimated_time != null ? String(trip.estimated_time) : '',
+    // Pre-trip checklist — nested camelCase object the form expects.
+    vehicleChecklist: {
+      coolentWater:    !!trip.coolant_water,
+      oilChecking:     !!trip.oil_checking,
+      tyreChecking:    !!trip.tyre_checking,
+      batteryChecking: !!trip.battery_checking,
+      fuelChecking:    !!trip.fuel_checking,
+      dailyChecks:     !!trip.daily_checks,
+    },
+  };
+};
+
 const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   const attendanceId = Number(route?.params?.attendanceId);
 
@@ -455,9 +502,10 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
         trip={tripSheetTrip}
         loading={tripSheetLoading}
         onClose={() => setTripSheetOpen(false)}
-        onOpenInVehicleTracking={() => {
-          setTripSheetOpen(false);
-          navigation.navigate('VehicleTrackingScreen');
+        onOpenInVehicleTracking={(trip) => {
+          navigation.navigate('VehicleTrackingForm', {
+            tripData: flattenTripForForm(trip || tripSheetTrip),
+          });
         }}
       />
       <VisitsListSheet

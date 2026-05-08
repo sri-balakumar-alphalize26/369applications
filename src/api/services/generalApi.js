@@ -728,13 +728,29 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
     args: [tripIds.map(Number)],
     kwargs: {
       fields: [
-        'id', 'ref', 'date', 'vehicle_id', 'driver_id',
-        'source_id', 'destination_id', 'purpose_of_visit_id',
+        'id', 'ref', 'date', 'state',
+        // M2O pairs
+        'vehicle_id', 'driver_id', 'source_id', 'destination_id', 'purpose_of_visit_id',
+        // Time stamps
         'start_time', 'end_time',
+        // GPS coords
         'start_latitude', 'start_longitude', 'end_latitude', 'end_longitude',
+        // Vehicle / KM data
+        'number_plate', 'start_km', 'end_km', 'tank_capacity',
         'km_travelled', 'duration',
-        'total_fuel_litres', 'total_fuel_amount',
-        'trip_status', 'end_trip', 'trip_cancel',
+        // Pre-trip checklist (the form's "Vehicle Checklist" card)
+        'coolant_water', 'oil_checking', 'tyre_checking', 'battery_checking',
+        'daily_checks', 'fuel_checking', 'fuel_status',
+        // Fuel logs (One2many — returns ids)
+        'fuel_log_ids',
+        // Fuel + monetary aggregates
+        'total_fuel_litres', 'total_fuel_amount', 'amount',
+        // Status flags
+        'trip_status', 'start_trip', 'end_trip', 'trip_cancel',
+        // Photo + notes
+        'image_url', 'image_filename', 'remarks',
+        // Misc form fields
+        'estimated_time', 'invoice_number',
       ],
     },
   });

@@ -84,7 +84,7 @@ const TripPickerSheet = ({
             </Text>
           ) : null}
           <Text style={styles.rowMeta} numberOfLines={1}>
-            {item.date || ''} · {fmtTime(item.start_time)}{item.end_time ? ` → ${fmtTime(item.end_time)}` : ''}
+            {(item.date || '').slice(0, 10)}
             {item.km_travelled != null ? ` · ${item.km_travelled} km` : ''}
           </Text>
         </View>

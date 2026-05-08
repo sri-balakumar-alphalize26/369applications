@@ -58,6 +58,66 @@ const scale = (size) => Math.round((effectiveWidth / BASE_WIDTH) * size);
 // Content column width — phones use full width, tablets get a centered column.
 const CONTENT_MAX_WIDTH = MAX_SCALE_WIDTH;
 
+// Convert raw vehicle.tracking read() output (m2o pairs as [id, name]) into
+// the flat shape VehicleTrackingForm.js's state initializer expects.
+// Mirrors the heavy mapping fetchVehicleTrackingTripsOdoo does for entries
+// coming from the regular VehicleTracking list page. The form's destructure
+// uses `(in_progress && *_name) ? *_name : (legacyKey || '')` for many fields,
+// so we set BOTH the *_name AND the legacy lowercase keys to make the form
+// populate regardless of trip status. All checklist booleans + photo + notes
+// pass through unchanged via `...trip`.
+const flattenTripForForm = (trip) => {
+  if (!trip) return null;
+  const flatten = (m2o) => Array.isArray(m2o)
+    ? { id: m2o[0], name: m2o[1] || '' }
+    : { id: m2o || '', name: '' };
+  const veh = flatten(trip.vehicle_id);
+  const drv = flatten(trip.driver_id);
+  const src = flatten(trip.source_id);
+  const dst = flatten(trip.destination_id);
+  const purp = flatten(trip.purpose_of_visit_id);
+  return {
+    ...trip,
+    // Vehicle: snake + name + legacy fallback
+    vehicle_id: veh.id,
+    vehicle_name: veh.name,
+    vehicle: veh.name,
+    // Driver
+    driver_id: drv.id,
+    driver_name: drv.name,
+    driver: drv.name,
+    // Source location
+    source_id: src.id,
+    source_name: src.name,
+    source: src.name,
+    // Destination location
+    destination_id: dst.id,
+    destination_name: dst.name,
+    destination: dst.name,
+    // Purpose of visit
+    purpose_of_visit_id: purp.id,
+    purpose_of_visit_name: purp.name,
+    purpose_of_visit: purp.name,
+    // Plate number (camelCase fallback)
+    plateNumber: trip.number_plate || '',
+    // KM (camelCase fallback)
+    startKM: trip.start_km != null ? String(trip.start_km) : '',
+    endKM: trip.end_km != null ? String(trip.end_km) : '',
+    // Estimated time (camelCase fallback)
+    estimatedTime: trip.estimated_time != null ? String(trip.estimated_time) : '',
+    // Pre-trip checklist — form expects a nested camelCase object that
+    // mirrors the snake_case booleans from vehicle.tracking.
+    vehicleChecklist: {
+      coolentWater:    !!trip.coolant_water,
+      oilChecking:     !!trip.oil_checking,
+      tyreChecking:    !!trip.tyre_checking,
+      batteryChecking: !!trip.battery_checking,
+      fuelChecking:    !!trip.fuel_checking,
+      dailyChecks:     !!trip.daily_checks,
+    },
+  };
+};
+
 const UserAttendanceScreen = ({ navigation, route }) => {
   const initialMode = route?.params?.initialMode || null;
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -131,6 +191,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [visitsSheetLoading, setVisitsSheetLoading] = useState(false);
   const [checkOutSubmitting, setCheckOutSubmitting] = useState(false);
   const [fieldBusy, setFieldBusy] = useState(false);     // generic busy flag for delete/end-trip
+  // After Create-New-Trip → VehicleTrackingForm → Start Trip, we want to
+  // re-open the picker the user came from. These flags track that.
+  const [pendingFieldPickerReopen, setPendingFieldPickerReopen] = useState(null);  // 'edit' | 'add' | null
+  const [autoOpenPickerEdit, setAutoOpenPickerEdit] = useState(false);
+  const [autoOpenPickerAdd, setAutoOpenPickerAdd] = useState(false);
+  // Same idea for "Open in Vehicle Tracking" from TripDetailSheet — remember
+  // the trip + parent sheet so we can restore them on focus return.
+  const [pendingTripDetailReopen, setPendingTripDetailReopen] = useState(null);  // { tripId, parentSheet: 'edit' | 'add' | null }
 
   // Field Attendance — tab + history state
   const [fieldTab, setFieldTab] = useState('today'); // 'today' | 'history'
@@ -666,23 +734,55 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   }, [fieldData, fieldLines, fieldDetail, showAlert, hideAlert, refreshFieldDetail]);
 
   // Create a new vehicle.tracking trip from inside the trip picker —
-  // mirrors Odoo's "Create..." inline option. Closes any open Field sheets
-  // first so the back-stack is clean when the user returns.
-  const handleCreateNewTrip = useCallback(() => {
+  // mirrors Odoo's "Create..." inline option. Closes the field popups
+  // before navigating, then on focus return the popups + inner picker are
+  // re-opened explicitly via pendingFieldPickerReopen + autoOpenPicker flags.
+  const handleCreateNewTrip = useCallback((context) => {
     setEditPrimaryOpen(false);
     setAddLineOpen(false);
-    navigation.navigate('VehicleTrackingForm');
+    setPendingFieldPickerReopen(context || 'edit');
+    navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance' });
   }, [navigation]);
 
   // Re-run when the screen regains focus (e.g. user just came back from
   // Vehicle Tracking after creating a new trip). Silent refresh — keeps the
-  // current rendered card on screen and updates in place.
+  // current rendered card on screen and updates in place. ALSO re-opens the
+  // field popups the user came from based on pending* flags.
   useFocusEffect(
     useCallback(() => {
-      if (attendanceMode === 'field' && isVerified && verifiedEmployee?.id && !offline) {
-        refreshFieldAttendance({ silent: true });
+      if (attendanceMode !== 'field' || !isVerified || !verifiedEmployee?.id || offline) return;
+      refreshFieldAttendance({ silent: true });
+
+      // Case A: came back from "Create New Trip" flow — restore the picker.
+      if (pendingFieldPickerReopen) {
+        const ctx = pendingFieldPickerReopen;
+        setPendingFieldPickerReopen(null);
+        setTimeout(() => {
+          if (ctx === 'edit') {
+            setAutoOpenPickerEdit(true);
+            setEditPrimaryOpen(true);
+          } else if (ctx === 'add') {
+            setAutoOpenPickerAdd(true);
+            setAddLineOpen(true);
+          }
+        }, 350);
       }
-    }, [attendanceMode, isVerified, verifiedEmployee, offline, refreshFieldAttendance])
+
+      // Case B: came back from "Open in Vehicle Tracking" — restore the
+      // parent sheet (if any) AND re-open TripDetailSheet for the same trip.
+      if (pendingTripDetailReopen) {
+        const { tripId, parentSheet } = pendingTripDetailReopen;
+        setPendingTripDetailReopen(null);
+        setTimeout(() => {
+          if (parentSheet === 'edit') setEditPrimaryOpen(true);
+          if (parentSheet === 'add') setAddLineOpen(true);
+          if (tripId) handleFieldOpenTrip(tripId);
+        }, 350);
+      }
+    }, [
+      attendanceMode, isVerified, verifiedEmployee, offline,
+      refreshFieldAttendance, pendingFieldPickerReopen, pendingTripDetailReopen,
+    ])
   );
 
   // Camera countdown and auto-capture
@@ -3557,7 +3657,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         onSave={handleFieldSavePrimary}
         onClose={() => setEditPrimaryOpen(false)}
         saving={editPrimarySaving}
-        onCreateNewTrip={handleCreateNewTrip}
+        onCreateNewTrip={() => handleCreateNewTrip('edit')}
+        autoOpenPicker={autoOpenPickerEdit}
+        onAutoOpenConsumed={() => setAutoOpenPickerEdit(false)}
+        onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
+        onViewVisits={(visitIds) => handleFieldViewVisits(visitIds)}
       />
       <AddTripLineSheet
         visible={addLineOpen}
@@ -3567,16 +3671,35 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         onSave={handleFieldSaveTripLine}
         onClose={() => setAddLineOpen(false)}
         saving={addLineSaving}
-        onCreateNewTrip={handleCreateNewTrip}
+        onCreateNewTrip={() => handleCreateNewTrip('add')}
+        autoOpenPicker={autoOpenPickerAdd}
+        onAutoOpenConsumed={() => setAutoOpenPickerAdd(false)}
       />
       <TripDetailSheet
         visible={tripSheetOpen}
         trip={tripSheetTrip}
         loading={tripSheetLoading}
         onClose={() => setTripSheetOpen(false)}
-        onOpenInVehicleTracking={() => {
+        onOpenInVehicleTracking={(trip) => {
+          // Snapshot which sheet was open underneath so we can restore it on
+          // focus return, then close everything and navigate to the form.
+          // Flatten m2o pairs so VehicleTrackingForm finds the data in the
+          // shape its state initializer expects (vehicle_name / source_name /
+          // primitive *_id, etc).
+          const parentSheet = editPrimaryOpen ? 'edit' : (addLineOpen ? 'add' : null);
+          const target = trip || tripSheetTrip;
+          const formattedTrip = flattenTripForForm(target);
+          setPendingTripDetailReopen({
+            tripId: target?.id || null,
+            parentSheet,
+          });
           setTripSheetOpen(false);
-          navigation.navigate('VehicleTrackingScreen');
+          setEditPrimaryOpen(false);
+          setAddLineOpen(false);
+          navigation.navigate('VehicleTrackingForm', {
+            tripData: formattedTrip,
+            returnTo: 'fieldAttendance',
+          });
         }}
       />
       <VisitsListSheet
