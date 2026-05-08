@@ -64,15 +64,6 @@ const WhatsAppScreen = ({ navigation }) => {
       </RoundedContainer>
 
       <ContactsSheet visible={showContacts} onClose={() => setShowContacts(false)} />
-      <StyledAlertModal
-        isVisible={!!deleteTarget}
-        message={deleteTarget?.message || 'Delete this session?'}
-        confirmText="DELETE"
-        cancelText="CANCEL"
-        destructive
-        onConfirm={executeDelete}
-        onCancel={() => setDeleteTarget(null)}
-      />
     </SafeAreaView>
   );
 };
@@ -256,6 +247,7 @@ const SessionTab = () => {
   }
 
   return (
+    <>
     <ScrollView contentContainerStyle={s.content}>
       {sessions.map((session) => {
         const stepIndex = getStepIndex(session.status);
@@ -361,6 +353,16 @@ const SessionTab = () => {
         <Text style={s.createBtnText}>+ Create New Session</Text>
       </TouchableOpacity>
     </ScrollView>
+    <StyledAlertModal
+      isVisible={!!deleteTarget}
+      message={deleteTarget?.message || 'Delete this session?'}
+      confirmText="DELETE"
+      cancelText="CANCEL"
+      destructive
+      onConfirm={executeDelete}
+      onCancel={() => setDeleteTarget(null)}
+    />
+    </>
   );
 };
 

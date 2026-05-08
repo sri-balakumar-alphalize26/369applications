@@ -536,6 +536,321 @@ export const createFieldAttendanceOdoo = async (employeeId) => {
   return response.data?.result || { success: false, error: 'No response from server' };
 };
 
+// ---- Field Attendance: Office-style check-in / check-out ----
+
+// Start (check-in) a field attendance for today. Server creates an open
+// hr.attendance row with check_in=now, no check_out. If today's trip and
+// visits already exist, server best-effort auto-links them; otherwise the
+// user can pick them later via the Edit Primary Trip / Add Additional Trip
+// sheets. Returns { success, attendance_id, is_late, needs_late_reason, ... }.
+export const startFieldAttendanceOdoo = async (employeeId) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'hr.attendance',
+        method: 'start_field_attendance',
+        args: [Number(employeeId)],
+        kwargs: {},
+      },
+    },
+    { headers, timeout: 20000 }
+  );
+  if (response.data?.error) {
+    throw new Error(response.data.error.data?.message || 'Odoo error');
+  }
+  return response.data?.result || { success: false, error: 'No response from server' };
+};
+
+// Check out a field attendance. Plain write of check_out=now triggers the
+// server's _on_checkout_finalize_trips_and_visits hook which auto-ends the
+// last open trip and flips its draft visits to done.
+export const checkOutFieldAttendanceOdoo = async (attendanceId, checkOutDateTime) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  let stamp;
+  if (checkOutDateTime instanceof Date) {
+    stamp = checkOutDateTime.toISOString().replace('T', ' ').replace(/\..*/, '');
+  } else if (typeof checkOutDateTime === 'string') {
+    stamp = checkOutDateTime;
+  } else {
+    stamp = new Date().toISOString().replace('T', ' ').replace(/\..*/, '');
+  }
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: {
+        model: 'hr.attendance',
+        method: 'write',
+        args: [[Number(attendanceId)], { check_out: stamp }],
+        kwargs: {},
+      },
+    },
+    { headers, timeout: 20000 }
+  );
+  if (response.data?.error) {
+    throw new Error(response.data.error.data?.message || 'Odoo error');
+  }
+  return true;
+};
+
+// ---- Field Attendance: post-creation management ----
+// All calls below mirror the rich functionality the hr_field_attendance Odoo
+// module exposes via standard ORM (search_read / read / write / create / unlink).
+// They are used by the field-attendance detail screen and history tab.
+
+const _fieldRpc = async ({ model, method, args = [], kwargs = {}, timeout = 15000 }) => {
+  const headers = await getOdooAuthHeaders();
+  const response = await axios.post(
+    `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+    {
+      jsonrpc: '2.0', method: 'call',
+      params: { model, method, args, kwargs },
+    },
+    { headers, timeout }
+  );
+  if (response.data?.error) {
+    throw new Error(response.data.error.data?.message || 'Odoo error');
+  }
+  return response.data?.result;
+};
+
+// Search this employee's past field attendance records, with optional filters.
+export const searchMyFieldAttendanceOdoo = async (employeeId, opts = {}) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const { dateFrom, dateTo, lateOnly, withDeduction, waived, offset = 0, limit = 30 } = opts;
+  const domain = [
+    ['attendance_source', '=', 'field'],
+    ['employee_id', '=', Number(employeeId)],
+  ];
+  if (dateFrom) domain.push(['check_in', '>=', dateFrom]);
+  if (dateTo) domain.push(['check_in', '<=', dateTo]);
+  if (lateOnly) domain.push(['is_late', '=', true]);
+  if (withDeduction) domain.push(['deduction_amount', '>', 0]);
+  if (waived) domain.push(['is_waived', '=', true]);
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'search_read',
+    args: [domain],
+    kwargs: {
+      fields: [
+        'id', 'employee_id', 'check_in', 'check_out', 'attendance_source',
+        'gps_latitude', 'gps_longitude', 'gps_location_name',
+        'source_trip_id', 'source_visit_count',
+        'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
+        'deduction_amount', 'is_waived',
+      ],
+      offset, limit, order: 'check_in desc',
+    },
+  });
+  return Array.isArray(result) ? result : [];
+};
+
+// Read full detail of one field attendance record (primary trip + totals + late).
+export const readFieldAttendanceDetailOdoo = async (attendanceId) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  const rows = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'read',
+    args: [[Number(attendanceId)]],
+    kwargs: {
+      fields: [
+        'id', 'employee_id', 'check_in', 'check_out', 'attendance_source',
+        'gps_latitude', 'gps_longitude', 'gps_location_name',
+        'source_trip_id', 'source_trip_source_location',
+        'source_trip_destination_location', 'source_trip_ended',
+        'source_visit_ids', 'source_visit_count', 'has_source_visits',
+        'trip_line_ids',
+        'trip_total_km', 'trip_total_duration',
+        'trip_total_fuel_litres', 'trip_total_fuel_amount',
+        'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
+        'deduction_amount', 'is_waived', 'expected_start_time',
+      ],
+    },
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+};
+
+// Read trip-line rows for an attendance.
+export const readFieldTripLinesOdoo = async (lineIds) => {
+  if (!Array.isArray(lineIds) || lineIds.length === 0) return [];
+  const rows = await _fieldRpc({
+    model: 'field.attendance.trip.line',
+    method: 'read',
+    args: [lineIds.map(Number)],
+    kwargs: {
+      fields: [
+        'id', 'sequence', 'attendance_id', 'trip_id',
+        'gps_latitude', 'gps_longitude',
+        'source_location', 'destination_location',
+        'visit_ids', 'has_visits', 'trip_ended',
+        'km_travelled', 'duration', 'total_fuel_litres', 'total_fuel_amount',
+        'visited_stops_display',
+      ],
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+};
+
+// Read available_trip_ids on the attendance, then fetch full trip rows.
+// Includes the current source_trip_id so the picker can keep the existing
+// selection visible/editable (mirrors the popup view's OR'd domain).
+export const searchAvailableTripsOdoo = async (attendanceId) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  const rows = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'read',
+    args: [[Number(attendanceId)]],
+    kwargs: { fields: ['available_trip_ids', 'source_trip_id'] },
+  });
+  const att = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  const ids = new Set();
+  if (att) {
+    (att.available_trip_ids || []).forEach((id) => ids.add(Number(id)));
+    if (Array.isArray(att.source_trip_id) && att.source_trip_id[0]) {
+      ids.add(Number(att.source_trip_id[0]));
+    }
+  }
+  if (ids.size === 0) return [];
+  return readVehicleTrackingForTripIdsOdoo(Array.from(ids));
+};
+
+// Read full trip rows by ids (used by pickers + TripDetailSheet).
+export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
+  if (!Array.isArray(tripIds) || tripIds.length === 0) return [];
+  const rows = await _fieldRpc({
+    model: 'vehicle.tracking',
+    method: 'read',
+    args: [tripIds.map(Number)],
+    kwargs: {
+      fields: [
+        'id', 'ref', 'date', 'vehicle_id', 'driver_id',
+        'source_id', 'destination_id', 'purpose_of_visit_id',
+        'start_time', 'end_time',
+        'start_latitude', 'start_longitude', 'end_latitude', 'end_longitude',
+        'km_travelled', 'duration',
+        'total_fuel_litres', 'total_fuel_amount',
+        'trip_status', 'end_trip', 'trip_cancel',
+      ],
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+};
+
+// Read draft customer.visit rows for an employee (used by Visit picker).
+export const searchDraftCustomerVisitsOdoo = async (employeeId) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const rows = await _fieldRpc({
+    model: 'customer.visit',
+    method: 'search_read',
+    args: [[
+      ['employee_id', '=', Number(employeeId)],
+      ['state', '=', 'draft'],
+    ]],
+    kwargs: {
+      fields: [
+        'id', 'name', 'partner_id', 'date_time', 'latitude', 'longitude',
+        'location_name', 'purpose_id', 'state',
+      ],
+      order: 'date_time asc',
+      limit: 200,
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+};
+
+// Read customer.visit rows by ids (used by VisitsListSheet).
+export const readCustomerVisitsByIdsOdoo = async (visitIds) => {
+  if (!Array.isArray(visitIds) || visitIds.length === 0) return [];
+  const rows = await _fieldRpc({
+    model: 'customer.visit',
+    method: 'read',
+    args: [visitIds.map(Number)],
+    kwargs: {
+      fields: [
+        'id', 'name', 'partner_id', 'date_time', 'latitude', 'longitude',
+        'location_name', 'purpose_id', 'state',
+      ],
+    },
+  });
+  return Array.isArray(rows) ? rows : [];
+};
+
+// Save changes to the primary trip section of a field attendance.
+export const updateFieldAttendancePrimaryTripOdoo = async (attendanceId, vals) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  const writeVals = {};
+  if ('source_trip_id' in vals) writeVals.source_trip_id = vals.source_trip_id ? Number(vals.source_trip_id) : false;
+  if ('gps_latitude' in vals) writeVals.gps_latitude = Number(vals.gps_latitude) || 0;
+  if ('gps_longitude' in vals) writeVals.gps_longitude = Number(vals.gps_longitude) || 0;
+  if ('gps_location_name' in vals) writeVals.gps_location_name = vals.gps_location_name || '';
+  if ('source_visit_ids' in vals) {
+    const ids = Array.isArray(vals.source_visit_ids) ? vals.source_visit_ids.map(Number) : [];
+    writeVals.source_visit_ids = [[6, 0, ids]];
+  }
+  await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'write',
+    args: [[Number(attendanceId)], writeVals],
+  });
+  return true;
+};
+
+// Add an additional trip line to a field attendance. Server-side
+// @api.model_create_multi auto-ends the previous trip and flips its draft
+// visits to done — see field_attendance_trip_line.py:167-221.
+export const createFieldTripLineOdoo = async (attendanceId, tripId, visitIds = []) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  if (!tripId) throw new Error('tripId is required');
+  const result = await _fieldRpc({
+    model: 'field.attendance.trip.line',
+    method: 'create',
+    args: [{
+      attendance_id: Number(attendanceId),
+      trip_id: Number(tripId),
+      visit_ids: [[6, 0, (visitIds || []).map(Number)]],
+    }],
+  });
+  return result;
+};
+
+// Remove an additional trip line.
+export const deleteFieldTripLineOdoo = async (lineId) => {
+  if (!lineId) throw new Error('lineId is required');
+  await _fieldRpc({
+    model: 'field.attendance.trip.line',
+    method: 'unlink',
+    args: [[Number(lineId)]],
+  });
+  return true;
+};
+
+// Mark a vehicle.tracking trip as ended (used by the Add-Additional-Trip
+// confirm-close-previous flow when the user accepts the prompt).
+export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime) => {
+  if (!tripId) throw new Error('tripId is required');
+  // Format: Odoo expects 'YYYY-MM-DD HH:MM:SS' UTC. Caller may pass a Date,
+  // an ISO string, or undefined (server fills "now").
+  let endStr = null;
+  if (endTime instanceof Date) {
+    endStr = endTime.toISOString().replace('T', ' ').replace(/\..*/, '');
+  } else if (typeof endTime === 'string') {
+    endStr = endTime;
+  } else {
+    endStr = new Date().toISOString().replace('T', ' ').replace(/\..*/, '');
+  }
+  await _fieldRpc({
+    model: 'vehicle.tracking',
+    method: 'write',
+    args: [[Number(tripId)], { end_trip: true, end_time: endStr }],
+  });
+  return true;
+};
+
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {

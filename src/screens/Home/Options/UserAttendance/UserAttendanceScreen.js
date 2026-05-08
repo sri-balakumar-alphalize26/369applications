@@ -9,8 +9,33 @@ import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
-import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
-import { fetchTodayFieldAttendanceOdoo, createFieldAttendanceOdoo } from '@api/services/generalApi';
+import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, getCurrentLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
+import {
+  fetchTodayFieldAttendanceOdoo,
+  createFieldAttendanceOdoo,
+  searchMyFieldAttendanceOdoo,
+  startFieldAttendanceOdoo,
+  checkOutFieldAttendanceOdoo,
+  readFieldAttendanceDetailOdoo,
+  readFieldTripLinesOdoo,
+  searchAvailableTripsOdoo,
+  searchDraftCustomerVisitsOdoo,
+  readVehicleTrackingForTripIdsOdoo,
+  readCustomerVisitsByIdsOdoo,
+  updateFieldAttendancePrimaryTripOdoo,
+  createFieldTripLineOdoo,
+  deleteFieldTripLineOdoo,
+  endVehicleTripFromAttendanceOdoo,
+} from '@api/services/generalApi';
+import HistoryListItem from '@screens/Home/Options/UserAttendance/FieldAttendance/components/HistoryListItem';
+import HistoryFiltersSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/HistoryFiltersSheet';
+import PrimaryTripCard from '@screens/Home/Options/UserAttendance/FieldAttendance/components/PrimaryTripCard';
+import TripLineCard from '@screens/Home/Options/UserAttendance/FieldAttendance/components/TripLineCard';
+import TripTotalsSection from '@screens/Home/Options/UserAttendance/FieldAttendance/components/TripTotalsSection';
+import EditPrimaryTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/EditPrimaryTripSheet';
+import AddTripLineSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/AddTripLineSheet';
+import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
+import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -33,7 +58,8 @@ const scale = (size) => Math.round((effectiveWidth / BASE_WIDTH) * size);
 // Content column width — phones use full width, tablets get a centered column.
 const CONTENT_MAX_WIDTH = MAX_SCALE_WIDTH;
 
-const UserAttendanceScreen = ({ navigation }) => {
+const UserAttendanceScreen = ({ navigation, route }) => {
+  const initialMode = route?.params?.initialMode || null;
   const [currentTime, setCurrentTime] = useState(new Date());
   const [loading, setLoading] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
@@ -46,7 +72,7 @@ const UserAttendanceScreen = ({ navigation }) => {
   const currentUser = useAuthStore(state => state.user);
 
   // Mode selection: null = choosing, 'office' = office attendance, 'wfh' = work from home
-  const [attendanceMode, setAttendanceMode] = useState(null);
+  const [attendanceMode, setAttendanceMode] = useState(initialMode);
 
   // WFH state
   const [wfhReason, setWfhReason] = useState('');
@@ -89,6 +115,34 @@ const UserAttendanceScreen = ({ navigation }) => {
   const [fieldStatus, setFieldStatus] = useState('loading');
   const [fieldData, setFieldData] = useState(null);
   const [fieldSubmitting, setFieldSubmitting] = useState(false);
+
+  // Field Attendance — inline detail state for Today tab post-check-in.
+  const [fieldDetail, setFieldDetail] = useState(null);  // hr.attendance row + computed totals
+  const [fieldLines, setFieldLines] = useState([]);      // trip-line rows
+  const [editPrimaryOpen, setEditPrimaryOpen] = useState(false);
+  const [editPrimarySaving, setEditPrimarySaving] = useState(false);
+  const [addLineOpen, setAddLineOpen] = useState(false);
+  const [addLineSaving, setAddLineSaving] = useState(false);
+  const [tripSheetOpen, setTripSheetOpen] = useState(false);
+  const [tripSheetTrip, setTripSheetTrip] = useState(null);
+  const [tripSheetLoading, setTripSheetLoading] = useState(false);
+  const [visitsSheetOpen, setVisitsSheetOpen] = useState(false);
+  const [visitsSheetRows, setVisitsSheetRows] = useState([]);
+  const [visitsSheetLoading, setVisitsSheetLoading] = useState(false);
+  const [checkOutSubmitting, setCheckOutSubmitting] = useState(false);
+  const [fieldBusy, setFieldBusy] = useState(false);     // generic busy flag for delete/end-trip
+
+  // Field Attendance — tab + history state
+  const [fieldTab, setFieldTab] = useState('today'); // 'today' | 'history'
+  const [fieldHistoryRows, setFieldHistoryRows] = useState([]);
+  const [fieldHistoryLoading, setFieldHistoryLoading] = useState(false);
+  const [fieldHistoryFilters, setFieldHistoryFilters] = useState({
+    dateFrom: null, dateTo: null,
+    lateOnly: false, withDeduction: false, waived: false,
+  });
+  const [fieldHistoryHasMore, setFieldHistoryHasMore] = useState(false);
+  const [fieldHistoryOffset, setFieldHistoryOffset] = useState(0);
+  const [fieldFiltersOpen, setFieldFiltersOpen] = useState(false);
 
   // Camera state
   const [cameraPermission, requestCameraPermission] = Camera.useCameraPermissions();
@@ -240,6 +294,386 @@ const UserAttendanceScreen = ({ navigation }) => {
     refreshFieldAttendance();
   }, [attendanceMode, isVerified, verifiedEmployee, offline, refreshFieldAttendance]);
 
+  // Field Attendance history loader. `reset=true` for first page / new filters,
+  // `reset=false` to append the next page.
+  const PAGE_SIZE = 30;
+  const loadFieldHistory = useCallback(async ({ reset = true, filters } = {}) => {
+    if (!verifiedEmployee?.id) return;
+    if (offline) return;
+    const useFilters = filters || fieldHistoryFilters;
+    setFieldHistoryLoading(true);
+    try {
+      const offset = reset ? 0 : fieldHistoryOffset;
+      const rows = await searchMyFieldAttendanceOdoo(verifiedEmployee.id, {
+        dateFrom: useFilters.dateFrom,
+        dateTo: useFilters.dateTo,
+        lateOnly: useFilters.lateOnly,
+        withDeduction: useFilters.withDeduction,
+        waived: useFilters.waived,
+        offset, limit: PAGE_SIZE,
+      });
+      setFieldHistoryHasMore(rows.length === PAGE_SIZE);
+      setFieldHistoryOffset(offset + rows.length);
+      setFieldHistoryRows((prev) => (reset ? rows : [...prev, ...rows]));
+    } catch (e) {
+      console.error('[FieldAttendance] history load error:', e?.message);
+      if (reset) setFieldHistoryRows([]);
+    } finally {
+      setFieldHistoryLoading(false);
+    }
+  }, [verifiedEmployee, offline, fieldHistoryFilters, fieldHistoryOffset]);
+
+  // When the user enters the History tab, load the first page (if empty).
+  useEffect(() => {
+    if (attendanceMode !== 'field' || !isVerified || fieldTab !== 'history') return;
+    if (fieldHistoryRows.length > 0) return;
+    loadFieldHistory({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendanceMode, isVerified, fieldTab]);
+
+  const applyFieldFilters = useCallback((next) => {
+    setFieldHistoryFilters(next);
+    setFieldFiltersOpen(false);
+    setFieldHistoryOffset(0);
+    setFieldHistoryRows([]);
+    loadFieldHistory({ reset: true, filters: next });
+  }, [loadFieldHistory]);
+
+  const openFieldDetail = useCallback((id) => {
+    if (!id) return;
+    navigation.navigate('FieldAttendanceDetailScreen', { attendanceId: Number(id) });
+  }, [navigation]);
+
+  const fieldFilterCount = (
+    (fieldHistoryFilters.dateFrom ? 1 : 0) +
+    (fieldHistoryFilters.dateTo ? 1 : 0) +
+    (fieldHistoryFilters.lateOnly ? 1 : 0) +
+    (fieldHistoryFilters.withDeduction ? 1 : 0) +
+    (fieldHistoryFilters.waived ? 1 : 0)
+  );
+
+  // ============================================================
+  // Field Attendance — Today tab inline detail + check-in/out
+  // ============================================================
+
+  // Pull the rich detail (primary trip, trip lines, totals, late info) for
+  // inline rendering in the Today tab. Called after check-in and on refresh.
+  const refreshFieldDetail = useCallback(async (attendanceId) => {
+    if (!attendanceId) {
+      setFieldDetail(null);
+      setFieldLines([]);
+      return;
+    }
+    try {
+      const att = await readFieldAttendanceDetailOdoo(attendanceId);
+      setFieldDetail(att);
+      const ids = Array.isArray(att?.trip_line_ids) ? att.trip_line_ids : [];
+      if (ids.length > 0) {
+        const lines = await readFieldTripLinesOdoo(ids);
+        lines.sort((a, b) => (a.sequence - b.sequence) || (a.id - b.id));
+        setFieldLines(lines);
+      } else {
+        setFieldLines([]);
+      }
+    } catch (e) {
+      console.error('[FieldAttendance] detail refresh:', e?.message);
+    }
+  }, []);
+
+  // Whenever eligibility refresh returns checked_in_open / checked_out with
+  // an attendance_id, fetch the rich detail for inline rendering.
+  useEffect(() => {
+    if (fieldData?.attendance_id && (fieldStatus === 'checked_in_open' || fieldStatus === 'checked_out')) {
+      refreshFieldDetail(fieldData.attendance_id);
+    } else {
+      setFieldDetail(null);
+      setFieldLines([]);
+    }
+  }, [fieldData, fieldStatus, refreshFieldDetail]);
+
+  // Check In — confirm → camera (3s countdown auto-capture) → start field
+  // attendance + upload photo. Mirrors Office mode's handleCheckIn flow.
+  const handleFieldCheckIn = useCallback(() => {
+    if (!verifiedEmployee?.id || fieldSubmitting) return;
+    showAlert({
+      message: `Are you sure you want to check in at ${formatTimeOnly(new Date())}?`,
+      confirmText: 'YES',
+      cancelText: 'NO',
+      onConfirm: async () => {
+        hideAlert();
+        setFieldSubmitting(true);
+        const opened = await openCamera('field_check_in');
+        if (!opened) setFieldSubmitting(false);
+      },
+      onCancel: hideAlert,
+    });
+  }, [verifiedEmployee, fieldSubmitting, showAlert, hideAlert]);
+
+  // Camera capture finished → start the field attendance + upload photo.
+  const processFieldCheckIn = async (photoBase64) => {
+    try {
+      const res = await startFieldAttendanceOdoo(verifiedEmployee.id);
+      if (!res?.success) {
+        showAlert({ message: res?.error || 'Failed to check in' });
+        return;
+      }
+      showToastMessage('Field check-in marked');
+      if (res.attendance_id && photoBase64) {
+        try {
+          await uploadAttendancePhoto(res.attendance_id, photoBase64, 'check_in');
+        } catch (e) {
+          console.warn('[FieldAttendance] photo upload (check-in) failed:', e?.message);
+        }
+      }
+      await refreshFieldAttendance({ silent: true });
+      if (res.is_late && res.attendance_id) {
+        // Fetch the rich per-record late info (deduction, sequence, session,
+        // expected start) — same call Office check-in uses so the popup body
+        // is consistent across modes.
+        let richPopulated = false;
+        try {
+          const lateResult = await getTodayAttendanceWithLateInfo(verifiedEmployee.id);
+          if (lateResult?.success && Array.isArray(lateResult.records)) {
+            const justCreated = lateResult.records.find(r => r.id === res.attendance_id);
+            if (justCreated && justCreated.isLate) {
+              setLateInfo({
+                isLate: true,
+                lateMinutes: justCreated.lateMinutes,
+                lateMinutesDisplay: justCreated.lateMinutesDisplay,
+                lateSequence: justCreated.lateSequence,
+                deductionAmount: justCreated.deductionAmount,
+                session: justCreated.checkinSession,
+                expectedStartDisplay: justCreated.expectedStartTime != null
+                  ? floatToHM(justCreated.expectedStartTime)
+                  : undefined,
+              });
+              setPendingLateAttendanceId(justCreated.id);
+              setShowLateReasonModal(true);
+              richPopulated = true;
+            }
+          }
+        } catch (lateErr) {
+          console.log('[FieldAttendance] late-info fetch failed, falling back to server response:', lateErr?.message);
+        }
+        // Fallback: use the lean info from start_field_attendance's own response.
+        if (!richPopulated && res.needs_late_reason) {
+          setLateInfo({
+            isLate: true,
+            lateMinutes: res.late_minutes || 0,
+            lateMinutesDisplay: res.late_minutes_display || '',
+            expectedStartDisplay: res.expected_start_time != null
+              ? floatToHM(res.expected_start_time)
+              : undefined,
+          });
+          setPendingLateAttendanceId(res.attendance_id);
+          setShowLateReasonModal(true);
+        }
+      }
+    } catch (e) {
+      showAlert({ message: e?.message || 'Failed to check in' });
+    } finally {
+      setFieldSubmitting(false);
+    }
+  };
+
+  // Check Out — confirm → camera → write check_out + upload photo. Server
+  // hook auto-ends the last open trip and flips draft visits to done.
+  const handleFieldCheckOut = useCallback(() => {
+    if (!fieldData?.attendance_id) return;
+    showAlert({
+      message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
+      confirmText: 'Check Out',
+      cancelText: 'Cancel',
+      onConfirm: async () => {
+        hideAlert();
+        setCheckOutSubmitting(true);
+        const opened = await openCamera('field_check_out');
+        if (!opened) setCheckOutSubmitting(false);
+      },
+      onCancel: hideAlert,
+    });
+  }, [fieldData, showAlert, hideAlert]);
+
+  const processFieldCheckOut = async (photoBase64) => {
+    try {
+      await checkOutFieldAttendanceOdoo(fieldData.attendance_id);
+      if (fieldData.attendance_id && photoBase64) {
+        try {
+          await uploadAttendancePhoto(fieldData.attendance_id, photoBase64, 'check_out');
+        } catch (e) {
+          console.warn('[FieldAttendance] photo upload (check-out) failed:', e?.message);
+        }
+      }
+      showToastMessage('Field attendance checked out');
+      await refreshFieldAttendance({ silent: true });
+    } catch (e) {
+      showAlert({ message: e?.message || 'Failed to check out' });
+    } finally {
+      setCheckOutSubmitting(false);
+    }
+  };
+
+  // Loaders for the bottom-sheet pickers.
+  const fieldLoadAvailableTrips = useCallback(async () => {
+    if (!fieldData?.attendance_id) return [];
+    return await searchAvailableTripsOdoo(fieldData.attendance_id);
+  }, [fieldData]);
+  const fieldLoadDraftVisits = useCallback(async () => {
+    if (!verifiedEmployee?.id) return [];
+    return await searchDraftCustomerVisitsOdoo(verifiedEmployee.id);
+  }, [verifiedEmployee]);
+  const fieldLoadVisitsByIds = useCallback(async (ids) => {
+    return await readCustomerVisitsByIdsOdoo(ids);
+  }, []);
+
+  const handleFieldSavePrimary = async (vals) => {
+    if (vals?.error) {
+      showToastMessage(vals.error);
+      return;
+    }
+    if (!fieldData?.attendance_id) return;
+    setEditPrimarySaving(true);
+    try {
+      await updateFieldAttendancePrimaryTripOdoo(fieldData.attendance_id, vals);
+      showToastMessage('Primary trip saved');
+      setEditPrimaryOpen(false);
+      await refreshFieldDetail(fieldData.attendance_id);
+      await refreshFieldAttendance({ silent: true });
+    } catch (e) {
+      showToastMessage(e?.message || 'Failed to save');
+    } finally {
+      setEditPrimarySaving(false);
+    }
+  };
+
+  const handleFieldSaveTripLine = async ({ trip_id, visit_ids }) => {
+    if (!fieldData?.attendance_id) return;
+    setAddLineSaving(true);
+    try {
+      await createFieldTripLineOdoo(fieldData.attendance_id, trip_id, visit_ids);
+      showToastMessage('Trip added');
+      setAddLineOpen(false);
+      await refreshFieldDetail(fieldData.attendance_id);
+    } catch (e) {
+      showToastMessage(e?.message || 'Failed to add trip');
+    } finally {
+      setAddLineSaving(false);
+    }
+  };
+
+  const handleFieldDeleteLine = (line) => {
+    if (line?.trip_ended) {
+      showToastMessage('Cannot delete a line whose trip is already ended.');
+      return;
+    }
+    showAlert({
+      message: 'Delete this additional trip line? This cannot be undone.',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      destructive: true,
+      onConfirm: async () => {
+        hideAlert();
+        setFieldBusy(true);
+        try {
+          await deleteFieldTripLineOdoo(line.id);
+          showToastMessage('Trip line deleted');
+          await refreshFieldDetail(fieldData.attendance_id);
+        } catch (e) {
+          showToastMessage(e?.message || 'Failed to delete');
+        } finally {
+          setFieldBusy(false);
+        }
+      },
+      onCancel: hideAlert,
+    });
+  };
+
+  const handleFieldOpenTrip = async (m2oOrId) => {
+    const tripId = Array.isArray(m2oOrId) ? m2oOrId[0] : Number(m2oOrId);
+    if (!tripId) return;
+    setTripSheetOpen(true);
+    setTripSheetLoading(true);
+    setTripSheetTrip(null);
+    try {
+      const rows = await readVehicleTrackingForTripIdsOdoo([tripId]);
+      setTripSheetTrip(rows[0] || null);
+    } catch (e) {
+      showToastMessage('Failed to load trip');
+    } finally {
+      setTripSheetLoading(false);
+    }
+  };
+
+  const handleFieldViewVisits = async (visitIds) => {
+    const ids = (visitIds || []).map(Number);
+    if (ids.length === 0) {
+      showToastMessage('No visits linked');
+      return;
+    }
+    setVisitsSheetOpen(true);
+    setVisitsSheetLoading(true);
+    setVisitsSheetRows([]);
+    try {
+      const rows = await readCustomerVisitsByIdsOdoo(ids);
+      setVisitsSheetRows(rows);
+    } catch (e) {
+      showToastMessage('Failed to load visits');
+    } finally {
+      setVisitsSheetLoading(false);
+    }
+  };
+
+  // Add Additional Trip — auto-end-with-confirm flow.
+  const handleFieldAddAdditionalTrip = useCallback(() => {
+    if (!fieldData?.attendance_id) return;
+    let prevTripId = null;
+    let prevTripRef = '';
+    let prevTripEnded = false;
+    if (fieldLines.length > 0) {
+      const last = fieldLines[fieldLines.length - 1];
+      prevTripId = Array.isArray(last?.trip_id) ? last.trip_id[0] : null;
+      prevTripRef = Array.isArray(last?.trip_id) ? last.trip_id[1] : '';
+      prevTripEnded = !!last?.trip_ended;
+    } else if (Array.isArray(fieldDetail?.source_trip_id)) {
+      prevTripId = fieldDetail.source_trip_id[0];
+      prevTripRef = fieldDetail.source_trip_id[1];
+      prevTripEnded = !!fieldDetail?.source_trip_ended;
+    }
+
+    if (prevTripId && !prevTripEnded) {
+      showAlert({
+        message: `Close trip ${prevTripRef || `#${prevTripId}`} now and add a new trip?\n\nThe previous trip will be marked as ended at the current time, and its draft visits will be marked as done.`,
+        confirmText: 'Close & Continue',
+        cancelText: 'Cancel',
+        onConfirm: async () => {
+          hideAlert();
+          setFieldBusy(true);
+          try {
+            await endVehicleTripFromAttendanceOdoo(prevTripId);
+            await refreshFieldDetail(fieldData.attendance_id);
+            setAddLineOpen(true);
+          } catch (e) {
+            showToastMessage(e?.message || 'Failed to close previous trip');
+          } finally {
+            setFieldBusy(false);
+          }
+        },
+        onCancel: hideAlert,
+      });
+      return;
+    }
+    setAddLineOpen(true);
+  }, [fieldData, fieldLines, fieldDetail, showAlert, hideAlert, refreshFieldDetail]);
+
+  // Create a new vehicle.tracking trip from inside the trip picker —
+  // mirrors Odoo's "Create..." inline option. Closes any open Field sheets
+  // first so the back-stack is clean when the user returns.
+  const handleCreateNewTrip = useCallback(() => {
+    setEditPrimaryOpen(false);
+    setAddLineOpen(false);
+    navigation.navigate('VehicleTrackingForm');
+  }, [navigation]);
+
   // Re-run when the screen regains focus (e.g. user just came back from
   // Vehicle Tracking after creating a new trip). Silent refresh — keeps the
   // current rendered card on screen and updates in place.
@@ -298,19 +732,23 @@ const UserAttendanceScreen = ({ navigation }) => {
       console.log('[Attendance] Photo captured, size:', photo.base64?.length);
       closeCamera();
 
-      // Proceed with check-in or check-out
+      // Proceed with check-in or check-out (office / wfh / field).
       if (cameraType === 'check_in') {
         if (attendanceMode === 'wfh') {
           await processWfhCheckIn(photo.base64);
         } else {
           await processCheckIn(photo.base64);
         }
-      } else {
+      } else if (cameraType === 'check_out') {
         if (attendanceMode === 'wfh') {
           await processWfhCheckOut(photo.base64);
         } else {
           await processCheckOut(photo.base64);
         }
+      } else if (cameraType === 'field_check_in') {
+        await processFieldCheckIn(photo.base64);
+      } else if (cameraType === 'field_check_out') {
+        await processFieldCheckOut(photo.base64);
       }
     } catch (error) {
       console.error('Photo capture error:', error);
@@ -2266,6 +2704,115 @@ const UserAttendanceScreen = ({ navigation }) => {
     const trip = fieldData?.trip;
     const visits = fieldData?.visits || [];
 
+    const renderTabBar = () => (
+      <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#EEE', marginHorizontal: -scale(4) }}>
+        <TouchableOpacity
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: scale(10), gap: scale(4), borderBottomWidth: fieldTab === 'today' ? 2 : 0, borderBottomColor: FIELD_COLOR }}
+          onPress={() => setFieldTab('today')}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="today" size={scale(16)} color={fieldTab === 'today' ? FIELD_COLOR : '#999'} />
+          <Text style={{ fontSize: scale(12), fontFamily: fieldTab === 'today' ? FONT_FAMILY.urbanistBold : FONT_FAMILY.urbanistMedium, color: fieldTab === 'today' ? FIELD_COLOR : '#999' }}>Today</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: scale(10), gap: scale(4), borderBottomWidth: fieldTab === 'history' ? 2 : 0, borderBottomColor: FIELD_COLOR }}
+          onPress={() => setFieldTab('history')}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="history" size={scale(16)} color={fieldTab === 'history' ? FIELD_COLOR : '#999'} />
+          <Text style={{ fontSize: scale(12), fontFamily: fieldTab === 'history' ? FONT_FAMILY.urbanistBold : FONT_FAMILY.urbanistMedium, color: fieldTab === 'history' ? FIELD_COLOR : '#999' }}>History</Text>
+        </TouchableOpacity>
+      </View>
+    );
+
+    const renderHistoryTab = () => (
+      <View style={{ marginTop: scale(10) }}>
+        {/* Filter chip */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: scale(8) }}>
+          <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: '#444' }}>
+            My Records ({fieldHistoryRows.length})
+          </Text>
+          <View style={{ flexDirection: 'row', gap: scale(6) }}>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', gap: scale(4), paddingVertical: scale(6), paddingHorizontal: scale(10), borderRadius: scale(8), backgroundColor: fieldFilterCount ? FIELD_COLOR : '#fff', borderWidth: 1, borderColor: FIELD_COLOR }}
+              onPress={() => setFieldFiltersOpen(true)}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="filter-list" size={scale(14)} color={fieldFilterCount ? '#fff' : FIELD_COLOR} />
+              <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistBold, color: fieldFilterCount ? '#fff' : FIELD_COLOR }}>
+                Filters{fieldFilterCount ? ` · ${fieldFilterCount}` : ''}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ padding: scale(6) }}
+              onPress={() => loadFieldHistory({ reset: true })}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="refresh" size={scale(18)} color={FIELD_COLOR} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {offline && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF3E0', borderRadius: scale(10), padding: scale(10), gap: scale(8), marginBottom: scale(8) }}>
+            <MaterialIcons name="wifi-off" size={scale(16)} color="#7a4f00" />
+            <Text style={{ flex: 1, fontSize: scale(11), color: '#7a4f00', fontFamily: FONT_FAMILY.urbanistMedium }}>
+              Offline — connect to load history.
+            </Text>
+          </View>
+        )}
+
+        {fieldHistoryLoading && fieldHistoryRows.length === 0 ? (
+          <View style={{ paddingVertical: scale(40), alignItems: 'center' }}>
+            <MaterialIcons name="hourglass-empty" size={scale(28)} color={FIELD_COLOR} />
+            <Text style={{ fontSize: scale(12), color: '#666', marginTop: scale(8), fontFamily: FONT_FAMILY.urbanistMedium }}>
+              Loading…
+            </Text>
+          </View>
+        ) : fieldHistoryRows.length === 0 ? (
+          <View style={{ alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: scale(12), padding: scale(20), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
+            <MaterialIcons name="inbox" size={scale(32)} color="#BDBDBD" />
+            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(8) }}>
+              No records yet
+            </Text>
+            <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(2), textAlign: 'center' }}>
+              {fieldFilterCount > 0 ? 'Try clearing filters or pick a different date range.' : 'Mark a field attendance to see it here.'}
+            </Text>
+          </View>
+        ) : (
+          <>
+            {fieldHistoryRows.map((row) => (
+              <HistoryListItem
+                key={row.id}
+                row={row}
+                onPress={() => openFieldDetail(row.id)}
+              />
+            ))}
+            {fieldHistoryHasMore ? (
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), backgroundColor: '#fff', borderRadius: scale(10), borderWidth: 1, borderColor: FIELD_COLOR, paddingVertical: scale(11), marginTop: scale(8) }}
+                onPress={() => loadFieldHistory({ reset: false })}
+                disabled={fieldHistoryLoading}
+                activeOpacity={0.85}
+              >
+                <MaterialIcons name="expand-more" size={scale(16)} color={FIELD_COLOR} />
+                <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR }}>
+                  {fieldHistoryLoading ? 'Loading…' : 'Load more'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        )}
+
+        <HistoryFiltersSheet
+          visible={fieldFiltersOpen}
+          initial={fieldHistoryFilters}
+          onApply={applyFieldFilters}
+          onClose={() => setFieldFiltersOpen(false)}
+        />
+      </View>
+    );
+
     const renderEmpty = (icon, title, subtitle, ctaLabel, ctaTarget) => (
       <View style={[styles.detailsSection, { paddingTop: scale(8) }]}>
         <View style={{ alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: scale(12), padding: scale(20), marginTop: scale(8) }}>
@@ -2313,6 +2860,10 @@ const UserAttendanceScreen = ({ navigation }) => {
           </View>
         </View>
 
+        {renderTabBar()}
+
+        {fieldTab === 'history' ? renderHistoryTab() : (
+          <View>
         {/* Offline */}
         {offline && (
           <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF3E0', borderRadius: scale(10), padding: scale(10), marginTop: scale(8), gap: scale(8) }}>
@@ -2328,52 +2879,12 @@ const UserAttendanceScreen = ({ navigation }) => {
           <View style={{ alignItems: 'center', padding: scale(28) }}>
             <MaterialIcons name="hourglass-empty" size={scale(36)} color={FIELD_COLOR} />
             <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(10) }}>
-              Checking today's trips and visits…
+              Loading…
             </Text>
           </View>
         )}
 
-        {/* No trip */}
-        {fieldStatus === 'no_trip' && !offline && renderEmpty(
-          'directions-car',
-          'No vehicle trip today',
-          'Start a Vehicle Trip first to use field attendance.',
-          'Go to Vehicle Tracking',
-          'VehicleTrackingScreen',
-        )}
-
-        {/* No visit */}
-        {fieldStatus === 'no_visit' && !offline && renderEmpty(
-          'place',
-          'No customer visit yet',
-          'Log at least one customer visit to use field attendance.',
-          'Go to Customer Visits',
-          'VisitScreen',
-        )}
-
-        {/* Trip still in progress */}
-        {fieldStatus === 'trip_open' && !offline && (
-          <View style={{ backgroundColor: '#FFF8E1', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#FFA000' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
-              <MaterialIcons name="schedule" size={scale(20)} color="#FFA000" />
-              <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }}>End your trip first</Text>
-            </View>
-            {trip && (
-              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(6) }}>
-                Trip {trip.ref} started at {trip.start_time?.slice(11, 16) || '—'}. End it before marking attendance.
-              </Text>
-            )}
-            <TouchableOpacity
-              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: FIELD_COLOR, borderRadius: scale(10), padding: scale(10), marginTop: scale(10), gap: scale(6) }}
-              onPress={() => navigation.navigate('VehicleTrackingScreen')}
-            >
-              <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
-              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>Open Vehicle Tracking</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Manual conflict */}
+        {/* Manual conflict — non-field attendance already exists today */}
         {fieldStatus === 'manual_exists' && !offline && (
           <View style={{ backgroundColor: '#EFEBE9', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#6D4C41' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
@@ -2386,61 +2897,30 @@ const UserAttendanceScreen = ({ navigation }) => {
           </View>
         )}
 
-        {/* Already marked */}
-        {fieldStatus === 'already_field' && !offline && (
-          <View style={{ backgroundColor: '#E8F5E9', borderRadius: scale(12), padding: scale(14), marginTop: scale(8), borderLeftWidth: 4, borderLeftColor: '#2E7D32' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
-              <MaterialIcons name="check-circle" size={scale(22)} color="#2E7D32" />
-              <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#1B5E20' }}>Field attendance marked</Text>
-            </View>
-            {trip && (
-              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#1B5E20', marginTop: scale(6) }}>
-                Trip {trip.ref} · {trip.start_time?.slice(11, 16) || '—'} → {trip.end_time?.slice(11, 16) || '—'}
-              </Text>
-            )}
-            <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#1B5E20', marginTop: scale(2) }}>
-              {visits.length} customer visit{visits.length === 1 ? '' : 's'} linked.
-            </Text>
-          </View>
-        )}
-
-        {/* Eligible — main action */}
+        {/* Eligible — Office-style Check-In button */}
         {fieldStatus === 'eligible' && !offline && (
           <View style={{ marginTop: scale(8) }}>
-            <View style={{ backgroundColor: '#fff', borderRadius: scale(12), padding: scale(14), borderLeftWidth: 4, borderLeftColor: FIELD_COLOR, ...Platform.select({ android: { elevation: 1 }, ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 2 } }) }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8) }}>
-                <MaterialIcons name="directions-car" size={scale(20)} color={FIELD_COLOR} />
-                <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }}>{trip?.ref || 'Today\'s trip'}</Text>
+            <View style={styles.statusCardsContainer}>
+              <View style={[styles.statusCard, styles.statusCardInactive]}>
+                <View style={[styles.statusIconContainer, { backgroundColor: '#F5F5F5' }]}>
+                  <MaterialIcons name="login" size={scale(20)} color={COLORS.gray} />
+                </View>
+                <Text style={styles.statusCardLabel}>Check In</Text>
+                <Text style={styles.statusCardValue}>--:--</Text>
               </View>
-              <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: scale(6) }}>
-                {trip?.start_time?.slice(11, 16) || '—'} → {trip?.end_time?.slice(11, 16) || '—'}
-              </Text>
-              {!!trip?.source && (
-                <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(2) }}>
-                  From {trip.source}{trip.destination ? `  →  ${trip.destination}` : ''}
-                </Text>
-              )}
+              <View style={[styles.statusCard, styles.statusCardInactive]}>
+                <View style={[styles.statusIconContainer, { backgroundColor: '#F5F5F5' }]}>
+                  <MaterialIcons name="logout" size={scale(20)} color={COLORS.gray} />
+                </View>
+                <Text style={styles.statusCardLabel}>Check Out</Text>
+                <Text style={styles.statusCardValue}>--:--</Text>
+              </View>
             </View>
-
-            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#333', marginTop: scale(14), marginBottom: scale(6) }}>
-              Customer Visits ({visits.length})
-            </Text>
-            {visits.map((v, idx) => (
-              <View key={v.id || idx} style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: scale(10), padding: scale(10), marginBottom: scale(6), borderWidth: 1, borderColor: '#E0E0E0', gap: scale(10) }}>
-                <View style={{ width: scale(28), height: scale(28), borderRadius: scale(14), backgroundColor: '#E3F2FD', alignItems: 'center', justifyContent: 'center' }}>
-                  <MaterialIcons name="person" size={scale(16)} color={FIELD_COLOR} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: '#333' }} numberOfLines={1}>
-                    {v.customer || v.name || 'Customer'}
-                  </Text>
-                  <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(1) }} numberOfLines={1}>
-                    {v.date_time?.slice(11, 16) || ''} · {v.location_name || '—'}
-                  </Text>
-                </View>
-              </View>
-            ))}
-
+            <View style={styles.currentTimeCard}>
+              <Feather name="clock" size={scale(16)} color={FIELD_COLOR} />
+              <Text style={styles.currentTimeLabel}>Current Time:</Text>
+              <Text style={[styles.currentTimeValue, { color: FIELD_COLOR }]}>{formatTimeOnly(currentTime)}</Text>
+            </View>
             <TouchableOpacity
               style={{
                 flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -2448,13 +2928,143 @@ const UserAttendanceScreen = ({ navigation }) => {
                 borderRadius: scale(12), padding: scale(14), marginTop: scale(14), gap: scale(8),
               }}
               disabled={fieldSubmitting}
-              onPress={handleMarkFieldAttendance}
+              onPress={handleFieldCheckIn}
             >
-              <MaterialIcons name={fieldSubmitting ? 'hourglass-empty' : 'check'} size={scale(20)} color="#fff" />
+              <MaterialIcons name={fieldSubmitting ? 'hourglass-empty' : 'login'} size={scale(20)} color="#fff" />
               <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>
-                {fieldSubmitting ? 'Marking…' : 'Mark as Today\'s Attendance'}
+                {fieldSubmitting ? 'Checking in…' : 'Check In'}
               </Text>
             </TouchableOpacity>
+            <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', textAlign: 'center', marginTop: scale(8) }}>
+              You can pick a primary trip and link visits after checking in.
+            </Text>
+          </View>
+        )}
+
+        {/* Checked In (open) — full trip management UI + Check Out */}
+        {(fieldStatus === 'checked_in_open' || fieldStatus === 'checked_out') && !offline && (
+          <View style={{ marginTop: scale(8) }}>
+            {/* Time chips */}
+            <View style={styles.statusCardsContainer}>
+              <View style={[styles.statusCard, fieldData?.check_in ? styles.statusCardActive : styles.statusCardInactive]}>
+                <View style={[styles.statusIconContainer, { backgroundColor: fieldData?.check_in ? '#E8F5E9' : '#F5F5F5' }]}>
+                  <MaterialIcons name="login" size={scale(20)} color={fieldData?.check_in ? '#4CAF50' : COLORS.gray} />
+                </View>
+                <Text style={styles.statusCardLabel}>Check In</Text>
+                <Text style={[styles.statusCardValue, fieldData?.check_in && { color: '#4CAF50' }]}>
+                  {fieldData?.check_in?.slice(11, 16) || '--:--'}
+                </Text>
+              </View>
+              <View style={[styles.statusCard, fieldData?.check_out ? styles.statusCardActive : styles.statusCardInactive]}>
+                <View style={[styles.statusIconContainer, { backgroundColor: fieldData?.check_out ? '#FFEBEE' : '#F5F5F5' }]}>
+                  <MaterialIcons name="logout" size={scale(20)} color={fieldData?.check_out ? '#F44336' : COLORS.gray} />
+                </View>
+                <Text style={styles.statusCardLabel}>Check Out</Text>
+                <Text style={[styles.statusCardValue, fieldData?.check_out && { color: '#F44336' }]}>
+                  {fieldData?.check_out?.slice(11, 16) || '--:--'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Late banner */}
+            {fieldDetail?.is_late ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(6), backgroundColor: '#FFF8E1', borderRadius: scale(8), padding: scale(8), marginTop: scale(8), borderLeftWidth: 3, borderLeftColor: '#FB8C00' }}>
+                <MaterialIcons name="schedule" size={scale(14)} color="#FB8C00" />
+                <Text style={{ flex: 1, fontSize: scale(11.5), color: '#7a4f00', fontFamily: FONT_FAMILY.urbanistBold }}>
+                  Late by {fieldDetail.late_minutes_display || `${fieldDetail.late_minutes || 0}m`}
+                  {Number(fieldDetail.deduction_amount || 0) > 0 ? ` · Deduction ${Number(fieldDetail.deduction_amount).toFixed(2)}` : ''}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Section: Primary Trip */}
+            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>Primary Trip</Text>
+            <PrimaryTripCard
+              attendance={fieldDetail}
+              busy={fieldStatus === 'checked_out' || fieldBusy}
+              onSetup={() => {
+                console.log('[FieldAttendance] tap Setup Primary Trip — opening sheet, fieldDetail?', !!fieldDetail);
+                setEditPrimaryOpen(true);
+              }}
+              onEdit={() => {
+                console.log('[FieldAttendance] tap Edit Primary Trip — opening sheet');
+                setEditPrimaryOpen(true);
+              }}
+              onOpenTrip={() => handleFieldOpenTrip(fieldDetail?.source_trip_id)}
+              onViewVisits={() => handleFieldViewVisits(fieldDetail?.source_visit_ids)}
+            />
+
+            {/* Section: Additional Trips — only after primary trip is set */}
+            {Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0] ? (
+              <>
+                <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>
+                  Additional Trips ({fieldLines.length})
+                </Text>
+                {fieldLines.length === 0 ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#FAFAFA', borderRadius: scale(10), padding: scale(12), marginTop: scale(6), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
+                    <MaterialIcons name="add-road" size={scale(20)} color="#BDBDBD" />
+                    <Text style={{ flex: 1, fontSize: scale(12), color: '#888', fontFamily: FONT_FAMILY.urbanistMedium }}>
+                      No additional trips. Add another trip if you took multiple trips today.
+                    </Text>
+                  </View>
+                ) : (
+                  fieldLines.map((line, idx) => (
+                    <TripLineCard
+                      key={line.id}
+                      line={line}
+                      index={idx}
+                      busy={fieldStatus === 'checked_out' || fieldBusy}
+                      onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
+                      onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
+                      onDelete={() => handleFieldDeleteLine(line)}
+                    />
+                  ))
+                )}
+
+                {fieldStatus === 'checked_in_open' ? (
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), backgroundColor: FIELD_COLOR, borderRadius: scale(12), padding: scale(12), marginTop: scale(10) }}
+                    disabled={fieldBusy}
+                    activeOpacity={0.85}
+                    onPress={handleFieldAddAdditionalTrip}
+                  >
+                    <MaterialIcons name="add" size={scale(18)} color="#fff" />
+                    <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>Add Additional Trip</Text>
+                  </TouchableOpacity>
+                ) : null}
+
+                {/* Section: Trip Totals */}
+                <TripTotalsSection attendance={fieldDetail} />
+              </>
+            ) : null}
+
+            {/* Action footer */}
+            {fieldStatus === 'checked_in_open' ? (
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: checkOutSubmitting ? '#EF9A9A' : '#E53935',
+                  borderRadius: scale(12), padding: scale(14), marginTop: scale(16), gap: scale(8),
+                }}
+                disabled={checkOutSubmitting}
+                onPress={handleFieldCheckOut}
+              >
+                <MaterialIcons name={checkOutSubmitting ? 'hourglass-empty' : 'logout'} size={scale(20)} color="#fff" />
+                <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>
+                  {checkOutSubmitting ? 'Checking out…' : 'Check Out'}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#E8F5E9', borderRadius: scale(12), padding: scale(14), marginTop: scale(16), borderLeftWidth: 4, borderLeftColor: '#2E7D32' }}>
+                <MaterialIcons name="check-circle" size={scale(22)} color="#2E7D32" />
+                <Text style={{ flex: 1, fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#1B5E20' }}>
+                  Field attendance complete
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
           </View>
         )}
       </View>
@@ -2801,7 +3411,7 @@ const UserAttendanceScreen = ({ navigation }) => {
                   <MaterialIcons name="close" size={scale(28)} color={COLORS.white} />
                 </TouchableOpacity>
                 <Text style={styles.cameraTitle}>
-                  {cameraType === 'check_in' ? 'Check In Photo' : 'Check Out Photo'}
+                  {cameraType === 'check_in' || cameraType === 'field_check_in' ? 'Check In Photo' : 'Check Out Photo'}
                 </Text>
                 <View style={{ width: scale(40) }} />
               </View>
@@ -2934,6 +3544,51 @@ const UserAttendanceScreen = ({ navigation }) => {
           </View>
         </View>
       </Modal>
+
+      {/* Field Attendance bottom sheets — mounted at screen root so they
+          overlay correctly regardless of which tab the user is on. Their
+          visibility is driven by their `visible` prop. */}
+      <EditPrimaryTripSheet
+        visible={editPrimaryOpen}
+        attendance={fieldDetail}
+        loadAvailableTrips={fieldLoadAvailableTrips}
+        loadDraftVisits={fieldLoadDraftVisits}
+        loadVisitsByIds={fieldLoadVisitsByIds}
+        onSave={handleFieldSavePrimary}
+        onClose={() => setEditPrimaryOpen(false)}
+        saving={editPrimarySaving}
+        onCreateNewTrip={handleCreateNewTrip}
+      />
+      <AddTripLineSheet
+        visible={addLineOpen}
+        loadAvailableTrips={fieldLoadAvailableTrips}
+        loadDraftVisits={fieldLoadDraftVisits}
+        loadVisitsByIds={fieldLoadVisitsByIds}
+        onSave={handleFieldSaveTripLine}
+        onClose={() => setAddLineOpen(false)}
+        saving={addLineSaving}
+        onCreateNewTrip={handleCreateNewTrip}
+      />
+      <TripDetailSheet
+        visible={tripSheetOpen}
+        trip={tripSheetTrip}
+        loading={tripSheetLoading}
+        onClose={() => setTripSheetOpen(false)}
+        onOpenInVehicleTracking={() => {
+          setTripSheetOpen(false);
+          navigation.navigate('VehicleTrackingScreen');
+        }}
+      />
+      <VisitsListSheet
+        visible={visitsSheetOpen}
+        visits={visitsSheetRows}
+        loading={visitsSheetLoading}
+        onClose={() => setVisitsSheetOpen(false)}
+        onOpenInVisits={() => {
+          setVisitsSheetOpen(false);
+          navigation.navigate('VisitScreen');
+        }}
+      />
 
       {/* Styled alert modal — matches the logout popup design */}
       <StyledAlertModal

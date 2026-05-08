@@ -1,0 +1,12 @@
+{
+  "name": "employee-attendance-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated tooling for generating client-facing documents. Not part of the app build.",
+  "scripts": {
+    "build:requirements": "node generate_requirements_doc.js"
+  },
+  "dependencies": {
+    "docx": "^9.0.2"
+  }
+}

@@ -12,6 +12,7 @@ const AttendanceScreen = ({ navigation }) => {
     const options =
         [
             { title: 'Punching', image: require('@assets/images/Home/options/attendance/punching.png'), onPress: () => navigation.navigate('PunchingScreen') },
+            { title: 'Field Attendance', image: require('@assets/images/Home/options/attendance/punching.png'), onPress: () => navigation.navigate('UserAttendanceScreen', { initialMode: 'field' }) },
         ]
 
     const renderItem = ({ item }) => {

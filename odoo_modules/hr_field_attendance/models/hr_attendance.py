@@ -519,24 +519,26 @@ class HrAttendance(models.Model):
 
     @api.model
     def get_today_field_attendance(self, employee_id):
-        """Inspect today's trips/visits/attendance for the given employee.
+        """Inspect today's field attendance for the given employee.
 
-        Returns a dict:
-          {
-            'status': 'no_trip' | 'no_visit' | 'trip_open' | 'manual_exists'
-                     | 'already_field' | 'eligible',
-            'trip': {...} | None,
-            'visits': [{...}, ...],
-            'attendance_id': int | None,
-          }
+        State machine (mobile app uses these statuses verbatim):
+          'eligible'         — no attendance today; ready to tap Check In
+          'checked_in_open'  — field attendance exists, check_out is False
+          'checked_out'      — field attendance exists, check_out is set
+          'manual_exists'    — non-field attendance already exists today
+
+        Trips/visits are no longer required to reach 'eligible'; the user
+        can check in first and pick a trip / link visits later via Edit
+        Primary Trip / Add Additional Trip.
         """
         employee = self.env['hr.employee'].sudo().browse(employee_id)
         if not employee.exists():
-            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
+            return {'status': 'eligible', 'trip': None, 'visits': [],
+                    'attendance_id': None, 'check_in': None, 'check_out': None}
 
         self._check_field_attendance_access(employee)
 
-        utc_start, utc_end, local_date = self._employee_today_window(employee)
+        utc_start, utc_end, _ = self._employee_today_window(employee)
 
         Attendance = self.env['hr.attendance'].sudo()
         existing = Attendance.search([
@@ -548,60 +550,127 @@ class HrAttendance(models.Model):
         if existing:
             if existing.attendance_source == 'field':
                 return {
-                    'status': 'already_field',
+                    'status': 'checked_out' if existing.check_out else 'checked_in_open',
                     'trip': self._serialize_trip(existing.source_trip_id) if existing.source_trip_id else None,
                     'visits': [self._serialize_visit(v) for v in existing.source_visit_ids],
                     'attendance_id': existing.id,
+                    'check_in': str(existing.check_in) if existing.check_in else None,
+                    'check_out': str(existing.check_out) if existing.check_out else None,
                 }
             return {
                 'status': 'manual_exists',
                 'trip': None,
                 'visits': [],
                 'attendance_id': existing.id,
-            }
-
-        partner_ids = self._employee_partner_ids(employee)
-        if not partner_ids:
-            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
-
-        Trip = self.env['vehicle.tracking'].sudo()
-        trips = Trip.search([
-            ('driver_id', 'in', partner_ids),
-            ('date', '=', local_date),
-            ('trip_status', 'in', ['in_progress', 'ended']),
-        ], order='start_time asc')
-
-        if not trips:
-            return {'status': 'no_trip', 'trip': None, 'visits': [], 'attendance_id': None}
-
-        Visit = self.env['customer.visit'].sudo()
-        visits = Visit.search([
-            ('employee_id', '=', employee.id),
-            ('date_time', '>=', utc_start),
-            ('date_time', '<', utc_end),
-        ], order='date_time asc')
-
-        if not visits:
-            return {
-                'status': 'no_visit',
-                'trip': self._serialize_trip(trips[0]),
-                'visits': [],
-                'attendance_id': None,
-            }
-
-        if any(t.trip_status == 'in_progress' for t in trips):
-            return {
-                'status': 'trip_open',
-                'trip': self._serialize_trip(trips[0]),
-                'visits': [self._serialize_visit(v) for v in visits],
-                'attendance_id': None,
+                'check_in': str(existing.check_in) if existing.check_in else None,
+                'check_out': str(existing.check_out) if existing.check_out else None,
             }
 
         return {
             'status': 'eligible',
-            'trip': self._serialize_trip(trips[0]),
-            'visits': [self._serialize_visit(v) for v in visits],
+            'trip': None,
+            'visits': [],
             'attendance_id': None,
+            'check_in': None,
+            'check_out': None,
+        }
+
+    @api.model
+    def start_field_attendance(self, employee_id):
+        """Open a field attendance for today (check_in=now, no check_out).
+
+        Best-effort: auto-links today's earliest trip + all of the employee's
+        visits IF they already exist; otherwise leaves them empty so the user
+        can pick them later from the mobile app via Edit Primary Trip and
+        Add Additional Trip. GPS prefers the first visit's coordinates over
+        the trip's start coords (matches create_field_attendance behaviour).
+        """
+        employee = self.env['hr.employee'].sudo().browse(employee_id)
+        if not employee.exists():
+            return {'success': False, 'error': _('Employee not found.')}
+
+        self._check_field_attendance_access(employee)
+
+        utc_start, utc_end, local_date = self._employee_today_window(employee)
+
+        Attendance = self.env['hr.attendance'].sudo()
+        existing = Attendance.search([
+            ('employee_id', '=', employee.id),
+            ('check_in', '>=', utc_start),
+            ('check_in', '<', utc_end),
+        ], limit=1)
+        if existing:
+            if existing.attendance_source == 'field':
+                return {
+                    'success': False,
+                    'error': _('Field attendance already started today.'),
+                    'attendance_id': existing.id,
+                }
+            return {
+                'success': False,
+                'error': _('Manual attendance already exists for today.'),
+                'attendance_id': existing.id,
+            }
+
+        # Best-effort auto-link to existing trip / visits.
+        partner_ids = self._employee_partner_ids(employee)
+        primary_trip_id = False
+        visit_ids = []
+        gps_lat = 0.0
+        gps_lng = 0.0
+        gps_name = ''
+        if partner_ids:
+            Trip = self.env['vehicle.tracking'].sudo()
+            trips = Trip.search([
+                ('driver_id', 'in', partner_ids),
+                ('date', '=', local_date),
+                ('trip_status', 'in', ['in_progress', 'ended']),
+            ], order='start_time asc', limit=1)
+            if trips:
+                primary_trip_id = trips[0].id
+                gps_lat = self._to_float_or_zero(trips[0].start_latitude)
+                gps_lng = self._to_float_or_zero(trips[0].start_longitude)
+                gps_name = trips[0].source_id.name if trips[0].source_id else ''
+            Visit = self.env['customer.visit'].sudo()
+            visits = Visit.search([
+                ('employee_id', '=', employee.id),
+                ('date_time', '>=', utc_start),
+                ('date_time', '<', utc_end),
+            ], order='date_time asc')
+            visit_ids = visits.ids
+            if visits:
+                first_visit = visits[0]
+                v_lat = self._to_float_or_zero(first_visit.latitude)
+                v_lng = self._to_float_or_zero(first_visit.longitude)
+                if v_lat or v_lng:
+                    gps_lat, gps_lng = v_lat, v_lng
+                if first_visit.location_name:
+                    gps_name = first_visit.location_name
+
+        vals = {
+            'employee_id': employee.id,
+            'check_in': fields.Datetime.now(),
+            'attendance_source': 'field',
+            'gps_latitude': gps_lat,
+            'gps_longitude': gps_lng,
+            'gps_location_name': gps_name,
+        }
+        if primary_trip_id:
+            vals['source_trip_id'] = primary_trip_id
+        if visit_ids:
+            vals['source_visit_ids'] = [(6, 0, visit_ids)]
+
+        new_record = Attendance.create(vals)
+        new_record.flush_recordset()
+        return {
+            'success': True,
+            'attendance_id': new_record.id,
+            'is_late': bool(new_record.is_late),
+            'late_minutes': int(new_record.late_minutes or 0),
+            'late_minutes_display': new_record.late_minutes_display or '',
+            'expected_start_time': float(new_record.expected_start_time or 0.0),
+            'check_in': str(new_record.check_in) if new_record.check_in else None,
+            'needs_late_reason': bool(new_record.is_late) and not new_record.late_reason,
         }
 
     @api.model

@@ -44,7 +44,7 @@ import { BoxInspectionForm, BoxInspectionScreen } from "@screens/Home/Options/Bo
 import { AttendanceScreen } from "@screens/Home/Options/Attendance";
 import { MarkAttendance, PunchingScreen } from "@screens/Home/Options/Attendance/Punching";
 import { CashCollectionScreen, CashCollectionForm } from "@screens/Home/Options/CashCollection";
-import { UserAttendanceScreen, UserAttendanceForm } from "@screens/Home/Options/UserAttendance";
+import { UserAttendanceScreen, UserAttendanceForm, FieldAttendanceDetailScreen } from "@screens/Home/Options/UserAttendance";
 import { LateRecordsScreen } from "@screens/Home/Options/LateRecords";
 import { OfflineSyncScreen } from "@screens/Home/Options/OfflineSync";
 import { InvoiceScannerScreen, InvoiceDetailsScreen } from "@screens/Home/Options/InvoiceScanner";
@@ -784,6 +784,11 @@ const StackNavigator = () => {
       <Stack.Screen
         name="UserAttendanceForm"
         component={UserAttendanceForm}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="FieldAttendanceDetailScreen"
+        component={FieldAttendanceDetailScreen}
         options={{ headerShown: false }}
       />
 

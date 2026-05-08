@@ -135,7 +135,7 @@ const _warmGpsCache = () => {
 // Get current device location — fast path: cached fix first (returns in ms),
 // then quick Balanced live fetch, then High-accuracy if needed. Designed to
 // return in <1s in the typical case while still working indoors.
-const getCurrentLocation = async () => {
+export const getCurrentLocation = async () => {
   const granted = await _ensureLocationPermission();
   if (!granted) {
     return { success: false, error: 'Location permission denied' };
