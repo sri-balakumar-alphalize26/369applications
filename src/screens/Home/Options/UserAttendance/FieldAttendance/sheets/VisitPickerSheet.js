@@ -9,11 +9,13 @@ import {
   ActivityIndicator,
   StyleSheet,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
 
 const FIELD_COLOR = '#1976D2';
+const LIST_MAX_HEIGHT = Math.floor(Dimensions.get('window').height * 0.75);
 
 const fmtTime = (s) => {
   if (!s) return '';
@@ -24,69 +26,66 @@ const VisitPickerSheet = ({
   visible,
   visits,
   loading,
-  selectedIds = [],
-  onConfirm,
+  selectedId,
+  onSelect,
   onClose,
-  title = 'Pick Visits',
+  onCreateNew,
+  title = 'Add Visit',
   emptySubtitle = 'Log a customer visit first to attach it here.',
 }) => {
   const [search, setSearch] = useState('');
-  const [picked, setPicked] = useState(new Set());
 
   useEffect(() => {
-    if (visible) {
-      setPicked(new Set((selectedIds || []).map(Number)));
-      setSearch('');
-    }
-  }, [visible, selectedIds]);
+    if (!visible) setSearch('');
+  }, [visible]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = visits || [];
-    if (!q) return all;
-    return all.filter((v) => {
+    const filtered = !q ? all : all.filter((v) => {
       const name = String(v.name || '').toLowerCase();
       const partner = Array.isArray(v.partner_id) ? String(v.partner_id[1] || '').toLowerCase() : '';
       const loc = String(v.location_name || '').toLowerCase();
       return name.includes(q) || partner.includes(q) || loc.includes(q);
     });
+    console.log('[VisitPickerSheet]',
+      'visits=', all.length,
+      'rows=', filtered.length,
+      'search=', q ? `"${q}"` : '(none)',
+      'LIST_MAX_HEIGHT=', LIST_MAX_HEIGHT,
+    );
+    return filtered;
   }, [visits, search]);
 
-  const toggle = (id) => {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  const confirm = () => {
-    onConfirm(Array.from(picked));
-  };
-
   const renderItem = ({ item }) => {
-    const id = Number(item.id);
-    const isPicked = picked.has(id);
+    const isSelected = Number(item.id) === Number(selectedId);
+    const partnerLabel = Array.isArray(item.partner_id) ? item.partner_id[1] : (item.name || `Visit #${item.id}`);
     return (
       <TouchableOpacity
-        style={[styles.row, isPicked && styles.rowPicked]}
+        style={[styles.row, isSelected && styles.rowSelected]}
         activeOpacity={0.75}
-        onPress={() => toggle(id)}
+        onPress={() => { onSelect && onSelect(item); }}
       >
-        <View style={[styles.checkbox, isPicked && styles.checkboxOn]}>
-          {isPicked ? <MaterialIcons name="check" size={14} color="#fff" /> : null}
-        </View>
         <View style={styles.rowIcon}>
-          <MaterialIcons name="person" size={16} color={FIELD_COLOR} />
+          <MaterialIcons name="person" size={18} color={FIELD_COLOR} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.rowTitle} numberOfLines={1}>
-            {Array.isArray(item.partner_id) ? item.partner_id[1] : (item.name || `Visit #${item.id}`)}
+            {partnerLabel}
           </Text>
           <Text style={styles.rowSub} numberOfLines={1}>
-            {fmtTime(item.date_time) || '—'} · {item.location_name || '—'}
+            {item.name ? `${item.name} · ` : ''}
+            {fmtTime(item.date_time) || '—'}
           </Text>
+          {item.location_name ? (
+            <Text style={styles.rowMeta} numberOfLines={1}>
+              {item.location_name}
+            </Text>
+          ) : null}
         </View>
+        {isSelected ? (
+          <MaterialIcons name="check-circle" size={22} color={FIELD_COLOR} />
+        ) : null}
       </TouchableOpacity>
     );
   };
@@ -106,7 +105,7 @@ const VisitPickerSheet = ({
             <TextInput
               value={search}
               onChangeText={setSearch}
-              placeholder="Search by customer or location..."
+              placeholder="Search by ref, customer, location..."
               placeholderTextColor="#999"
               style={styles.searchInput}
               autoCorrect={false}
@@ -118,6 +117,24 @@ const VisitPickerSheet = ({
               </TouchableOpacity>
             )}
           </View>
+          {onCreateNew ? (
+            <View style={{ paddingHorizontal: 12 }}>
+              <TouchableOpacity
+                style={styles.createRow}
+                activeOpacity={0.85}
+                onPress={() => onCreateNew()}
+              >
+                <View style={styles.createIcon}>
+                  <MaterialIcons name="add" size={18} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.createTitle}>Create New Visit</Text>
+                  <Text style={styles.createSub}>Open Customer Visit form to log a new visit</Text>
+                </View>
+                <MaterialIcons name="open-in-new" size={18} color={FIELD_COLOR} />
+              </TouchableOpacity>
+            </View>
+          ) : null}
           {loading ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator color={FIELD_COLOR} />
@@ -127,30 +144,21 @@ const VisitPickerSheet = ({
             <View style={styles.emptyBox}>
               <MaterialIcons name="inbox" size={36} color="#BDBDBD" />
               <Text style={styles.emptyTitle}>No draft visits</Text>
-              <Text style={styles.emptySub}>{emptySubtitle}</Text>
+              <Text style={styles.emptySub}>
+                {search ? 'Try a different search term.' : (onCreateNew ? 'Tap "Create New Visit" above to log one.' : emptySubtitle)}
+              </Text>
             </View>
           ) : (
             <FlatList
+              style={{ maxHeight: LIST_MAX_HEIGHT }}
               data={rows}
               keyExtractor={(item) => String(item.id)}
               renderItem={renderItem}
-              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12 }}
+              contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
             />
           )}
-          <View style={styles.footer}>
-            <Text style={styles.footerCount}>
-              {picked.size} selected
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity style={styles.btnSecondary} onPress={onClose}>
-                <Text style={styles.btnSecondaryText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.btnPrimary} onPress={confirm}>
-                <Text style={styles.btnPrimaryText}>Done</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
         </View>
       </View>
     </Modal>
@@ -167,7 +175,7 @@ const styles = StyleSheet.create({
     width: '100%', maxWidth: 480,
     backgroundColor: '#fff',
     borderRadius: 16,
-    maxHeight: '88%',
+    maxHeight: '95%',
     paddingTop: 12,
     overflow: 'hidden',
     ...Platform.select({
@@ -199,39 +207,31 @@ const styles = StyleSheet.create({
       ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2 },
     }),
   },
-  rowPicked: { borderColor: FIELD_COLOR, backgroundColor: '#E3F2FD' },
+  rowSelected: { borderColor: FIELD_COLOR, backgroundColor: '#E3F2FD' },
+  createRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#F5F9FF', borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: FIELD_COLOR, borderStyle: 'dashed',
+    marginVertical: 4, marginBottom: 8,
+  },
+  createIcon: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: FIELD_COLOR,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  createTitle: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR },
+  createSub: { fontSize: 11, fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: 2 },
   rowIcon: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: '#E3F2FD',
+    width: 32, height: 32, borderRadius: 16, backgroundColor: '#E3F2FD',
     alignItems: 'center', justifyContent: 'center',
   },
   rowTitle: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#222' },
   rowSub: { fontSize: 11, fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: 2 },
-  checkbox: {
-    width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: '#BDBDBD',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  checkboxOn: { backgroundColor: FIELD_COLOR, borderColor: FIELD_COLOR },
+  rowMeta: { fontSize: 10.5, fontFamily: FONT_FAMILY.urbanistMedium, color: '#999', marginTop: 2 },
   loadingBox: { paddingVertical: 30, alignItems: 'center', gap: 8 },
   loadingText: { fontSize: 12, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
   emptyBox: { paddingVertical: 30, alignItems: 'center' },
   emptyTitle: { fontSize: 14, fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: 8 },
   emptySub: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: 2, textAlign: 'center', paddingHorizontal: 24 },
-  footer: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingVertical: 12,
-    borderTopWidth: 1, borderTopColor: '#EEE',
-  },
-  footerCount: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold, color: '#444' },
-  btnPrimary: {
-    backgroundColor: FIELD_COLOR, borderRadius: 10,
-    paddingVertical: 10, paddingHorizontal: 20,
-  },
-  btnPrimaryText: { color: '#fff', fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold },
-  btnSecondary: {
-    backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#BDBDBD',
-    paddingVertical: 10, paddingHorizontal: 16,
-  },
-  btnSecondaryText: { color: '#444', fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold },
 });
 
 export default VisitPickerSheet;

@@ -196,9 +196,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [pendingFieldPickerReopen, setPendingFieldPickerReopen] = useState(null);  // 'edit' | 'add' | null
   const [autoOpenPickerEdit, setAutoOpenPickerEdit] = useState(false);
   const [autoOpenPickerAdd, setAutoOpenPickerAdd] = useState(false);
+  const [pendingFieldVisitReopen, setPendingFieldVisitReopen] = useState(null);   // 'edit' | 'add' | null
+  const [autoOpenVisitPickerEdit, setAutoOpenVisitPickerEdit] = useState(false);
+  const [autoOpenVisitPickerAdd, setAutoOpenVisitPickerAdd] = useState(false);
   // Same idea for "Open in Vehicle Tracking" from TripDetailSheet — remember
   // the trip + parent sheet so we can restore them on focus return.
   const [pendingTripDetailReopen, setPendingTripDetailReopen] = useState(null);  // { tripId, parentSheet: 'edit' | 'add' | null }
+  // Same idea for tap-a-visit → VisitDetails. Snapshots which parent sheet
+  // was open + the linked-visit ids so we can re-open both on return.
+  const [pendingFieldVisitDetailReopen, setPendingFieldVisitDetailReopen] = useState(null); // { parentSheet, visitsListIds } | null
+  // End-KM prompt before Add Additional Trip — captures the previous trip's
+  // end odometer reading and writes it onto the trip during auto-end.
+  const [endKmPromptVisible, setEndKmPromptVisible] = useState(false);
+  const [endKmPromptTripId, setEndKmPromptTripId] = useState(null);
+  const [endKmPromptTripRef, setEndKmPromptTripRef] = useState('');
+  const [endKmPromptValue, setEndKmPromptValue] = useState('');
 
   // Field Attendance — tab + history state
   const [fieldTab, setFieldTab] = useState('today'); // 'today' | 'history'
@@ -683,13 +695,35 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     setVisitsSheetRows([]);
     try {
       const rows = await readCustomerVisitsByIdsOdoo(ids);
-      setVisitsSheetRows(rows);
+      // Hide visits already marked done — they aren't relevant to the
+      // active attendance any more.
+      const filtered = (rows || []).filter(r => String(r.state || 'draft') !== 'done');
+      setVisitsSheetRows(filtered);
     } catch (e) {
       showToastMessage('Failed to load visits');
     } finally {
       setVisitsSheetLoading(false);
     }
   };
+
+  // Open a specific linked visit's detail page (parity with how trip rows
+  // navigate to VehicleTrackingForm). Snapshots which parent sheet was open
+  // so the focus-return effect can re-open it after the user taps back.
+  const handleFieldOpenVisitDetail = useCallback((visit, ctx = {}) => {
+    const parentSheet = editPrimaryOpen ? 'edit' : (addLineOpen ? 'add' : null);
+    setPendingFieldVisitDetailReopen({
+      parentSheet,
+      visitsListIds: ctx.visitsListIds || null,
+    });
+    setEditPrimaryOpen(false);
+    setAddLineOpen(false);
+    setVisitsSheetOpen(false);
+    navigation.navigate('VisitDetails', {
+      visitId: Number(visit?.id || visit),
+      visitDetails: visit && typeof visit === 'object' ? visit : undefined,
+      returnTo: 'fieldAttendance',
+    });
+  }, [navigation, editPrimaryOpen, addLineOpen]);
 
   // Add Additional Trip — auto-end-with-confirm flow.
   const handleFieldAddAdditionalTrip = useCallback(() => {
@@ -709,29 +743,33 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
 
     if (prevTripId && !prevTripEnded) {
-      showAlert({
-        message: `Close trip ${prevTripRef || `#${prevTripId}`} now and add a new trip?\n\nThe previous trip will be marked as ended at the current time, and its draft visits will be marked as done.`,
-        confirmText: 'Close & Continue',
-        cancelText: 'Cancel',
-        onConfirm: async () => {
-          hideAlert();
-          setFieldBusy(true);
-          try {
-            await endVehicleTripFromAttendanceOdoo(prevTripId);
-            await refreshFieldDetail(fieldData.attendance_id);
-            setAddLineOpen(true);
-          } catch (e) {
-            showToastMessage(e?.message || 'Failed to close previous trip');
-          } finally {
-            setFieldBusy(false);
-          }
-        },
-        onCancel: hideAlert,
-      });
+      // Capture end_km BEFORE auto-ending the previous trip, so it lands on
+      // the record. Submission of the modal continues into endTripAndOpenAddLine.
+      setEndKmPromptTripId(prevTripId);
+      setEndKmPromptTripRef(prevTripRef || `#${prevTripId}`);
+      setEndKmPromptValue('');
+      setEndKmPromptVisible(true);
       return;
     }
     setAddLineOpen(true);
-  }, [fieldData, fieldLines, fieldDetail, showAlert, hideAlert, refreshFieldDetail]);
+  }, [fieldData, fieldLines, fieldDetail]);
+
+  // Submit handler for the end-km prompt — auto-ends the previous trip
+  // (passing the captured end_km), then opens the Add Trip Line popup.
+  const submitEndKmAndAddLine = useCallback(async (endKmStr) => {
+    if (!endKmPromptTripId) return;
+    setEndKmPromptVisible(false);
+    setFieldBusy(true);
+    try {
+      await endVehicleTripFromAttendanceOdoo(endKmPromptTripId, undefined, endKmStr);
+      await refreshFieldDetail(fieldData.attendance_id);
+      setAddLineOpen(true);
+    } catch (e) {
+      showToastMessage(e?.message || 'Failed to close previous trip');
+    } finally {
+      setFieldBusy(false);
+    }
+  }, [endKmPromptTripId, fieldData, refreshFieldDetail]);
 
   // Create a new vehicle.tracking trip from inside the trip picker —
   // mirrors Odoo's "Create..." inline option. Closes the field popups
@@ -742,6 +780,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     setAddLineOpen(false);
     setPendingFieldPickerReopen(context || 'edit');
     navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance' });
+  }, [navigation]);
+
+  // Same pattern but for "+ Create New Visit" inside the visit picker.
+  const handleCreateNewVisit = useCallback((context) => {
+    setEditPrimaryOpen(false);
+    setAddLineOpen(false);
+    setPendingFieldVisitReopen(context || 'edit');
+    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance' });
   }, [navigation]);
 
   // Re-run when the screen regains focus (e.g. user just came back from
@@ -779,9 +825,38 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           if (tripId) handleFieldOpenTrip(tripId);
         }, 350);
       }
+
+      // Case C: came back from "Create New Visit" flow — restore the
+      // parent sheet AND auto-open the visit picker so the new visit shows.
+      if (pendingFieldVisitReopen) {
+        const ctx = pendingFieldVisitReopen;
+        setPendingFieldVisitReopen(null);
+        setTimeout(() => {
+          if (ctx === 'edit') {
+            setAutoOpenVisitPickerEdit(true);
+            setEditPrimaryOpen(true);
+          } else if (ctx === 'add') {
+            setAutoOpenVisitPickerAdd(true);
+            setAddLineOpen(true);
+          }
+        }, 350);
+      }
+
+      // Case D: came back from "Open Visit Detail" — restore the parent
+      // sheet AND re-open VisitsListSheet for the same set of visit ids.
+      if (pendingFieldVisitDetailReopen) {
+        const { parentSheet, visitsListIds } = pendingFieldVisitDetailReopen;
+        setPendingFieldVisitDetailReopen(null);
+        setTimeout(() => {
+          if (parentSheet === 'edit') setEditPrimaryOpen(true);
+          if (parentSheet === 'add') setAddLineOpen(true);
+          if (visitsListIds && visitsListIds.length > 0) handleFieldViewVisits(visitsListIds);
+        }, 350);
+      }
     }, [
       attendanceMode, isVerified, verifiedEmployee, offline,
       refreshFieldAttendance, pendingFieldPickerReopen, pendingTripDetailReopen,
+      pendingFieldVisitReopen, pendingFieldVisitDetailReopen,
     ])
   );
 
@@ -3097,29 +3172,38 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             {/* Section: Additional Trips — only after primary trip is set */}
             {Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0] ? (
               <>
-                <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>
-                  Additional Trips ({fieldLines.length})
-                </Text>
-                {fieldLines.length === 0 ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#FAFAFA', borderRadius: scale(10), padding: scale(12), marginTop: scale(6), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
-                    <MaterialIcons name="add-road" size={scale(20)} color="#BDBDBD" />
-                    <Text style={{ flex: 1, fontSize: scale(12), color: '#888', fontFamily: FONT_FAMILY.urbanistMedium }}>
-                      No additional trips. Add another trip if you took multiple trips today.
-                    </Text>
-                  </View>
-                ) : (
-                  fieldLines.map((line, idx) => (
-                    <TripLineCard
-                      key={line.id}
-                      line={line}
-                      index={idx}
-                      busy={fieldStatus === 'checked_out' || fieldBusy}
-                      onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
-                      onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
-                      onDelete={() => handleFieldDeleteLine(line)}
-                    />
-                  ))
-                )}
+                {(() => {
+                  // Hide ended trip lines from the card. They still exist in
+                  // Odoo / VehicleTrackingScreen — just not shown here.
+                  const activeLines = fieldLines.filter((line) => !line.trip_ended);
+                  return (
+                    <>
+                      <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>
+                        Additional Trips ({activeLines.length})
+                      </Text>
+                      {activeLines.length === 0 ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#FAFAFA', borderRadius: scale(10), padding: scale(12), marginTop: scale(6), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
+                          <MaterialIcons name="add-road" size={scale(20)} color="#BDBDBD" />
+                          <Text style={{ flex: 1, fontSize: scale(12), color: '#888', fontFamily: FONT_FAMILY.urbanistMedium }}>
+                            No additional trips. Add another trip if you took multiple trips today.
+                          </Text>
+                        </View>
+                      ) : (
+                        activeLines.map((line, idx) => (
+                          <TripLineCard
+                            key={line.id}
+                            line={line}
+                            index={idx}
+                            busy={fieldStatus === 'checked_out' || fieldBusy}
+                            onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
+                            onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
+                            onDelete={() => handleFieldDeleteLine(line)}
+                          />
+                        ))
+                      )}
+                    </>
+                  );
+                })()}
 
                 {fieldStatus === 'checked_in_open' ? (
                   <TouchableOpacity
@@ -3662,6 +3746,10 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         onAutoOpenConsumed={() => setAutoOpenPickerEdit(false)}
         onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
         onViewVisits={(visitIds) => handleFieldViewVisits(visitIds)}
+        onCreateNewVisit={() => handleCreateNewVisit('edit')}
+        autoOpenVisitPicker={autoOpenVisitPickerEdit}
+        onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerEdit(false)}
+        onOpenVisitDetail={(v) => handleFieldOpenVisitDetail(v)}
       />
       <AddTripLineSheet
         visible={addLineOpen}
@@ -3674,6 +3762,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         onCreateNewTrip={() => handleCreateNewTrip('add')}
         autoOpenPicker={autoOpenPickerAdd}
         onAutoOpenConsumed={() => setAutoOpenPickerAdd(false)}
+        onCreateNewVisit={() => handleCreateNewVisit('add')}
+        autoOpenVisitPicker={autoOpenVisitPickerAdd}
+        onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerAdd(false)}
       />
       <TripDetailSheet
         visible={tripSheetOpen}
@@ -3707,10 +3798,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         visits={visitsSheetRows}
         loading={visitsSheetLoading}
         onClose={() => setVisitsSheetOpen(false)}
-        onOpenInVisits={() => {
-          setVisitsSheetOpen(false);
-          navigation.navigate('VisitScreen');
-        }}
+        onVisitPress={(v) => handleFieldOpenVisitDetail(v, {
+          visitsListIds: (visitsSheetRows || []).map((r) => r.id),
+        })}
+        onOpenInVisits={(visitsSheetRows || []).length > 0
+          ? () => handleFieldOpenVisitDetail(visitsSheetRows[0], {
+              visitsListIds: visitsSheetRows.map((r) => r.id),
+            })
+          : undefined}
       />
 
       {/* Styled alert modal — matches the logout popup design */}
@@ -3729,11 +3824,78 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           if (cb) cb(); else hideAlert();
         }}
       />
+
+      {/* End-KM prompt before Add Additional Trip — captures the previous
+          trip's odometer reading, then auto-ends + opens AddTripLine. */}
+      <Modal
+        visible={endKmPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEndKmPromptVisible(false)}
+      >
+        <View style={styles.endKmOverlay}>
+          <View style={styles.endKmSheet}>
+            <Text style={styles.endKmTitle}>End KM — Trip {endKmPromptTripRef}</Text>
+            <Text style={styles.endKmHint}>
+              Enter the end odometer reading for the previous trip before adding a new one.
+            </Text>
+            <TextInput
+              value={endKmPromptValue}
+              onChangeText={setEndKmPromptValue}
+              keyboardType="numeric"
+              placeholder="e.g. 45230"
+              placeholderTextColor="#999"
+              style={styles.endKmInput}
+              autoFocus
+            />
+            <View style={styles.endKmButtonRow}>
+              <TouchableOpacity
+                style={[styles.endKmBtn, styles.endKmBtnSecondary]}
+                onPress={() => setEndKmPromptVisible(false)}
+              >
+                <Text style={styles.endKmBtnSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.endKmBtn,
+                  styles.endKmBtnPrimary,
+                  !endKmPromptValue && { opacity: 0.5 },
+                ]}
+                disabled={!endKmPromptValue}
+                onPress={() => submitEndKmAndAddLine(endKmPromptValue)}
+              >
+                <Text style={styles.endKmBtnPrimaryText}>Save & Continue</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  endKmOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16,
+  },
+  endKmSheet: {
+    width: '100%', maxWidth: 420, backgroundColor: '#fff',
+    borderRadius: 14, padding: 18,
+  },
+  endKmTitle: { fontSize: 16, fontWeight: '700', color: '#222', marginBottom: 6 },
+  endKmHint: { fontSize: 12, color: '#666', marginBottom: 12 },
+  endKmInput: {
+    borderWidth: 1, borderColor: '#CCC', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: '#222',
+    marginBottom: 14,
+  },
+  endKmButtonRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+  endKmBtn: { borderRadius: 8, paddingVertical: 10, paddingHorizontal: 16 },
+  endKmBtnSecondary: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#BDBDBD' },
+  endKmBtnSecondaryText: { color: '#444', fontSize: 13, fontWeight: '700' },
+  endKmBtnPrimary: { backgroundColor: '#1976D2' },
+  endKmBtnPrimaryText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   container: { flex: 1, backgroundColor: '#F8F9FA' },
   offlineBanner: {
     flexDirection: 'row',

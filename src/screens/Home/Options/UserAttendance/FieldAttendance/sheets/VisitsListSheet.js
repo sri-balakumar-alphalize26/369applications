@@ -29,11 +29,16 @@ const VisitsListSheet = ({
   title = 'Linked Visits',
   onClose,
   onOpenInVisits,
+  onVisitPress,
 }) => {
   const renderItem = ({ item }) => {
     const stateColor = STATE_COLOR[item.state] || '#666';
+    const RowWrapper = onVisitPress ? TouchableOpacity : View;
+    const wrapperProps = onVisitPress
+      ? { activeOpacity: 0.75, onPress: () => onVisitPress(item) }
+      : {};
     return (
-      <View style={styles.row}>
+      <RowWrapper style={styles.row} {...wrapperProps}>
         <View style={styles.iconBox}>
           <MaterialIcons name="person" size={16} color={FIELD_COLOR} />
         </View>
@@ -55,7 +60,10 @@ const VisitsListSheet = ({
             <Text style={styles.rowMeta} numberOfLines={1}>Purpose: {item.purpose_id[1]}</Text>
           ) : null}
         </View>
-      </View>
+        {onVisitPress ? (
+          <MaterialIcons name="chevron-right" size={20} color="#999" />
+        ) : null}
+      </RowWrapper>
     );
   };
 
@@ -98,7 +106,7 @@ const VisitsListSheet = ({
                 onPress={onOpenInVisits}
               >
                 <MaterialIcons name="open-in-new" size={16} color="#fff" />
-                <Text style={styles.openBtnText}>Open Customer Visits</Text>
+                <Text style={styles.openBtnText}>Open Visit Detail</Text>
               </TouchableOpacity>
             </View>
           ) : null}

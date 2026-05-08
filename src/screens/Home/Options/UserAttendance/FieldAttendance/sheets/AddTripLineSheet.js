@@ -30,6 +30,9 @@ const AddTripLineSheet = ({
   onCreateNewTrip,
   autoOpenPicker,
   onAutoOpenConsumed,
+  onCreateNewVisit,
+  autoOpenVisitPicker,
+  onAutoOpenVisitPickerConsumed,
 }) => {
   const [tripId, setTripId] = useState(null);
   const [tripLabel, setTripLabel] = useState('');
@@ -71,6 +74,22 @@ const AddTripLineSheet = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, autoOpenPicker]);
 
+  // One-shot auto-open of the visit picker — fires on return from
+  // creating a brand-new customer visit.
+  const autoVisitFiredRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      autoVisitFiredRef.current = false;
+      return;
+    }
+    if (autoOpenVisitPicker && !autoVisitFiredRef.current) {
+      autoVisitFiredRef.current = true;
+      openVisitPicker();
+      if (onAutoOpenVisitPickerConsumed) onAutoOpenVisitPickerConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, autoOpenVisitPicker]);
+
   const openTripPicker = async () => {
     setTripsLoading(true);
     setTripPickerOpen(true);
@@ -101,13 +120,7 @@ const AddTripLineSheet = ({
     setVisitPickerOpen(true);
     try {
       const draft = await loadDraftVisits();
-      const draftIds = new Set((draft || []).map((v) => Number(v.id)));
-      const missing = visitIds.filter((id) => !draftIds.has(id));
-      let extra = [];
-      if (missing.length > 0 && loadVisitsByIds) {
-        extra = await loadVisitsByIds(missing);
-      }
-      setVisits([...(draft || []), ...extra]);
+      setVisits(draft || []);
     } catch (e) {
       setVisits([]);
     } finally {
@@ -115,16 +128,13 @@ const AddTripLineSheet = ({
     }
   };
 
-  const onVisitsConfirmed = (ids) => {
-    setVisitIds(ids);
-    const map = new Map();
-    visits.forEach((v) => {
-      map.set(Number(v.id), {
-        id: Number(v.id),
-        label: Array.isArray(v.partner_id) ? v.partner_id[1] : (v.name || `Visit #${v.id}`),
-      });
-    });
-    setVisitLabels(ids.map((id) => map.get(Number(id)) || { id, label: `Visit #${id}` }));
+  const onVisitSelected = (visit) => {
+    if (visit && visit.id) {
+      const id = Number(visit.id);
+      setVisitIds([id]);
+      const label = Array.isArray(visit.partner_id) ? visit.partner_id[1] : (visit.name || `Visit #${id}`);
+      setVisitLabels([{ id, label }]);
+    }
     setVisitPickerOpen(false);
   };
 
@@ -175,10 +185,12 @@ const AddTripLineSheet = ({
 
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 6 }}>
                 <Text style={[styles.label, { marginTop: 0, marginBottom: 0 }]}>Visits ({visitIds.length})</Text>
-                <TouchableOpacity onPress={openVisitPicker} style={styles.linkBtn} disabled={!tripId}>
-                  <MaterialIcons name="edit" size={14} color={tripId ? FIELD_COLOR : '#BDBDBD'} />
-                  <Text style={[styles.linkText, !tripId && { color: '#BDBDBD' }]}>Pick / Edit</Text>
-                </TouchableOpacity>
+                {visitIds.length === 0 && tripId ? (
+                  <TouchableOpacity onPress={openVisitPicker} style={styles.linkBtn}>
+                    <MaterialIcons name="add" size={14} color={FIELD_COLOR} />
+                    <Text style={styles.linkText}>Add a line</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
               {visitLabels.length === 0 ? (
                 <View style={styles.emptyVisits}>
@@ -192,6 +204,12 @@ const AddTripLineSheet = ({
                   <View key={v.id} style={styles.visitChip}>
                     <MaterialIcons name="person" size={13} color={FIELD_COLOR} />
                     <Text style={styles.visitChipText} numberOfLines={1}>{v.label}</Text>
+                    <TouchableOpacity
+                      onPress={() => { setVisitIds([]); setVisitLabels([]); }}
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                    >
+                      <MaterialIcons name="close" size={14} color="#888" />
+                    </TouchableOpacity>
                   </View>
                 ))
               )}
@@ -233,10 +251,14 @@ const AddTripLineSheet = ({
         visible={visitPickerOpen}
         visits={visits}
         loading={visitsLoading}
-        selectedIds={visitIds}
-        onConfirm={onVisitsConfirmed}
+        selectedId={visitIds[0] || null}
+        onSelect={onVisitSelected}
         onClose={() => setVisitPickerOpen(false)}
-        title="Select Visits for This Trip"
+        title="Add Visit"
+        onCreateNew={onCreateNewVisit ? () => {
+          setVisitPickerOpen(false);
+          onCreateNewVisit();
+        } : undefined}
       />
     </Modal>
   );

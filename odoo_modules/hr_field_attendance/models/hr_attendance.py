@@ -657,8 +657,11 @@ class HrAttendance(models.Model):
         }
         if primary_trip_id:
             vals['source_trip_id'] = primary_trip_id
-        if visit_ids:
-            vals['source_visit_ids'] = [(6, 0, visit_ids)]
+        # source_visit_ids deliberately left empty — per user requirement, the
+        # visit list inside the Setup Primary Trip popup must start empty and
+        # the user picks ONE via "Add a line" (single-visit cap enforced by
+        # the view's `invisible="has_source_visits"` gate on the editable
+        # list variant).
 
         new_record = Attendance.create(vals)
         new_record.flush_recordset()
@@ -759,7 +762,9 @@ class HrAttendance(models.Model):
                 primary_trip.source_id.name if primary_trip.source_id else ''
             ),
             'source_trip_id': primary_trip.id,
-            'source_visit_ids': [(6, 0, visits.ids)],
+            # source_visit_ids deliberately empty — user must pick ONE visit
+            # via the Setup Primary Trip popup's "Add a line" (single-visit
+            # cap enforced by the view).
         }
 
         new_record = Attendance.create(vals)

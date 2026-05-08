@@ -9,11 +9,13 @@ import {
   ActivityIndicator,
   StyleSheet,
   Platform,
+  Dimensions,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
 
 const FIELD_COLOR = '#1976D2';
+const LIST_MAX_HEIGHT = Math.floor(Dimensions.get('window').height * 0.75);
 
 const fmtTime = (s) => {
   if (!s) return '';
@@ -45,14 +47,21 @@ const TripPickerSheet = ({
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return trips || [];
-    return (trips || []).filter((t) => {
+    const all = trips || [];
+    const filtered = !q ? all : all.filter((t) => {
       const ref = String(t.ref || '').toLowerCase();
       const src = Array.isArray(t.source_id) ? String(t.source_id[1] || '').toLowerCase() : '';
       const dst = Array.isArray(t.destination_id) ? String(t.destination_id[1] || '').toLowerCase() : '';
       const veh = Array.isArray(t.vehicle_id) ? String(t.vehicle_id[1] || '').toLowerCase() : '';
       return ref.includes(q) || src.includes(q) || dst.includes(q) || veh.includes(q);
     });
+    console.log('[TripPickerSheet]',
+      'trips=', all.length,
+      'rows=', filtered.length,
+      'search=', q ? `"${q}"` : '(none)',
+      'LIST_MAX_HEIGHT=', LIST_MAX_HEIGHT,
+    );
+    return filtered;
   }, [trips, search]);
 
   const renderItem = ({ item }) => {
@@ -155,11 +164,13 @@ const TripPickerSheet = ({
             </View>
           ) : (
             <FlatList
+              style={{ maxHeight: LIST_MAX_HEIGHT }}
               data={rows}
               keyExtractor={(item) => String(item.id)}
               renderItem={renderItem}
               contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
             />
           )}
         </View>
@@ -178,7 +189,7 @@ const styles = StyleSheet.create({
     width: '100%', maxWidth: 480,
     backgroundColor: '#fff',
     borderRadius: 16,
-    maxHeight: '88%',
+    maxHeight: '95%',
     paddingTop: 12,
     overflow: 'hidden',
     ...Platform.select({

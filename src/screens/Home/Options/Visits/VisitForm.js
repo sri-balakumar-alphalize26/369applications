@@ -740,13 +740,20 @@ const VisitForm = ({ navigation, route }) => {
             ? `Customer Visit created — ${newReference}`
             : "Customer Visit created successfully",
         });
-        // Pass a refresh signal so the list screen forces a fresh fetch with
-        // NO filters — guarantees the just-created visit appears at the top.
-        navigation.navigate({
-          name: 'VisitScreen',
-          params: { refreshAt: Date.now(), newVisitId: newId, newVisitReference: newReference },
-          merge: true,
-        });
+        // When opened from Field Attendance "+ Create New Visit", just go
+        // back so the focus-return effect can re-open the visit picker
+        // with the new draft visit available.
+        if (route?.params?.returnTo === 'fieldAttendance') {
+          navigation.goBack();
+        } else {
+          // Pass a refresh signal so the list screen forces a fresh fetch with
+          // NO filters — guarantees the just-created visit appears at the top.
+          navigation.navigate({
+            name: 'VisitScreen',
+            params: { refreshAt: Date.now(), newVisitId: newId, newVisitReference: newReference },
+            merge: true,
+          });
+        }
       } catch (error) {
         console.error("[VisitForm-submit] create failed:", error?.message, error?.stack);
         showToast({ type: "error", title: "ERROR", message: error?.data?.message || error?.message || "Customer Visit creation failed" });

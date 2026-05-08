@@ -682,6 +682,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         quality: 0.3,
         skipProcessing: true,
         exif: false,
+        base64: true,                      // capture base64 alongside URI for upload
       });
       console.log('[VehicleTrackingForm] in-app camera captured:', photo?.uri);
       setShowInAppCamera(false);
@@ -692,9 +693,19 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         fuel: 'fuelInvoiceUri',
         odometer: 'odometerImageUri',
       };
+      const b64FieldByTarget = {
+        fuel: 'fuelInvoiceBase64',
+        odometer: 'odometerImageBase64',
+      };
       const field = fieldByTarget[cameraTarget];
+      const b64Field = b64FieldByTarget[cameraTarget];
       if (field && photo?.uri) {
         handleInputChange(field, photo.uri);
+        // Stash the base64 immediately so createFuelLogOdoo doesn't have to
+        // re-read the URI (which fails for non-file:// schemes from gallery).
+        if (b64Field && photo?.base64) {
+          handleInputChange(b64Field, photo.base64);
+        }
         showToastMessage('Photo captured', 'success');
       }
     } catch (e) {
@@ -719,6 +730,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         const result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           quality: 0.8,
+          base64: true,                    // embed base64 in the asset to bypass URI scheme issues
         });
         console.log('[VehicleTrackingForm] openOdometerGallery result:', result);
         if (result.cancelled || result.canceled) {
@@ -728,6 +740,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         const asset = result.assets && result.assets[0];
         if (asset && asset.uri) {
           handleInputChange('odometerImageUri', asset.uri);
+          if (asset.base64) handleInputChange('odometerImageBase64', asset.base64);
           showToastMessage('Odometer image selected', 'success');
         }
       } catch (e) {
@@ -750,6 +763,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         const result = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ImagePicker.MediaTypeOptions.Images,
           quality: 0.8,
+          base64: true,                    // embed base64 in the asset to bypass URI scheme issues
         });
         console.log('[VehicleTrackingForm] expo-image-picker result:', result);
         if (result.cancelled || result.canceled) {
@@ -758,8 +772,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         }
         const asset = result.assets && result.assets[0];
         if (asset && asset.uri) {
-          console.log('[VehicleTrackingForm] Fuel invoice image selected:', asset.uri);
+          console.log('[VehicleTrackingForm] Fuel invoice image selected:', asset.uri, 'base64 len:', asset.base64?.length || 0);
           handleInputChange('fuelInvoiceUri', asset.uri);
+          if (asset.base64) handleInputChange('fuelInvoiceBase64', asset.base64);
           showToastMessage('Fuel invoice selected', 'success');
         }
       } catch (e) {
@@ -1535,6 +1550,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           currentOdometer: '',
           odometerImageUri: '',
           fuelInvoiceUri: '',
+          odometerImageBase64: '',
+          fuelInvoiceBase64: '',
         }));
         setShowAddFuel(false);
         showToastMessage('Fuel entry added', 'success');
@@ -1590,6 +1607,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       currentOdometer: '',
       odometerImageUri: '',
       fuelInvoiceUri: '',
+      odometerImageBase64: '',
+      fuelInvoiceBase64: '',
     }));
   };
 
@@ -1606,7 +1625,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     setIsSavingFuel(true);
     try {
       console.log('[submitAddFuel] sending — odometerImageUri set:', !!formData.odometerImageUri,
-        'fuelInvoiceUri set:', !!formData.fuelInvoiceUri);
+        'fuelInvoiceUri set:', !!formData.fuelInvoiceUri,
+        'odometer b64 len:', formData.odometerImageBase64?.length || 0,
+        'receipt b64 len:', formData.fuelInvoiceBase64?.length || 0);
       const log = await createFuelLogOdoo({
         tripId: existingTripData.id,
         vehicleId: existingTripData.vehicle_id,
@@ -1616,6 +1637,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         odometer: formData.currentOdometer,
         odometerImageUri: formData.odometerImageUri || null,
         fuelInvoiceUri: formData.fuelInvoiceUri || null,
+        // Prepared base64 (preferred — bypasses URI-scheme guessing in createFuelLogOdoo).
+        odometerImageBase64: formData.odometerImageBase64 || null,
+        fuelInvoiceBase64: formData.fuelInvoiceBase64 || null,
         gpsLat: formData.start_latitude || formData.startLatitude || (currentCoords ? String(currentCoords.latitude) : ''),
         gpsLong: formData.start_longitude || formData.startLongitude || (currentCoords ? String(currentCoords.longitude) : ''),
       });
@@ -1631,6 +1655,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         currentOdometer: '',
         odometerImageUri: '',
         fuelInvoiceUri: '',
+        odometerImageBase64: '',
+        fuelInvoiceBase64: '',
       }));
       setShowAddFuel(false);
       showToastMessage('Fuel entry added', 'success');

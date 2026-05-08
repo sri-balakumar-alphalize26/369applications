@@ -453,7 +453,7 @@ const VisitDetails = ({ navigation, route }) => {
                 backgroundColor={COLORS.primary}
               />
             )}
-            {details?.state !== 'draft' && (
+            {details?.state !== 'draft' && route?.params?.returnTo !== 'fieldAttendance' && (
               <LoadingButton
                 width="100%"
                 marginVertical={10}

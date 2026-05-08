@@ -56,6 +56,10 @@ const EditPrimaryTripSheet = ({
   onAutoOpenConsumed,
   onOpenSourceTrip,
   onViewVisits,
+  onCreateNewVisit,
+  autoOpenVisitPicker,
+  onAutoOpenVisitPickerConsumed,
+  onOpenVisitDetail,
 }) => {
   const [tripId, setTripId] = useState(null);
   const [tripLabel, setTripLabel] = useState('');
@@ -102,7 +106,10 @@ const EditPrimaryTripSheet = ({
     const ids = Array.isArray(attendance.source_visit_ids) ? attendance.source_visit_ids.map(Number) : [];
     if (ids.length > 0 && loadVisitsByIds) {
       loadVisitsByIds(ids).then((rows) => {
-        setVisitRows(rows || []);
+        // Hide visits already marked done — they aren't relevant to the
+        // active attendance any more.
+        const filtered = (rows || []).filter(r => String(r.state || 'draft') !== 'done');
+        setVisitRows(filtered);
       }).catch(() => setVisitRows([]));
     } else {
       setVisitRows([]);
@@ -124,6 +131,22 @@ const EditPrimaryTripSheet = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, autoOpenPicker]);
+
+  // One-shot auto-open of the visit picker — parent sets
+  // autoOpenVisitPicker=true on return from "Create New Visit".
+  const autoVisitFiredRef = useRef(false);
+  useEffect(() => {
+    if (!visible) {
+      autoVisitFiredRef.current = false;
+      return;
+    }
+    if (autoOpenVisitPicker && !autoVisitFiredRef.current) {
+      autoVisitFiredRef.current = true;
+      openVisitPicker();
+      if (onAutoOpenVisitPickerConsumed) onAutoOpenVisitPickerConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, autoOpenVisitPicker]);
 
   const openTripPicker = async () => {
     setTripsLoading(true);
@@ -163,15 +186,7 @@ const EditPrimaryTripSheet = ({
     setVisitPickerOpen(true);
     try {
       const draft = await loadDraftVisits();
-      // Merge currently-selected visits so the picker shows them as already-checked.
-      const draftIds = new Set((draft || []).map((v) => Number(v.id)));
-      const existingIds = visitRows.map((v) => Number(v.id));
-      const missing = existingIds.filter((id) => !draftIds.has(id));
-      let extra = [];
-      if (missing.length > 0 && loadVisitsByIds) {
-        extra = await loadVisitsByIds(missing);
-      }
-      setVisits([...(draft || []), ...extra]);
+      setVisits(draft || []);
     } catch (e) {
       setVisits([]);
     } finally {
@@ -179,18 +194,8 @@ const EditPrimaryTripSheet = ({
     }
   };
 
-  const onVisitsConfirmed = async (newIds) => {
-    // Keep rows the user kept selected; fetch any newly-added rows we don't
-    // yet have full data for.
-    const haveIds = new Set(visitRows.map((v) => Number(v.id)));
-    const toFetch = newIds.filter((id) => !haveIds.has(Number(id)));
-    let added = [];
-    if (toFetch.length > 0 && loadVisitsByIds) {
-      try { added = await loadVisitsByIds(toFetch); } catch (_) { added = []; }
-    }
-    const newSet = new Set(newIds.map(Number));
-    const keep = visitRows.filter((v) => newSet.has(Number(v.id)));
-    setVisitRows([...keep, ...added]);
+  const onVisitSelected = (visit) => {
+    if (visit && visit.id) setVisitRows([visit]);
     setVisitPickerOpen(false);
   };
 
@@ -332,7 +337,13 @@ const EditPrimaryTripSheet = ({
                 </View>
               ) : (
                 visitRows.map((v) => (
-                  <View key={v.id} style={styles.visitRow}>
+                  <TouchableOpacity
+                    key={v.id}
+                    style={styles.visitRow}
+                    activeOpacity={onOpenVisitDetail ? 0.75 : 1}
+                    onPress={() => onOpenVisitDetail && onOpenVisitDetail(v)}
+                    disabled={!onOpenVisitDetail}
+                  >
                     <View style={{ flex: 1 }}>
                       <Text style={styles.visitRef} numberOfLines={1}>
                         {v.name || `Visit #${v.id}`}
@@ -347,25 +358,29 @@ const EditPrimaryTripSheet = ({
                       <Text style={styles.statePillText}>{(v.state || 'draft').toUpperCase()}</Text>
                     </View>
                     <TouchableOpacity
-                      onPress={() => removeVisit(v.id)}
+                      onPress={(e) => {
+                        if (e && e.stopPropagation) e.stopPropagation();
+                        removeVisit(v.id);
+                      }}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
                       <MaterialIcons name="close" size={18} color="#888" />
                     </TouchableOpacity>
-                  </View>
+                  </TouchableOpacity>
                 ))
               )}
 
-              {/* + Add a line */}
-              <TouchableOpacity
-                style={[styles.addLineBtn, !tripId && styles.addLineBtnDisabled]}
-                disabled={!tripId}
-                activeOpacity={0.85}
-                onPress={openVisitPicker}
-              >
-                <MaterialIcons name="add" size={16} color={tripId ? FIELD_COLOR : '#BDBDBD'} />
-                <Text style={[styles.addLineText, !tripId && { color: '#BDBDBD' }]}>Add a line</Text>
-              </TouchableOpacity>
+              {/* + Add a line — only when no visit yet (single-line cap) */}
+              {visitRows.length === 0 && tripId ? (
+                <TouchableOpacity
+                  style={styles.addLineBtn}
+                  activeOpacity={0.85}
+                  onPress={openVisitPicker}
+                >
+                  <MaterialIcons name="add" size={16} color={FIELD_COLOR} />
+                  <Text style={styles.addLineText}>Add a line</Text>
+                </TouchableOpacity>
+              ) : null}
               {!tripId ? (
                 <Text style={styles.addLineHint}>Pick a Source Trip first to add visits.</Text>
               ) : null}
@@ -407,10 +422,14 @@ const EditPrimaryTripSheet = ({
         visible={visitPickerOpen}
         visits={visits}
         loading={visitsLoading}
-        selectedIds={visitIds}
-        onConfirm={onVisitsConfirmed}
+        selectedId={visitRows[0]?.id || null}
+        onSelect={onVisitSelected}
         onClose={() => setVisitPickerOpen(false)}
-        title="Add Visits"
+        title="Add Visit"
+        onCreateNew={onCreateNewVisit ? () => {
+          setVisitPickerOpen(false);
+          onCreateNewVisit();
+        } : undefined}
       />
     </Modal>
   );

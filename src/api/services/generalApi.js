@@ -715,8 +715,13 @@ export const searchAvailableTripsOdoo = async (attendanceId) => {
       ids.add(Number(att.source_trip_id[0]));
     }
   }
-  if (ids.size === 0) return [];
-  return readVehicleTrackingForTripIdsOdoo(Array.from(ids));
+  if (ids.size === 0) {
+    console.log('[searchAvailableTripsOdoo] returned 0 trips for attendance', attendanceId);
+    return [];
+  }
+  const trips = await readVehicleTrackingForTripIdsOdoo(Array.from(ids));
+  console.log('[searchAvailableTripsOdoo] returned', trips.length, 'trips for attendance', attendanceId);
+  return trips;
 };
 
 // Read full trip rows by ids (used by pickers + TripDetailSheet).
@@ -754,17 +759,65 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
       ],
     },
   });
-  return Array.isArray(rows) ? rows : [];
+  const trips = Array.isArray(rows) ? rows : [];
+
+  // Batch-resolve fuel_log_ids → fuel_logs (full objects) so the Vehicle
+  // Tracking form's Fuel List section renders correctly when a trip is
+  // opened from Field Attendance trip-detail. Mirrors fetchVehicleTrackingTripsOdoo.
+  try {
+    const allFuelIds = trips.flatMap(t => (Array.isArray(t.fuel_log_ids) ? t.fuel_log_ids : []));
+    if (allFuelIds.length > 0) {
+      const fuelLogs = await _fieldRpc({
+        model: 'vehicle.fuel.log',
+        method: 'search_read',
+        args: [[['id', 'in', allFuelIds]]],
+        kwargs: {
+          fields: ['id', 'name', 'amount', 'fuel_level', 'odometer',
+                   'create_date', 'driver_id', 'vehicle_tracking_id',
+                   'gps_lat', 'gps_long', 'odometer_image', 'receipt_image'],
+          context: { bin_size: false },
+        },
+      });
+      const baseImg = ODOO_BASE_URL();
+      const byTripId = {};
+      (fuelLogs || []).forEach(l => {
+        const tid = Array.isArray(l.vehicle_tracking_id) ? l.vehicle_tracking_id[0] : l.vehicle_tracking_id;
+        if (!tid) return;
+        const v = l.create_date ? `?v=${encodeURIComponent(l.create_date)}` : '';
+        (byTripId[tid] = byTripId[tid] || []).push({
+          id: l.id,
+          name: l.name || '',
+          amount: l.amount || 0,
+          fuel_level: l.fuel_level || 0,
+          odometer: l.odometer || 0,
+          create_date: l.create_date || null,
+          driver_name: Array.isArray(l.driver_id) ? l.driver_id[1] : '',
+          gps_lat: l.gps_lat || '',
+          gps_long: l.gps_long || '',
+          odometer_image: `${baseImg}/web/image/vehicle.fuel.log/${l.id}/odometer_image${v}`,
+          receipt_image: `${baseImg}/web/image/vehicle.fuel.log/${l.id}/receipt_image${v}`,
+        });
+      });
+      trips.forEach(t => { t.fuel_logs = byTripId[t.id] || []; });
+    } else {
+      trips.forEach(t => { t.fuel_logs = []; });
+    }
+  } catch (e) {
+    console.warn('[readVehicleTrackingForTripIdsOdoo] fuel-log hydrate failed:', e?.message);
+    trips.forEach(t => { if (!t.fuel_logs) t.fuel_logs = []; });
+  }
+
+  return trips;
 };
 
-// Read draft customer.visit rows for an employee (used by Visit picker).
-export const searchDraftCustomerVisitsOdoo = async (employeeId) => {
-  if (!employeeId) throw new Error('employeeId is required');
+// Read draft customer.visit rows (used by the Visit picker). Mirrors the
+// Odoo `source_visit_ids` m2m picker domain — only state=draft, no employee
+// constraint — so the app shows the same set Odoo's web dialog shows.
+export const searchDraftCustomerVisitsOdoo = async (_employeeId) => {
   const rows = await _fieldRpc({
     model: 'customer.visit',
     method: 'search_read',
     args: [[
-      ['employee_id', '=', Number(employeeId)],
       ['state', '=', 'draft'],
     ]],
     kwargs: {
@@ -776,7 +829,9 @@ export const searchDraftCustomerVisitsOdoo = async (employeeId) => {
       limit: 200,
     },
   });
-  return Array.isArray(rows) ? rows : [];
+  const out = Array.isArray(rows) ? rows : [];
+  console.log('[searchDraftCustomerVisitsOdoo] returned', out.length, 'draft visits');
+  return out;
 };
 
 // Read customer.visit rows by ids (used by VisitsListSheet).
@@ -847,7 +902,7 @@ export const deleteFieldTripLineOdoo = async (lineId) => {
 
 // Mark a vehicle.tracking trip as ended (used by the Add-Additional-Trip
 // confirm-close-previous flow when the user accepts the prompt).
-export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime) => {
+export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime, endKm) => {
   if (!tripId) throw new Error('tripId is required');
   // Format: Odoo expects 'YYYY-MM-DD HH:MM:SS' UTC. Caller may pass a Date,
   // an ISO string, or undefined (server fills "now").
@@ -859,10 +914,15 @@ export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime) => {
   } else {
     endStr = new Date().toISOString().replace('T', ' ').replace(/\..*/, '');
   }
+  const payload = { end_trip: true, end_time: endStr };
+  if (endKm != null && endKm !== '') {
+    const n = Number(endKm);
+    if (!Number.isNaN(n)) payload.end_km = n;
+  }
   await _fieldRpc({
     model: 'vehicle.tracking',
     method: 'write',
-    args: [[Number(tripId)], { end_trip: true, end_time: endStr }],
+    args: [[Number(tripId)], payload],
   });
   return true;
 };
@@ -1230,6 +1290,10 @@ export const createFuelLogOdoo = async ({
   odometer,
   odometerImageUri,
   fuelInvoiceUri,
+  // Prepared base64 — preferred over URI read because gallery URIs on Android
+  // (content://) and iCloud photos on iOS (ph://) can't be read by FileSystem.
+  odometerImageBase64,
+  fuelInvoiceBase64,
   gpsLat,
   gpsLong,
   username = DEFAULT_VEHICLE_TRACKING_USERNAME,
@@ -1268,7 +1332,14 @@ export const createFuelLogOdoo = async ({
   // snapshot return, regardless of whether Odoo's read-back gives us anything.
   let uploadedOdometerB64 = null;
   let uploadedReceiptB64 = null;
-  if (odometerImageUri) {
+  // Odometer image — prefer prepared base64 (works for any URI scheme) and
+  // fall back to URI read for backward compat.
+  if (odometerImageBase64) {
+    uploadedOdometerB64 = odometerImageBase64;
+    fuelPayload.odometer_image = odometerImageBase64;
+    const parts = String(odometerImageUri || '').split('/');
+    fuelPayload.odometer_image_filename = parts[parts.length - 1] || 'odometer.jpg';
+  } else if (odometerImageUri) {
     const b64 = await readB64(odometerImageUri);
     if (b64) {
       uploadedOdometerB64 = b64;
@@ -1277,12 +1348,17 @@ export const createFuelLogOdoo = async ({
       fuelPayload.odometer_image_filename = parts[parts.length - 1] || 'odometer.jpg';
     }
   }
-  if (fuelInvoiceUri) {
+  // Receipt image — same pattern. Receipt lives on its own Binary field
+  // (Odoo `fields.Image`); the legacy `upload_path` Char is no longer used.
+  if (fuelInvoiceBase64) {
+    uploadedReceiptB64 = fuelInvoiceBase64;
+    fuelPayload.receipt_image = fuelInvoiceBase64;
+    const parts = String(fuelInvoiceUri || '').split('/');
+    fuelPayload.receipt_image_filename = parts[parts.length - 1] || 'receipt.jpg';
+  } else if (fuelInvoiceUri) {
     const b64 = await readB64(fuelInvoiceUri);
     if (b64) {
       uploadedReceiptB64 = b64;
-      // Receipt now lives on its own Binary field (Odoo `fields.Image`); the
-      // legacy `upload_path` Char is no longer written from the app.
       fuelPayload.receipt_image = b64;
       const parts = String(fuelInvoiceUri).split('/');
       fuelPayload.receipt_image_filename = parts[parts.length - 1] || 'receipt.jpg';

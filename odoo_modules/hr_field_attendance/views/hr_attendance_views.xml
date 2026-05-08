@@ -442,9 +442,12 @@
                     </group>
                     <separator string="Visits" colspan="2"
                                invisible="not source_trip_id"/>
-                    <!-- Empty state: editable list with Add a line so the user can pick the FIRST visit. -->
+                    <!-- Empty state: editable list with Add a line so the user can pick the FIRST visit.
+                         Gate uses `source_visit_ids` truthy check directly — re-evaluates immediately
+                         on in-form M2M edits, unlike the prior `has_source_visits` computed shadow
+                         which Odoo 19's form editor doesn't always re-fire. -->
                     <field name="source_visit_ids" colspan="2"
-                           invisible="not source_trip_id or has_source_visits"
+                           invisible="not source_trip_id or source_visit_ids"
                            readonly="source_trip_ended"
                            domain="[('state', '=', 'draft')]"
                            options="{'no_create': True, 'no_quick_create': True}">
@@ -456,9 +459,10 @@
                             <field name="state"/>
                         </list>
                     </field>
-                    <!-- Has-rows state: no Add a line, but X-delete still works so the user can swap. -->
+                    <!-- Has-rows state: no Add a line (list create="false"), X-delete still works so
+                         the user can swap. Visible only when the M2M actually has rows. -->
                     <field name="source_visit_ids" colspan="2"
-                           invisible="not source_trip_id or not has_source_visits"
+                           invisible="not source_trip_id or not source_visit_ids"
                            readonly="source_trip_ended"
                            domain="[('state', '=', 'draft')]"
                            options="{'no_create': True, 'no_quick_create': True}">
