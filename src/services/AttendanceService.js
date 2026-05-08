@@ -1221,7 +1221,12 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
             ['check_in', '<=', `${today} 23:59:59`],
           ]],
           kwargs: {
-            fields: ['id', 'employee_id', 'check_in', 'check_out'],
+            fields: [
+              'id', 'employee_id', 'check_in', 'check_out',
+              // Cross-mode + banner support: source ('manual' = office, 'field' = field),
+              // late flag + display fields used by the in-card yellow banner.
+              'attendance_source', 'is_late', 'late_minutes_display', 'deduction_amount',
+            ],
             order: 'check_in desc',
           },
         },
@@ -1254,6 +1259,10 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
           employeeName: openRecord.employee_id?.[1] || employeeName,
           checkIn: odooUtcToLocalDisplay(openRecord.check_in),
           checkOut: null,
+          attendance_source: openRecord.attendance_source || 'manual',
+          is_late: !!openRecord.is_late,
+          late_minutes_display: openRecord.late_minutes_display || '',
+          deduction_amount: Number(openRecord.deduction_amount || 0),
         };
         await cachePut('todayAtt', employeeId, built);
         return built;

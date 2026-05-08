@@ -560,6 +560,20 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // hook auto-ends the last open trip and flips draft visits to done.
   const handleFieldCheckOut = useCallback(() => {
     if (!fieldData?.attendance_id) return;
+    // Cross-mode guard: if the open attendance was created via Office
+    // (attendance_source = 'manual'), block field check-out and direct
+    // the user back to Office mode. Defensive — usually fieldData would
+    // be null for an office record so this branch is rare.
+    if (todayAttendance?.attendance_source && todayAttendance.attendance_source !== 'field' && todayAttendance.id === fieldData.attendance_id) {
+      showAlert({
+        message: 'You checked in via Office Attendance. Switch to Office mode to check out.',
+        confirmText: 'OK',
+        cancelText: null,
+        onConfirm: hideAlert,
+        onCancel: hideAlert,
+      });
+      return;
+    }
     showAlert({
       message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
       confirmText: 'Check Out',
@@ -572,7 +586,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       },
       onCancel: hideAlert,
     });
-  }, [fieldData, showAlert, hideAlert]);
+  }, [fieldData, todayAttendance, showAlert, hideAlert]);
 
   const processFieldCheckOut = async (photoBase64) => {
     try {
@@ -1502,6 +1516,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
               });
               setPendingLateAttendanceId(justCreated.id);
               setShowLateReasonModal(true);
+              // Persist late fields onto todayAttendance so the in-card yellow
+              // banner can render after the popup is dismissed.
+              setTodayAttendance(prev => prev ? {
+                ...prev,
+                is_late: true,
+                late_minutes_display: justCreated.lateMinutesDisplay || '',
+                deduction_amount: Number(justCreated.deductionAmount || 0),
+              } : prev);
             }
           }
         } catch (lateErr) {
@@ -1527,6 +1549,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
 
     if (!verifiedEmployee?.id) {
       showToastMessage('Please scan fingerprint first');
+      return;
+    }
+
+    // Cross-mode guard: if the open attendance was created via Field
+    // Attendance, block office check-out and direct the user to switch
+    // modes. Source on hr.attendance is 'manual' for office and 'field'
+    // for field — anything other than 'manual' is treated as field-side.
+    if (todayAttendance?.attendance_source === 'field') {
+      showAlert({
+        message: 'You checked in via Field Attendance. Switch to Field mode to check out.',
+        confirmText: 'OK',
+        cancelText: null,
+        onConfirm: hideAlert,
+        onCancel: hideAlert,
+      });
       return;
     }
 
@@ -3299,6 +3336,19 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         </View>
       </View>
 
+      {/* Late banner — mirrors the field-mode banner. Renders whenever the
+          open attendance is flagged late, regardless of whether the user is
+          looking at the late-reason popup. */}
+      {todayAttendance?.is_late ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(6), backgroundColor: '#FFF8E1', borderRadius: scale(8), padding: scale(8), marginTop: scale(8), borderLeftWidth: 3, borderLeftColor: '#FB8C00' }}>
+          <MaterialIcons name="schedule" size={scale(14)} color="#FB8C00" />
+          <Text style={{ flex: 1, fontSize: scale(11.5), color: '#7a4f00', fontFamily: FONT_FAMILY.urbanistBold }}>
+            Late by {todayAttendance.late_minutes_display || `${todayAttendance.late_minutes || 0}m`}
+            {Number(todayAttendance.deduction_amount || 0) > 0 ? ` · Deduction ${Number(todayAttendance.deduction_amount).toFixed(2)}` : ''}
+          </Text>
+        </View>
+      ) : null}
+
       {/* Location Status */}
       {locationStatus && (
         <View style={[styles.locationStatusCard, locationStatus.verified ? styles.locationVerified : styles.locationNotVerified]}>
@@ -3343,76 +3393,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         </View>
       )}
 
-      {/* Field Visit toggle + customer picker — only show before check-in */}
-      {!hasCheckedIn && !hasCheckedOut && (
-        <View style={styles.fieldVisitCard}>
-          <TouchableOpacity
-            style={styles.fieldVisitToggleRow}
-            activeOpacity={0.7}
-            onPress={() => {
-              const next = !fieldVisitMode;
-              setFieldVisitMode(next);
-              if (!next) setVisitCustomer(null);
-            }}
-          >
-            <MaterialIcons
-              name={fieldVisitMode ? 'check-box' : 'check-box-outline-blank'}
-              size={scale(22)}
-              color={fieldVisitMode ? COLORS.primaryThemeColor : '#999'}
-            />
-            <Text style={styles.fieldVisitToggleLabel}>Customer Visit (skip office GPS)</Text>
-          </TouchableOpacity>
-
-          {fieldVisitMode && (
-            <TouchableOpacity
-              style={styles.fieldVisitPickerRow}
-              activeOpacity={0.7}
-              onPress={() => navigation.navigate('CustomerScreen', {
-                selectMode: true,
-                onSelect: (selected) => setVisitCustomer(selected),
-              })}
-            >
-              <MaterialIcons name="person" size={scale(20)} color="#666" />
-              <Text style={[
-                styles.fieldVisitPickerText,
-                !visitCustomer?.name && styles.fieldVisitPickerPlaceholder,
-              ]}>
-                {visitCustomer?.name || 'Select customer'}
-              </Text>
-              <MaterialIcons name="chevron-right" size={scale(20)} color="#999" />
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
       {/* Action Buttons */}
       <View style={styles.buttonContainer}>
         {!hasCheckedIn && !hasCheckedOut && (
           <TouchableOpacity
-            style={[
-              styles.checkInButton,
-              fieldVisitMode && !visitCustomer && styles.checkInButtonDisabled,
-            ]}
-            onPress={() => {
-              if (fieldVisitMode && !visitCustomer) {
-                showToastMessage('Please select a customer first');
-                return;
-              }
-              handleCheckIn();
-            }}
-            disabled={loading || (fieldVisitMode && !visitCustomer)}
+            style={styles.checkInButton}
+            onPress={handleCheckIn}
+            disabled={loading}
             activeOpacity={0.8}
           >
             <View style={styles.buttonIconContainer}>
               <MaterialIcons name="fingerprint" size={scale(22)} color={COLORS.white} />
             </View>
             <View style={styles.buttonTextContainer}>
-              <Text style={styles.buttonTitle}>{fieldVisitMode ? 'Start Visit' : 'Check In'}</Text>
-              <Text style={styles.buttonSubtitle}>
-                {fieldVisitMode
-                  ? (visitCustomer ? `For ${visitCustomer.name}` : 'Select customer first')
-                  : 'Tap to mark your arrival'}
-              </Text>
+              <Text style={styles.buttonTitle}>Check In</Text>
+              <Text style={styles.buttonSubtitle}>Tap to mark your arrival</Text>
             </View>
             <Feather name="chevron-right" size={scale(20)} color={COLORS.white} />
           </TouchableOpacity>
@@ -3445,6 +3440,30 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             <Text style={styles.completedText}>Your attendance is complete for today</Text>
           </View>
         )}
+      </View>
+
+      {/* Quick switch to Field Attendance — keeps the verified employee. */}
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: scale(10) }}>
+        <TouchableOpacity
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: scale(6),
+            backgroundColor: '#E3F2FD',
+            borderRadius: scale(20),
+            paddingVertical: scale(8),
+            paddingHorizontal: scale(14),
+            borderWidth: 1,
+            borderColor: '#1976D2',
+          }}
+          activeOpacity={0.85}
+          onPress={() => setAttendanceMode('field')}
+        >
+          <MaterialIcons name="open-in-new" size={scale(14)} color="#1976D2" />
+          <Text style={{ fontSize: scale(12), color: '#1976D2', fontFamily: FONT_FAMILY.urbanistBold }}>
+            Open Field Att
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
