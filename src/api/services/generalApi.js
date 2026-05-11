@@ -12344,19 +12344,21 @@ export const fetchCustomerVisitsOdoo = async ({
       visit_plan_id: Array.isArray(v.visit_plan_id) ? v.visit_plan_id[0] : null,
       state: v.state,
     }));
-    // Cache for offline fallback
+    // TODO(offline-visits-removal): remove cache write + merge in the follow-up
+    // cleanup PR. Retained so legacy pending offline visits stay visible until
+    // they drain.
     try { await AsyncStorage.setItem('@cache:customerVisits', JSON.stringify(mapped)); } catch (_) {}
-    // Merge in any still-queued offline visits at the top
     return await _mergeOfflineCustomerVisits(mapped, { fromDate, toDate, _customerIds, _employeeIds });
   } catch (err) {
     console.error('fetchCustomerVisitsOdoo error:', err?.message || err);
-    // Offline fallback — return last cached server records + still-pending offline rows.
-    // Apply the same filters locally so the Filter modal works without internet.
+    // TODO(offline-visits-removal): remove the cached-fallback path in the
+    // follow-up cleanup PR. Customer visits are online-only; once legacy
+    // pending entries drain this catch should just `return [];`.
     try {
       const raw = await AsyncStorage.getItem('@cache:customerVisits');
       const cached = raw ? JSON.parse(raw) : [];
       const filtered = _filterCustomerVisitsLocal(cached, { fromDate, toDate, _customerIds, _employeeIds });
-      console.log('[fetchCustomerVisits] OFFLINE — cached=' + cached.length +
+      console.log('[fetchCustomerVisits] fallback — cached=' + cached.length +
                   ' after-filter=' + filtered.length);
       return await _mergeOfflineCustomerVisits(filtered, { fromDate, toDate, _customerIds, _employeeIds });
     } catch (_) {
@@ -12387,6 +12389,11 @@ const _filterCustomerVisitsLocal = (rows, { fromDate, toDate, _customerIds, _emp
   });
 };
 
+// TODO(offline-visits-removal): delete this function in the follow-up cleanup
+// PR once all pre-existing customer.visit queue entries have drained in prod.
+// Kept temporarily so pending offline visits remain visible in the list while
+// they sync. Once the queue is empty across users, this becomes dead code.
+//
 // Merge any still-queued offline customer.visit creates into the list as
 // pending rows (with offline: true). Drops cached pending rows whose queue
 // item has already been removed (i.e. successfully synced).
@@ -12439,7 +12446,9 @@ const _mergeOfflineCustomerVisits = async (serverList, filterOpts = {}) => {
 };
 
 export const fetchCustomerVisitDetailsOdoo = async (visitId) => {
-  // Offline-only id (the visit hasn't synced yet) — read straight from the queue.
+  // TODO(offline-visits-removal): delete this `offline_` branch in the follow-up
+  // cleanup PR. Retained so users can still tap into a not-yet-synced legacy
+  // pending visit and see its details while the queue drains.
   if (typeof visitId === 'string' && visitId.startsWith('offline_')) {
     try {
       const offlineQueue = require('@utils/offlineQueue').default;
@@ -12638,34 +12647,11 @@ export const createCustomerVisitOdoo = async (data) => {
   if (data.customerName) vals._customerName = data.customerName;
   if (data.employeeName) vals._employeeName = data.employeeName;
 
-  // Offline branch — generate OFFNNNNN label, enqueue + cache.
-  const networkStatus = require('@utils/networkStatus').default;
-  const online = await networkStatus.isOnline();
-  if (!online) {
-    try {
-      // Same OFF<seq> pattern Easy Sales uses, with its own counter.
-      const offLabel = await _nextOffLabel({
-        counterKey: 'cv_off_counter',
-        cacheKey: '@cache:customerVisits',
-        scope: null,
-      });
-      vals.offline_label = offLabel;
-      vals._offlineRef = offLabel;   // stash for the cached row + sync handler
-      const offlineQueue = require('@utils/offlineQueue').default;
-      const localId = await offlineQueue.enqueue({
-        model: 'customer.visit',
-        operation: 'create',
-        values: vals,
-      });
-      console.log('[createCustomerVisit] OFFLINE queued localId=' + localId + ' label=' + offLabel);
-      return { id: 'offline_' + localId, reference: offLabel, offline: true, offlineLabel: offLabel };
-    } catch (e) {
-      console.error('[createCustomerVisit] offline enqueue failed:', e?.message);
-      throw e;
-    }
-  }
+  // Customer visits are online-only: no offline enqueue. If the device is
+  // offline, callOdooWithModelFallback below will throw a normal network
+  // error and the caller (VisitForm.submit) will surface it as an error toast.
 
-  // Online — strip the helper underscored fields before sending to Odoo
+  // Strip the helper underscored fields before sending to Odoo
   // (Odoo would reject unknown _customerName / _employeeName keys).
   delete vals._customerName;
   delete vals._employeeName;

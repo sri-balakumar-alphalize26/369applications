@@ -54,6 +54,7 @@ const EditPrimaryTripSheet = ({
   onCreateNewTrip,
   autoOpenPicker,
   onAutoOpenConsumed,
+  newTripIdToHighlight,
   onOpenSourceTrip,
   onViewVisits,
   onCreateNewVisit,
@@ -407,7 +408,7 @@ const EditPrimaryTripSheet = ({
         visible={tripPickerOpen}
         trips={trips}
         loading={tripsLoading}
-        selectedId={tripId}
+        selectedId={newTripIdToHighlight ?? tripId}
         onSelect={onTripSelected}
         onClose={() => setTripPickerOpen(false)}
         title="Pick Source Trip"

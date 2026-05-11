@@ -3,7 +3,6 @@ import { Camera } from 'expo-camera'
 import React, { useState, useEffect, useRef } from 'react'
 import { NavigationHeader } from '@components/Header'
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers'
-import OfflineBanner from '@components/common/OfflineBanner'
 import { TextInput as FormInput } from '@components/common/TextInput'
 import { formatDate } from '@utils/common/date'
 import { LoadingButton } from '@components/common/Button'
@@ -222,18 +221,6 @@ const VisitForm = ({ navigation, route }) => {
   // Voice recording functions
   const startRecording = async () => {
     try {
-      // Block recording while offline — same pattern Sales Order uses for
-      // operations that need the server (the audio still uploads at submit
-      // time so it'd be safer to disallow if we can't guarantee sync).
-      const networkStatus = require('@utils/networkStatus').default;
-      if (!(await networkStatus.isOnline())) {
-        showToast({
-          type: 'error',
-          title: 'You are offline',
-          message: 'Voice notes can only be recorded when connected to internet',
-        });
-        return;
-      }
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== 'granted') {
         showToast({ type: 'error', title: 'Permission Denied', message: 'Microphone permission is required' });
@@ -338,15 +325,6 @@ const VisitForm = ({ navigation, route }) => {
   const pickImageFromCamera = async () => {
     console.log('[cam] step 1 — pickImageFromCamera called');
     try {
-      const networkStatus = require('@utils/networkStatus').default;
-      if (!(await networkStatus.isOnline())) {
-        showToast({
-          type: 'error',
-          title: 'You are offline',
-          message: 'Photos can only be added when connected to internet',
-        });
-        return;
-      }
       const { status } = await Camera.requestCameraPermissionsAsync();
       console.log('[cam] step 2 — permission status:', status);
       if (status !== 'granted') {
@@ -398,15 +376,6 @@ const VisitForm = ({ navigation, route }) => {
   const pickImageFromGallery = async () => {
     console.log('[gallery] step 1 — pickImageFromGallery called');
     try {
-      const networkStatus = require('@utils/networkStatus').default;
-      if (!(await networkStatus.isOnline())) {
-        showToast({
-          type: 'error',
-          title: 'You are offline',
-          message: 'Photos can only be added when connected to internet',
-        });
-        return;
-      }
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       console.log('[gallery] step 2 — permission status:', status);
       if (status !== 'granted') {
@@ -458,15 +427,6 @@ const VisitForm = ({ navigation, route }) => {
   // (alternative to live-recording).
   const pickVoiceNoteFromFile = async () => {
     try {
-      const networkStatus = require('@utils/networkStatus').default;
-      if (!(await networkStatus.isOnline())) {
-        showToast({
-          type: 'error',
-          title: 'You are offline',
-          message: 'Voice notes can only be added when connected to internet',
-        });
-        return;
-      }
       const result = await DocumentPicker.getDocumentAsync({
         type: 'audio/*',
         copyToCacheDirectory: true,
@@ -780,7 +740,6 @@ const VisitForm = ({ navigation, route }) => {
   return (
     <SafeAreaView>
       <NavigationHeader title="New Customer Visit" onBackPress={() => navigation.goBack()} />
-      <OfflineBanner message="OFFLINE MODE — visit will sync when online" />
       <RoundedScrollContainer>
         {/* Map */}
         <View style={styles.mapContainer}>

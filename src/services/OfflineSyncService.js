@@ -464,6 +464,11 @@ const syncItemDirectly = async (item) => {
         return recordId;
     }
 
+    // TODO(offline-visits-removal): delete this block in the follow-up cleanup
+    // PR — kept only to drain any legacy customer.visit queue entries that
+    // were created before offline mode was removed from visits. No new
+    // entries are enqueued by the app any more.
+    //
     // customer.visit create — same flow as the online createCustomerVisitOdoo.
     if (item.model === 'customer.visit' && item.operation === 'create') {
         // Strip the denormalized helper fields we stuffed in for offline cache row rendering.
@@ -515,6 +520,10 @@ const syncItemDirectly = async (item) => {
         return newId;
     }
 
+    // TODO(offline-visits-removal): delete this block in the follow-up cleanup
+    // PR — kept only to drain any legacy queued Done/Draft transitions on
+    // offline-created visits. The app no longer enqueues these.
+    //
     // customer.visit method — used for offline action_done / action_reset_to_draft.
     if (item.model === 'customer.visit' && item.operation === 'method') {
         // values shape: { id: <number or 'offline_<localId>'>, method: 'action_done' | 'action_reset_to_draft' }

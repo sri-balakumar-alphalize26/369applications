@@ -9,7 +9,6 @@ import { FABButton } from '@components/common/Button';
 import { fetchCustomerVisitsOdoo, fetchCustomersOdoo, fetchEmployeesOdoo } from '@api/services/generalApi';
 import { useDataFetching } from '@hooks';
 import { OverlayLoader } from '@components/Loader';
-import OfflineBanner from '@components/common/OfflineBanner';
 import Text from '@components/Text';
 import { TouchableOpacity, View, StyleSheet, ScrollView } from 'react-native';
 import RNModal from 'react-native-modal';
@@ -75,10 +74,11 @@ const VisitScreen = ({ navigation, route }) => {
     }, [])
   );
 
-  // Silent background re-fetch when network flips to online so cached
-  // visits / synced offline rows refresh within a second of reconnect.
-  // We wait for the offline queue to drain so the post-flush fetch sees
-  // the real Odoo CV/YYYY/NNNNN refs (not the OFF placeholder names).
+  // TODO(offline-visits-removal): remove this subscriber + waitForFlush in
+  // the follow-up cleanup PR once any pre-existing customer.visit queue
+  // entries have drained in production. Kept temporarily so that legacy
+  // offline-created visits still surface as real Odoo records once they
+  // sync after reconnect.
   useEffect(() => {
     let unsub = null;
     try {
@@ -375,10 +375,6 @@ const VisitScreen = ({ navigation, route }) => {
         title="Customer Visits"
         logo={true}
         onBackPress={() => navigation.goBack()}
-      />
-      <OfflineBanner
-        message="OFFLINE MODE — showing cached visits, new entries will sync when online"
-        onOnline={() => fetchData({})}
       />
 
       {/* Active-filter chips (only when filters applied) */}

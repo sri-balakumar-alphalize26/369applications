@@ -116,6 +116,12 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   const [addOpen, setAddOpen] = useState(false);
   const [addSaving, setAddSaving] = useState(false);
 
+  // Trip picker auto-reopen handshake (return from VehicleTrackingForm)
+  const [editAutoOpenPicker, setEditAutoOpenPicker] = useState(false);
+  const [addAutoOpenPicker, setAddAutoOpenPicker] = useState(false);
+  const [newTripIdToHighlight, setNewTripIdToHighlight] = useState(null);
+  const [awaitingTripCreation, setAwaitingTripCreation] = useState(null); // 'primary' | 'additional' | null
+
   // Trip Detail sheet
   const [tripSheetOpen, setTripSheetOpen] = useState(false);
   const [tripSheetTrip, setTripSheetTrip] = useState(null);
@@ -176,6 +182,39 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
     useCallback(() => {
       if (attendanceId) refresh({ silent: true });
     }, [attendanceId, refresh])
+  );
+
+  // Launch VehicleTrackingForm to create a new trip, remembering which trip
+  // sheet (primary vs additional) the user was on. The focus effect below
+  // re-opens that sheet + its picker when the user comes back.
+  const handleCreateNewTripFrom = useCallback((fromSheet) => {
+    setAwaitingTripCreation(fromSheet);
+    if (fromSheet === 'primary') setEditOpen(false);
+    if (fromSheet === 'additional') setAddOpen(false);
+    navigation.navigate('VehicleTrackingForm', {
+      returnTo: 'fieldAttendance',
+      fromSheet,
+    });
+  }, [navigation]);
+
+  // Picker-return handshake: covers both Save (newTripId in params) and Back
+  // (no params, but awaitingTripCreation is still set). One-shot per round-trip.
+  useFocusEffect(
+    useCallback(() => {
+      if (!awaitingTripCreation) return;
+      const fromSheet = awaitingTripCreation;
+      const newTripId = route?.params?.newTripId;
+      setNewTripIdToHighlight(newTripId || null);
+      if (fromSheet === 'primary') {
+        setEditOpen(true);
+        setEditAutoOpenPicker(true);
+      } else if (fromSheet === 'additional') {
+        setAddOpen(true);
+        setAddAutoOpenPicker(true);
+      }
+      setAwaitingTripCreation(null);
+      if (newTripId) navigation.setParams({ newTripId: undefined, fromSheet: undefined });
+    }, [awaitingTripCreation, route?.params?.newTripId, navigation])
   );
 
   const onPullRefresh = async () => {
@@ -524,6 +563,10 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
         onSave={handleSavePrimary}
         onClose={() => setEditOpen(false)}
         saving={editSaving}
+        onCreateNewTrip={() => handleCreateNewTripFrom('primary')}
+        autoOpenPicker={editAutoOpenPicker}
+        onAutoOpenConsumed={() => setEditAutoOpenPicker(false)}
+        newTripIdToHighlight={newTripIdToHighlight}
       />
       <AddTripLineSheet
         visible={addOpen}
@@ -534,6 +577,10 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
         onClose={() => setAddOpen(false)}
         saving={addSaving}
         onOpenSourceTrip={(tripId) => handleOpenTrip(tripId)}
+        onCreateNewTrip={() => handleCreateNewTripFrom('additional')}
+        autoOpenPicker={addAutoOpenPicker}
+        onAutoOpenConsumed={() => setAddAutoOpenPicker(false)}
+        newTripIdToHighlight={newTripIdToHighlight}
       />
       <TripDetailSheet
         visible={tripSheetOpen}

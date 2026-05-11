@@ -32,9 +32,15 @@ const CustomListModal = ({
   const [selectedItems, setSelectedItems] = useState(previousSelections || []);
 
   useEffect(() => {
-    if (!isVisible) setSearchText('');
-    if (isVisible) setSelectedItems(previousSelections || []);
-  }, [isVisible, previousSelections]);
+    if (isVisible) {
+      setSelectedItems(previousSelections || []);
+    } else {
+      setSearchText('');
+    }
+    // previousSelections is read only at open-time; tracking it in deps
+    // causes an infinite loop when callers pass an unmemoized array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisible]);
 
   const filteredItems = searchText.trim()
     ? (items || []).filter(item => {

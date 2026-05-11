@@ -1710,6 +1710,20 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       // addition to the existing useFocusEffect.
       const goBackWithRefresh = () => {
         console.log('[handleSubmit] navigating back — activeAction=', activeAction, ' final tripId=', response?.tripId);
+        // When launched from the Field Attendance trip picker, return there
+        // so the picker can reopen with the new trip highlighted.
+        if (route?.params?.returnTo === 'fieldAttendance') {
+          navigation.navigate({
+            name: 'FieldAttendanceDetailScreen',
+            params: {
+              newTripId: response?.tripId,
+              fromSheet: route.params.fromSheet,
+              refreshKey: Date.now(),
+            },
+            merge: true,
+          });
+          return;
+        }
         navigation.navigate({
           name: 'VehicleTrackingScreen',
           params: { refreshKey: Date.now(), justSavedTripId: response?.tripId },

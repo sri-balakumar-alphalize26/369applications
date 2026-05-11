@@ -30,6 +30,7 @@ const AddTripLineSheet = ({
   onCreateNewTrip,
   autoOpenPicker,
   onAutoOpenConsumed,
+  newTripIdToHighlight,
   onCreateNewVisit,
   autoOpenVisitPicker,
   onAutoOpenVisitPickerConsumed,
@@ -248,7 +249,7 @@ const AddTripLineSheet = ({
         visible={tripPickerOpen}
         trips={trips}
         loading={tripsLoading}
-        selectedId={tripId}
+        selectedId={newTripIdToHighlight ?? tripId}
         onSelect={onTripSelected}
         onClose={() => setTripPickerOpen(false)}
         title="Pick a Trip"
