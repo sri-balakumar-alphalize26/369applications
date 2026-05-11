@@ -19,6 +19,7 @@ const tripRefOf = (t) => {
 
 const PrimaryTripCard = ({
   attendance,
+  tripLines,
   onSetup,
   onEdit,
   onOpenTrip,
@@ -29,6 +30,22 @@ const PrimaryTripCard = ({
   const hasTrip = Array.isArray(trip) && trip[0];
   const ended = !!attendance?.source_trip_ended;
   const visitCount = attendance?.source_visit_count || 0;
+
+  // Per-primary-trip metrics. Prefer the Odoo related fields if the addon
+  // exposes them; otherwise derive primary-only from the aggregate minus
+  // every trip-line's contribution — keeps the card correct even when the
+  // addon hasn't been upgraded yet.
+  const sumLines = (field) => (tripLines || []).reduce((s, l) => s + (Number(l?.[field]) || 0), 0);
+  const primaryOnly = (relatedKey, aggregateKey, lineKey) => {
+    const direct = attendance?.[relatedKey];
+    if (direct !== undefined && direct !== null) return direct;
+    const total = Number(attendance?.[aggregateKey]) || 0;
+    return Math.max(0, total - sumLines(lineKey));
+  };
+  const km = primaryOnly('source_trip_km_travelled', 'trip_total_km', 'km_travelled');
+  const duration = primaryOnly('source_trip_duration', 'trip_total_duration', 'duration');
+  const fuelL = primaryOnly('source_trip_fuel_litres', 'trip_total_fuel_litres', 'total_fuel_litres');
+  const fuelAmt = primaryOnly('source_trip_fuel_amount', 'trip_total_fuel_amount', 'total_fuel_amount');
 
   if (!hasTrip) {
     return (
@@ -73,12 +90,20 @@ const PrimaryTripCard = ({
 
       <View style={styles.metaRow}>
         <View style={styles.metaCell}>
-          <Text style={styles.metaLabel}>Total KM</Text>
-          <Text style={styles.metaValue}>{attendance?.trip_total_km ?? 0}</Text>
+          <Text style={styles.metaLabel}>KM</Text>
+          <Text style={styles.metaValue}>{km}</Text>
         </View>
         <View style={styles.metaCell}>
           <Text style={styles.metaLabel}>Duration</Text>
-          <Text style={styles.metaValue}>{floatToHM(attendance?.trip_total_duration || 0)}</Text>
+          <Text style={styles.metaValue}>{floatToHM(duration)}</Text>
+        </View>
+        <View style={styles.metaCell}>
+          <Text style={styles.metaLabel}>Fuel L</Text>
+          <Text style={styles.metaValue}>{Number(fuelL).toFixed(2)}</Text>
+        </View>
+        <View style={styles.metaCell}>
+          <Text style={styles.metaLabel}>Fuel Amt</Text>
+          <Text style={styles.metaValue}>{Number(fuelAmt).toFixed(2)}</Text>
         </View>
         <View style={styles.metaCell}>
           <Text style={styles.metaLabel}>Visits</Text>
@@ -166,10 +191,11 @@ const styles = StyleSheet.create({
   },
   endedPillText: { fontSize: 9, color: '#43A047', fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.4 },
   metaRow: {
-    flexDirection: 'row', marginTop: 10, gap: 6,
+    flexDirection: 'row', flexWrap: 'wrap', marginTop: 10, gap: 6,
   },
   metaCell: {
-    flex: 1, backgroundColor: '#F8F9FA', borderRadius: 8, padding: 8, alignItems: 'center',
+    flexBasis: '30%', flexGrow: 1,
+    backgroundColor: '#F8F9FA', borderRadius: 8, padding: 8, alignItems: 'center',
   },
   metaLabel: { fontSize: 10, fontFamily: FONT_FAMILY.urbanistMedium, color: '#888' },
   metaValue: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#222', marginTop: 2 },

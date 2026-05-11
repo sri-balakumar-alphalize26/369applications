@@ -64,6 +64,10 @@ const TripLineCard = ({
           <Text style={styles.metaValue}>{Number(line?.total_fuel_litres || 0).toFixed(2)}</Text>
         </View>
         <View style={styles.metaCell}>
+          <Text style={styles.metaLabel}>Fuel Amt</Text>
+          <Text style={styles.metaValue}>{Number(line?.total_fuel_amount || 0).toFixed(2)}</Text>
+        </View>
+        <View style={styles.metaCell}>
           <Text style={styles.metaLabel}>Visits</Text>
           <Text style={styles.metaValue}>{visitCount}</Text>
         </View>
@@ -136,9 +140,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6,
   },
   endedPillText: { fontSize: 9, color: '#43A047', fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.4 },
-  metaRow: { flexDirection: 'row', marginTop: 8, gap: 4 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, gap: 4 },
   metaCell: {
-    flex: 1, backgroundColor: '#F8F9FA', borderRadius: 6, padding: 6, alignItems: 'center',
+    flexBasis: '30%', flexGrow: 1,
+    backgroundColor: '#F8F9FA', borderRadius: 6, padding: 6, alignItems: 'center',
   },
   metaLabel: { fontSize: 9.5, fontFamily: FONT_FAMILY.urbanistMedium, color: '#888' },
   metaValue: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold, color: '#222', marginTop: 1 },

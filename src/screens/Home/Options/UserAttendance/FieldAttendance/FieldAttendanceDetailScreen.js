@@ -192,12 +192,28 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
       showToastMessage(vals.error);
       return;
     }
+    console.log('[FieldAttendanceDetail] save primary — vals:', vals);
     setEditSaving(true);
     try {
       await updateFieldAttendancePrimaryTripOdoo(attendanceId, vals);
+      console.log('[FieldAttendanceDetail] save primary — write OK for attendanceId:', attendanceId);
       showToastMessage('Primary trip saved');
       setEditOpen(false);
+      // Optimistic patch — show the picked trip immediately so the user sees
+      // feedback even if the subsequent refresh is slow or hits a stale read.
+      if (vals.source_trip_id) {
+        setAttendance((prev) => prev ? ({
+          ...prev,
+          source_trip_id: [Number(vals.source_trip_id), prev?.source_trip_id?.[1] || `Trip #${vals.source_trip_id}`],
+          source_visit_ids: Array.isArray(vals.source_visit_ids) ? vals.source_visit_ids.map(Number) : prev.source_visit_ids,
+          source_visit_count: Array.isArray(vals.source_visit_ids) ? vals.source_visit_ids.length : prev.source_visit_count,
+          gps_latitude: vals.gps_latitude ?? prev.gps_latitude,
+          gps_longitude: vals.gps_longitude ?? prev.gps_longitude,
+          gps_location_name: vals.gps_location_name ?? prev.gps_location_name,
+        }) : prev);
+      }
       await refresh({ silent: true });
+      console.log('[FieldAttendanceDetail] save primary — refresh done');
     } catch (e) {
       console.error('[FieldAttendanceDetail] save primary error:', e?.message);
       showToastMessage(e?.message || 'Failed to save');
@@ -331,15 +347,32 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   };
 
   // Loaders for the sheets — passed as callbacks to keep them lazy.
-  const loadAvailableTrips = useCallback(async () => {
+  // Primary picker keeps the current source_trip_id visible (for edit-in-place).
+  const loadAvailableTripsPrimary = useCallback(async () => {
+    return await searchAvailableTripsOdoo(attendanceId, { includeCurrent: true });
+  }, [attendanceId]);
+  // Additional picker excludes the primary trip (already used + now ended).
+  const loadAvailableTripsAdditional = useCallback(async () => {
     return await searchAvailableTripsOdoo(attendanceId);
   }, [attendanceId]);
 
   const employeeId = Array.isArray(attendance?.employee_id) ? attendance.employee_id[0] : null;
-  const loadDraftVisits = useCallback(async () => {
+  const loadDraftVisitsPrimary = useCallback(async () => {
     if (!employeeId) return [];
     return await searchDraftCustomerVisitsOdoo(employeeId);
   }, [employeeId]);
+  // Additional picker excludes visits already attached to this attendance
+  // (primary's source_visit_ids ∪ any trip line's visit_ids).
+  const loadDraftVisitsAdditional = useCallback(async () => {
+    if (!employeeId) return [];
+    const all = await searchDraftCustomerVisitsOdoo(employeeId);
+    const used = new Set();
+    (attendance?.source_visit_ids || []).forEach((id) => used.add(Number(id)));
+    tripLines.forEach((line) => {
+      (line?.visit_ids || []).forEach((id) => used.add(Number(id)));
+    });
+    return (all || []).filter((v) => !used.has(Number(v.id)));
+  }, [employeeId, attendance, tripLines]);
 
   const loadVisitsByIds = useCallback(async (ids) => {
     return await readCustomerVisitsByIdsOdoo(ids);
@@ -425,6 +458,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
           <Text style={styles.sectionTitle}>Primary Trip</Text>
           <PrimaryTripCard
             attendance={attendance}
+            tripLines={tripLines}
             busy={busy}
             onSetup={openEdit}
             onEdit={openEdit}
@@ -481,8 +515,8 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
       <EditPrimaryTripSheet
         visible={editOpen}
         attendance={attendance}
-        loadAvailableTrips={loadAvailableTrips}
-        loadDraftVisits={loadDraftVisits}
+        loadAvailableTrips={loadAvailableTripsPrimary}
+        loadDraftVisits={loadDraftVisitsPrimary}
         loadVisitsByIds={loadVisitsByIds}
         onSave={handleSavePrimary}
         onClose={() => setEditOpen(false)}
@@ -490,12 +524,13 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
       />
       <AddTripLineSheet
         visible={addOpen}
-        loadAvailableTrips={loadAvailableTrips}
-        loadDraftVisits={loadDraftVisits}
+        loadAvailableTrips={loadAvailableTripsAdditional}
+        loadDraftVisits={loadDraftVisitsAdditional}
         loadVisitsByIds={loadVisitsByIds}
         onSave={handleSaveTripLine}
         onClose={() => setAddOpen(false)}
         saving={addSaving}
+        onOpenSourceTrip={(tripId) => handleOpenTrip(tripId)}
       />
       <TripDetailSheet
         visible={tripSheetOpen}

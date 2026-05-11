@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { StyledAlertModal } from '@components/Modal';
-import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
 import { RoundedScrollContainer } from '@components/containers';
@@ -26,6 +26,7 @@ import {
   createFieldTripLineOdoo,
   deleteFieldTripLineOdoo,
   endVehicleTripFromAttendanceOdoo,
+  markCustomerVisitsDoneOdoo,
 } from '@api/services/generalApi';
 import HistoryListItem from '@screens/Home/Options/UserAttendance/FieldAttendance/components/HistoryListItem';
 import HistoryFiltersSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/HistoryFiltersSheet';
@@ -191,6 +192,16 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [visitsSheetLoading, setVisitsSheetLoading] = useState(false);
   const [checkOutSubmitting, setCheckOutSubmitting] = useState(false);
   const [fieldBusy, setFieldBusy] = useState(false);     // generic busy flag for delete/end-trip
+  // End-KM prompt shown before field check-out when the day's last trip is
+  // still open. Captures end_km on that trip and bulk-marks every linked
+  // visit as done before the checkout fires.
+  const [endKmPrompt, setEndKmPrompt] = useState({
+    visible: false,
+    tripId: null,
+    tripRef: '',
+    value: '',
+    saving: false,
+  });
   // After Create-New-Trip → VehicleTrackingForm → Start Trip, we want to
   // re-open the picker the user came from. These flags track that.
   const [pendingFieldPickerReopen, setPendingFieldPickerReopen] = useState(null);  // 'edit' | 'add' | null
@@ -556,8 +567,83 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   };
 
-  // Check Out — confirm → camera → write check_out + upload photo. Server
-  // hook auto-ends the last open trip and flips draft visits to done.
+  // Resolve the day's last still-open trip — mirrors the server logic and
+  // the openAddTrip handler. Last trip line (if any) takes precedence over
+  // the primary trip. Returns null when everything is already closed.
+  const resolveLastOpenTrip = useCallback(() => {
+    if (fieldLines && fieldLines.length > 0) {
+      const last = fieldLines[fieldLines.length - 1];
+      if (last && !last.trip_ended) {
+        const id = Array.isArray(last.trip_id) ? last.trip_id[0] : null;
+        const ref = Array.isArray(last.trip_id) ? last.trip_id[1] : '';
+        if (id) return { tripId: Number(id), tripRef: ref };
+      }
+    }
+    if (Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0] && !fieldDetail?.source_trip_ended) {
+      return {
+        tripId: Number(fieldDetail.source_trip_id[0]),
+        tripRef: fieldDetail.source_trip_id[1] || '',
+      };
+    }
+    return null;
+  }, [fieldLines, fieldDetail]);
+
+  // Collect every visit linked to today's attendance — manually attached
+  // (source_visit_ids, trip_line.visit_ids) AND auto-derived (each
+  // vehicle.tracking trip's own visit_ids) — and bulk-mark them done.
+  // Safe to call multiple times; the write is idempotent.
+  const markAllDayVisitsDone = useCallback(async () => {
+    const tripIds = new Set();
+    if (Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0]) {
+      tripIds.add(Number(fieldDetail.source_trip_id[0]));
+    }
+    (fieldLines || []).forEach((line) => {
+      if (Array.isArray(line?.trip_id) && line.trip_id[0]) tripIds.add(Number(line.trip_id[0]));
+    });
+    const visitIds = new Set();
+    (fieldDetail?.source_visit_ids || []).forEach((id) => visitIds.add(Number(id)));
+    (fieldLines || []).forEach((line) => {
+      (line?.visit_ids || []).forEach((id) => visitIds.add(Number(id)));
+    });
+    if (tripIds.size > 0) {
+      try {
+        const tripRows = await readVehicleTrackingForTripIdsOdoo(Array.from(tripIds));
+        (tripRows || []).forEach((t) => (t?.visit_ids || []).forEach((id) => visitIds.add(Number(id))));
+      } catch (e) {
+        console.warn('[FieldCheckOut] read trips for visit collection failed:', e?.message);
+      }
+    }
+    if (visitIds.size > 0) {
+      try {
+        await markCustomerVisitsDoneOdoo(Array.from(visitIds));
+      } catch (e) {
+        console.warn('[FieldCheckOut] bulk mark visits done failed:', e?.message);
+      }
+    }
+  }, [fieldDetail, fieldLines]);
+
+  // Runs the original confirm + camera + checkout flow. Extracted so the
+  // end-KM prompt path and the no-open-trip path can share it.
+  const proceedWithFieldCheckOut = useCallback(() => {
+    showAlert({
+      message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
+      confirmText: 'Check Out',
+      cancelText: 'Cancel',
+      onConfirm: async () => {
+        hideAlert();
+        setCheckOutSubmitting(true);
+        const opened = await openCamera('field_check_out');
+        if (!opened) setCheckOutSubmitting(false);
+      },
+      onCancel: hideAlert,
+    });
+  }, [showAlert, hideAlert]);
+
+  // Check Out — if the last trip is still open, prompt for end_km first
+  // and bulk-mark draft visits done; then run the existing confirm + camera
+  // + checkout flow. Server hook auto-ends the trip and flips visits done
+  // server-side too, but doing it client-side first guarantees end_km is
+  // captured and works regardless of whether the addon is upgraded.
   const handleFieldCheckOut = useCallback(() => {
     if (!fieldData?.attendance_id) return;
     // Cross-mode guard: if the open attendance was created via Office
@@ -574,19 +660,48 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       });
       return;
     }
-    showAlert({
-      message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
-      confirmText: 'Check Out',
-      cancelText: 'Cancel',
-      onConfirm: async () => {
-        hideAlert();
-        setCheckOutSubmitting(true);
-        const opened = await openCamera('field_check_out');
-        if (!opened) setCheckOutSubmitting(false);
-      },
-      onCancel: hideAlert,
-    });
-  }, [fieldData, todayAttendance, showAlert, hideAlert]);
+    const lastOpen = resolveLastOpenTrip();
+    if (lastOpen?.tripId) {
+      setEndKmPrompt({
+        visible: true,
+        tripId: lastOpen.tripId,
+        tripRef: lastOpen.tripRef,
+        value: '',
+        saving: false,
+      });
+      return;
+    }
+    // No open trip — still mark any straggler draft visits done, then
+    // jump straight into the confirm/camera/checkout flow.
+    (async () => {
+      await markAllDayVisitsDone();
+      proceedWithFieldCheckOut();
+    })();
+  }, [fieldData, todayAttendance, showAlert, hideAlert, resolveLastOpenTrip, markAllDayVisitsDone, proceedWithFieldCheckOut]);
+
+  // Modal Save handler — closes the last trip with the entered end_km,
+  // bulk-marks all linked visits done, then runs the existing confirm +
+  // camera + checkout flow.
+  const submitEndKmAndCheckout = useCallback(async () => {
+    const km = Number(endKmPrompt.value);
+    if (!endKmPrompt.value || Number.isNaN(km) || km < 0) {
+      showToastMessage('Enter a valid End KM');
+      return;
+    }
+    setEndKmPrompt((s) => ({ ...s, saving: true }));
+    try {
+      await endVehicleTripFromAttendanceOdoo(endKmPrompt.tripId, null, km);
+      await markAllDayVisitsDone();
+      setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false });
+      if (fieldData?.attendance_id) {
+        await refreshFieldDetail(fieldData.attendance_id);
+      }
+      proceedWithFieldCheckOut();
+    } catch (e) {
+      setEndKmPrompt((s) => ({ ...s, saving: false }));
+      showToastMessage(e?.message || 'Failed to finalize trip');
+    }
+  }, [endKmPrompt, markAllDayVisitsDone, proceedWithFieldCheckOut, fieldData, refreshFieldDetail]);
 
   const processFieldCheckOut = async (photoBase64) => {
     try {
@@ -608,14 +723,33 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   };
 
   // Loaders for the bottom-sheet pickers.
-  const fieldLoadAvailableTrips = useCallback(async () => {
+  // Primary picker keeps the current source_trip_id visible (for edit-in-place).
+  const fieldLoadAvailableTripsPrimary = useCallback(async () => {
+    if (!fieldData?.attendance_id) return [];
+    return await searchAvailableTripsOdoo(fieldData.attendance_id, { includeCurrent: true });
+  }, [fieldData]);
+  // Additional picker excludes the primary trip (already used + now ended).
+  const fieldLoadAvailableTripsAdditional = useCallback(async () => {
     if (!fieldData?.attendance_id) return [];
     return await searchAvailableTripsOdoo(fieldData.attendance_id);
   }, [fieldData]);
-  const fieldLoadDraftVisits = useCallback(async () => {
+
+  const fieldLoadDraftVisitsPrimary = useCallback(async () => {
     if (!verifiedEmployee?.id) return [];
     return await searchDraftCustomerVisitsOdoo(verifiedEmployee.id);
   }, [verifiedEmployee]);
+  // Additional picker excludes visits already attached to this attendance
+  // (primary's source_visit_ids ∪ any trip line's visit_ids).
+  const fieldLoadDraftVisitsAdditional = useCallback(async () => {
+    if (!verifiedEmployee?.id) return [];
+    const all = await searchDraftCustomerVisitsOdoo(verifiedEmployee.id);
+    const used = new Set();
+    (fieldDetail?.source_visit_ids || []).forEach((id) => used.add(Number(id)));
+    (fieldLines || []).forEach((line) => {
+      (line?.visit_ids || []).forEach((id) => used.add(Number(id)));
+    });
+    return (all || []).filter((v) => !used.has(Number(v.id)));
+  }, [verifiedEmployee, fieldDetail, fieldLines]);
   const fieldLoadVisitsByIds = useCallback(async (ids) => {
     return await readCustomerVisitsByIdsOdoo(ids);
   }, []);
@@ -625,15 +759,36 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       showToastMessage(vals.error);
       return;
     }
-    if (!fieldData?.attendance_id) return;
+    if (!fieldData?.attendance_id) {
+      showToastMessage('No attendance to save against — refresh and try again.');
+      return;
+    }
+    console.log('[FieldAttendance] save primary — attendance_id:', fieldData.attendance_id, 'vals:', vals);
     setEditPrimarySaving(true);
     try {
       await updateFieldAttendancePrimaryTripOdoo(fieldData.attendance_id, vals);
+      console.log('[FieldAttendance] save primary — write OK');
       showToastMessage('Primary trip saved');
       setEditPrimaryOpen(false);
+      // Optimistic patch so the card updates instantly. Survives the
+      // fieldStatus/fieldData useEffect that can momentarily clear fieldDetail
+      // while the follow-up refreshes are in flight.
+      if (vals.source_trip_id) {
+        setFieldDetail((prev) => prev ? ({
+          ...prev,
+          source_trip_id: [Number(vals.source_trip_id), prev?.source_trip_id?.[1] || `Trip #${vals.source_trip_id}`],
+          source_visit_ids: Array.isArray(vals.source_visit_ids) ? vals.source_visit_ids.map(Number) : prev.source_visit_ids,
+          source_visit_count: Array.isArray(vals.source_visit_ids) ? vals.source_visit_ids.length : prev.source_visit_count,
+          gps_latitude: vals.gps_latitude ?? prev.gps_latitude,
+          gps_longitude: vals.gps_longitude ?? prev.gps_longitude,
+          gps_location_name: vals.gps_location_name ?? prev.gps_location_name,
+        }) : prev);
+      }
       await refreshFieldDetail(fieldData.attendance_id);
       await refreshFieldAttendance({ silent: true });
+      console.log('[FieldAttendance] save primary — refresh done');
     } catch (e) {
+      console.error('[FieldAttendance] save primary error:', e?.message);
       showToastMessage(e?.message || 'Failed to save');
     } finally {
       setEditPrimarySaving(false);
@@ -709,10 +864,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     setVisitsSheetRows([]);
     try {
       const rows = await readCustomerVisitsByIdsOdoo(ids);
-      // Hide visits already marked done — they aren't relevant to the
-      // active attendance any more.
-      const filtered = (rows || []).filter(r => String(r.state || 'draft') !== 'done');
-      setVisitsSheetRows(filtered);
+      setVisitsSheetRows(rows || []);
     } catch (e) {
       showToastMessage('Failed to load visits');
     } finally {
@@ -3193,6 +3345,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>Primary Trip</Text>
             <PrimaryTripCard
               attendance={fieldDetail}
+              tripLines={fieldLines}
               busy={fieldStatus === 'checked_out' || fieldBusy}
               onSetup={() => {
                 console.log('[FieldAttendance] tap Setup Primary Trip — opening sheet, fieldDetail?', !!fieldDetail);
@@ -3210,15 +3363,17 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             {Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0] ? (
               <>
                 {(() => {
-                  // Hide ended trip lines from the card. They still exist in
-                  // Odoo / VehicleTrackingScreen — just not shown here.
-                  const activeLines = fieldLines.filter((line) => !line.trip_ended);
+                  // Show every line — including ended ones — so per-trip
+                  // details stay visible after the auto-end cascade fires on
+                  // add-additional. TripLineCard renders an "Ended" pill on
+                  // each ended row so the state is still clear.
+                  const lines = fieldLines || [];
                   return (
                     <>
                       <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>
-                        Additional Trips ({activeLines.length})
+                        Additional Trips ({lines.length})
                       </Text>
-                      {activeLines.length === 0 ? (
+                      {lines.length === 0 ? (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#FAFAFA', borderRadius: scale(10), padding: scale(12), marginTop: scale(6), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
                           <MaterialIcons name="add-road" size={scale(20)} color="#BDBDBD" />
                           <Text style={{ flex: 1, fontSize: scale(12), color: '#888', fontFamily: FONT_FAMILY.urbanistMedium }}>
@@ -3226,7 +3381,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                           </Text>
                         </View>
                       ) : (
-                        activeLines.map((line, idx) => (
+                        lines.map((line, idx) => (
                           <TripLineCard
                             key={line.id}
                             line={line}
@@ -3754,8 +3909,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       <EditPrimaryTripSheet
         visible={editPrimaryOpen}
         attendance={fieldDetail}
-        loadAvailableTrips={fieldLoadAvailableTrips}
-        loadDraftVisits={fieldLoadDraftVisits}
+        loadAvailableTrips={fieldLoadAvailableTripsPrimary}
+        loadDraftVisits={fieldLoadDraftVisitsPrimary}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSavePrimary}
         onClose={() => setEditPrimaryOpen(false)}
@@ -3772,8 +3927,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       />
       <AddTripLineSheet
         visible={addLineOpen}
-        loadAvailableTrips={fieldLoadAvailableTrips}
-        loadDraftVisits={fieldLoadDraftVisits}
+        loadAvailableTrips={fieldLoadAvailableTripsAdditional}
+        loadDraftVisits={fieldLoadDraftVisitsAdditional}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSaveTripLine}
         onClose={() => setAddLineOpen(false)}
@@ -3784,6 +3939,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         onCreateNewVisit={() => handleCreateNewVisit('add')}
         autoOpenVisitPicker={autoOpenVisitPickerAdd}
         onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerAdd(false)}
+        onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
       />
       <TripDetailSheet
         visible={tripSheetOpen}
@@ -3826,6 +3982,59 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             })
           : undefined}
       />
+
+      {/* End-KM prompt — shown before field check-out when the day's last trip
+          is still open. On Save we close the trip with the entered KM and
+          bulk-mark every linked visit done, then continue to camera+checkout. */}
+      <Modal
+        visible={endKmPrompt.visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!endKmPrompt.saving) {
+            setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false });
+          }
+        }}
+      >
+        <View style={styles.endKmOverlay}>
+          <View style={styles.endKmSheet}>
+            <Text style={styles.endKmTitle}>
+              End KM for {endKmPrompt.tripRef || `Trip #${endKmPrompt.tripId}`}
+            </Text>
+            <Text style={styles.endKmHint}>
+              Enter the trip's end odometer reading. We'll close the trip with this value and mark its visits done before checking you out.
+            </Text>
+            <TextInput
+              keyboardType="number-pad"
+              placeholder="e.g. 12345"
+              placeholderTextColor="#999"
+              value={endKmPrompt.value}
+              onChangeText={(t) => setEndKmPrompt((s) => ({ ...s, value: t.replace(/[^0-9.]/g, '') }))}
+              style={styles.endKmInput}
+              editable={!endKmPrompt.saving}
+              autoFocus
+            />
+            <View style={styles.endKmButtonRow}>
+              <TouchableOpacity
+                onPress={() => setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false })}
+                disabled={endKmPrompt.saving}
+                style={[styles.endKmBtn, styles.endKmBtnSecondary]}
+              >
+                <Text style={styles.endKmBtnSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={submitEndKmAndCheckout}
+                disabled={endKmPrompt.saving || !endKmPrompt.value}
+                style={[styles.endKmBtn, styles.endKmBtnPrimary, (endKmPrompt.saving || !endKmPrompt.value) && { opacity: 0.6 }]}
+              >
+                {endKmPrompt.saving
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.endKmBtnPrimaryText}>Save & Checkout</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Styled alert modal — matches the logout popup design */}
       <StyledAlertModal

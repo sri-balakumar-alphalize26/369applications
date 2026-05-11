@@ -55,6 +55,21 @@ class HrAttendance(models.Model):
         string='Destination Location',
         readonly=True,
     )
+    # Per-primary-trip metrics — exposed so PrimaryTripCard shows the trip's
+    # OWN KM/duration/fuel, not the day's aggregate (which lives in
+    # trip_total_* below and is rendered separately in TripTotalsSection).
+    source_trip_km_travelled = fields.Integer(
+        related='source_trip_id.km_travelled', readonly=True,
+    )
+    source_trip_duration = fields.Float(
+        related='source_trip_id.duration', readonly=True,
+    )
+    source_trip_fuel_litres = fields.Float(
+        related='source_trip_id.total_fuel_litres', readonly=True,
+    )
+    source_trip_fuel_amount = fields.Float(
+        related='source_trip_id.total_fuel_amount', readonly=True,
+    )
     source_visit_count = fields.Integer(
         string='Visit Count',
         compute='_compute_source_visit_count',

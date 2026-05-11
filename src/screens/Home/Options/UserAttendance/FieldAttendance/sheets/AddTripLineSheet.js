@@ -33,6 +33,7 @@ const AddTripLineSheet = ({
   onCreateNewVisit,
   autoOpenVisitPicker,
   onAutoOpenVisitPickerConsumed,
+  onOpenSourceTrip,
 }) => {
   const [tripId, setTripId] = useState(null);
   const [tripLabel, setTripLabel] = useState('');
@@ -164,13 +165,24 @@ const AddTripLineSheet = ({
               </View>
 
               <Text style={styles.label}>Trip *</Text>
-              <TouchableOpacity style={styles.input} activeOpacity={0.85} onPress={openTripPicker}>
-                <MaterialIcons name="directions-car" size={16} color={FIELD_COLOR} />
-                <Text style={[styles.inputText, !tripLabel && { color: '#999' }]} numberOfLines={1}>
-                  {tripLabel || 'Tap to pick an available trip'}
-                </Text>
-                <MaterialIcons name="chevron-right" size={18} color="#999" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity style={[styles.input, { flex: 1 }]} activeOpacity={0.85} onPress={openTripPicker}>
+                  <MaterialIcons name="directions-car" size={16} color={FIELD_COLOR} />
+                  <Text style={[styles.inputText, !tripLabel && { color: '#999' }]} numberOfLines={1}>
+                    {tripLabel || 'Tap to pick an available trip'}
+                  </Text>
+                  <MaterialIcons name="chevron-right" size={18} color="#999" />
+                </TouchableOpacity>
+                {tripId && onOpenSourceTrip ? (
+                  <TouchableOpacity
+                    style={styles.openIconBtn}
+                    onPress={() => onOpenSourceTrip(tripId)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <MaterialIcons name="open-in-new" size={18} color={FIELD_COLOR} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
 
               {tripMeta ? (
                 <View style={styles.tripMeta}>
@@ -303,6 +315,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 12,
   },
   inputText: { flex: 1, fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#222' },
+  openIconBtn: {
+    width: 40, height: 44, borderRadius: 10, borderWidth: 1, borderColor: FIELD_COLOR,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff',
+  },
   tripMeta: {
     backgroundColor: '#FAFAFA', borderRadius: 8, padding: 8, marginTop: 6,
     borderWidth: 1, borderColor: '#EEE',

@@ -190,12 +190,20 @@ class FieldAttendanceTripLine(models.Model):
             prior_lines = attendance.trip_line_ids.filtered(
                 lambda ln: ln.id != line.id
             ).sorted('sequence')
+            CustomerVisit = self.env['customer.visit']
             if prior_lines:
                 prev_trip = prior_lines[-1].trip_id
-                prev_visits = prior_lines[-1].visit_ids
+                # Union: the line's manually-attached visits + the trip's
+                # auto-derived visit_ids (covers visits the user logged via
+                # the customer-visit flow but never explicitly attached).
+                prev_visits = prior_lines[-1].visit_ids | (
+                    prev_trip.visit_ids if prev_trip else CustomerVisit
+                )
             else:
                 prev_trip = attendance.source_trip_id
-                prev_visits = attendance.source_visit_ids
+                prev_visits = attendance.source_visit_ids | (
+                    prev_trip.visit_ids if prev_trip else CustomerVisit
+                )
             # End the previous trip if it's still open
             if prev_trip and not prev_trip.end_trip and not prev_trip.trip_cancel:
                 try:

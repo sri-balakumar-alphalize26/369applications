@@ -651,28 +651,49 @@ export const searchMyFieldAttendanceOdoo = async (employeeId, opts = {}) => {
 };
 
 // Read full detail of one field attendance record (primary trip + totals + late).
+// PER_TRIP_FIELDS are only present after the hr_field_attendance addon has
+// been upgraded with the per-primary-trip related fields. We try with them
+// first and fall back to the legacy set on "Invalid field" — so the app keeps
+// working before the upgrade and automatically picks them up after.
+const _FIELD_ATTENDANCE_BASE_FIELDS = [
+  'id', 'employee_id', 'check_in', 'check_out', 'attendance_source',
+  'gps_latitude', 'gps_longitude', 'gps_location_name',
+  'source_trip_id', 'source_trip_source_location',
+  'source_trip_destination_location', 'source_trip_ended',
+  'source_visit_ids', 'source_visit_count', 'has_source_visits',
+  'trip_line_ids',
+  'trip_total_km', 'trip_total_duration',
+  'trip_total_fuel_litres', 'trip_total_fuel_amount',
+  'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
+  'deduction_amount', 'is_waived', 'expected_start_time',
+];
+const _FIELD_ATTENDANCE_PER_TRIP_FIELDS = [
+  'source_trip_km_travelled', 'source_trip_duration',
+  'source_trip_fuel_litres', 'source_trip_fuel_amount',
+];
+
 export const readFieldAttendanceDetailOdoo = async (attendanceId) => {
   if (!attendanceId) throw new Error('attendanceId is required');
-  const rows = await _fieldRpc({
-    model: 'hr.attendance',
-    method: 'read',
-    args: [[Number(attendanceId)]],
-    kwargs: {
-      fields: [
-        'id', 'employee_id', 'check_in', 'check_out', 'attendance_source',
-        'gps_latitude', 'gps_longitude', 'gps_location_name',
-        'source_trip_id', 'source_trip_source_location',
-        'source_trip_destination_location', 'source_trip_ended',
-        'source_visit_ids', 'source_visit_count', 'has_source_visits',
-        'trip_line_ids',
-        'trip_total_km', 'trip_total_duration',
-        'trip_total_fuel_litres', 'trip_total_fuel_amount',
-        'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
-        'deduction_amount', 'is_waived', 'expected_start_time',
-      ],
-    },
-  });
-  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  const tryRead = async (fields) => {
+    const rows = await _fieldRpc({
+      model: 'hr.attendance',
+      method: 'read',
+      args: [[Number(attendanceId)]],
+      kwargs: { fields },
+    });
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  };
+  try {
+    return await tryRead([..._FIELD_ATTENDANCE_BASE_FIELDS, ..._FIELD_ATTENDANCE_PER_TRIP_FIELDS]);
+  } catch (e) {
+    const msg = String(e?.message || '');
+    const isMissingPerTripField =
+      msg.includes('Invalid field') &&
+      _FIELD_ATTENDANCE_PER_TRIP_FIELDS.some((f) => msg.includes(f));
+    if (!isMissingPerTripField) throw e;
+    console.warn('[readFieldAttendanceDetailOdoo] per-trip fields not yet on Odoo — falling back. Run -u hr_field_attendance to enable.');
+    return await tryRead(_FIELD_ATTENDANCE_BASE_FIELDS);
+  }
 };
 
 // Read trip-line rows for an attendance.
@@ -697,9 +718,11 @@ export const readFieldTripLinesOdoo = async (lineIds) => {
 };
 
 // Read available_trip_ids on the attendance, then fetch full trip rows.
-// Includes the current source_trip_id so the picker can keep the existing
-// selection visible/editable (mirrors the popup view's OR'd domain).
-export const searchAvailableTripsOdoo = async (attendanceId) => {
+// When `includeCurrent` is true, OR-includes the current source_trip_id so
+// the Primary Trip picker can keep the existing selection visible/editable.
+// The Additional Trip picker passes `includeCurrent: false` (default) so the
+// already-used (and by now ended) primary trip isn't re-selectable.
+export const searchAvailableTripsOdoo = async (attendanceId, { includeCurrent = false } = {}) => {
   if (!attendanceId) throw new Error('attendanceId is required');
   const rows = await _fieldRpc({
     model: 'hr.attendance',
@@ -711,7 +734,7 @@ export const searchAvailableTripsOdoo = async (attendanceId) => {
   const ids = new Set();
   if (att) {
     (att.available_trip_ids || []).forEach((id) => ids.add(Number(id)));
-    if (Array.isArray(att.source_trip_id) && att.source_trip_id[0]) {
+    if (includeCurrent && Array.isArray(att.source_trip_id) && att.source_trip_id[0]) {
       ids.add(Number(att.source_trip_id[0]));
     }
   }
@@ -849,6 +872,20 @@ export const readCustomerVisitsByIdsOdoo = async (visitIds) => {
     },
   });
   return Array.isArray(rows) ? rows : [];
+};
+
+// Mark a set of customer.visit ids as state='done'. Idempotent — already-done
+// visits stay done. Used by the checkout flow to ensure every visit linked to
+// the day's trips ends up closed, regardless of whether the Odoo
+// hr_field_attendance addon has been upgraded with the auto-cascade fix.
+export const markCustomerVisitsDoneOdoo = async (visitIds) => {
+  const ids = (Array.isArray(visitIds) ? visitIds : []).map(Number).filter((n) => !Number.isNaN(n) && n > 0);
+  if (ids.length === 0) return;
+  await _fieldRpc({
+    model: 'customer.visit',
+    method: 'write',
+    args: [ids, { state: 'done' }],
+  });
 };
 
 // Save changes to the primary trip section of a field attendance.
