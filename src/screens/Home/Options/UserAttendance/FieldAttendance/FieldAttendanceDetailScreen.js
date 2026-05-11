@@ -551,10 +551,22 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
         visits={visitsSheetRows}
         loading={visitsSheetLoading}
         onClose={() => setVisitsSheetOpen(false)}
-        onOpenInVisits={() => {
+        onVisitPress={(v) => {
           setVisitsSheetOpen(false);
-          navigation.navigate('VisitScreen');
+          navigation.navigate('VisitDetails', {
+            visitId: v?.id,
+            visitDetails: v,
+          });
         }}
+        onOpenInVisits={(visitsSheetRows || []).length > 0
+          ? () => {
+              setVisitsSheetOpen(false);
+              navigation.navigate('VisitDetails', {
+                visitId: visitsSheetRows[0]?.id,
+                visitDetails: visitsSheetRows[0],
+              });
+            }
+          : undefined}
       />
 
       <StyledAlertModal

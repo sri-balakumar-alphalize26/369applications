@@ -3346,7 +3346,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             <PrimaryTripCard
               attendance={fieldDetail}
               tripLines={fieldLines}
-              busy={fieldStatus === 'checked_out' || fieldBusy}
+              busy={fieldBusy}
               onSetup={() => {
                 console.log('[FieldAttendance] tap Setup Primary Trip — opening sheet, fieldDetail?', !!fieldDetail);
                 setEditPrimaryOpen(true);
@@ -3386,7 +3386,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                             key={line.id}
                             line={line}
                             index={idx}
-                            busy={fieldStatus === 'checked_out' || fieldBusy}
+                            busy={fieldBusy}
                             attendanceCheckedOut={!!fieldData?.check_out}
                             onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
                             onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
