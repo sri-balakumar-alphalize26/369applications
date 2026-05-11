@@ -78,6 +78,16 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const [showAddFuel, setShowAddFuel] = useState(false);
   useEffect(() => {
     const fetchCurrentLocation = async () => {
+      // Don't ping the device for GPS once the trip has been started — the
+      // page already has start_latitude/start_longitude and those should be
+      // preserved. Also covers ended/cancelled trips (read-only).
+      const td = route?.params?.tripData;
+      if (td && (td.start_trip || td.end_trip || td.trip_cancel)) {
+        console.log('[VehicleTrackingForm] skipping GPS fetch on mount — trip already started/ended/cancelled', {
+          start_trip: td.start_trip, end_trip: td.end_trip, trip_cancel: td.trip_cancel,
+        });
+        return;
+      }
       try {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
@@ -127,6 +137,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           return;
         }
 
+        console.log('[setCurrentCoords]', { lat: coords.latitude, lng: coords.longitude, caller: 'fetchCurrentLocation' });
         setCurrentCoords({ latitude: coords.latitude, longitude: coords.longitude });
 
         // Reverse geocode (non-blocking — fire and update when ready).
@@ -145,6 +156,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
           .then(fresh => {
             if (fresh?.coords) {
+              console.log('[setCurrentCoords]', { lat: fresh.coords.latitude, lng: fresh.coords.longitude, caller: 'background-refresh' });
               setCurrentCoords({ latitude: fresh.coords.latitude, longitude: fresh.coords.longitude });
             }
           })
@@ -155,7 +167,31 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     };
     fetchCurrentLocation();
   }, []);
-  
+
+  // Hydrate the read-only "Started Location" field + currentCoords from the
+  // trip's stored start_latitude/start_longitude. Without this, in-progress /
+  // ended / cancelled trips (where the mount-time GPS fetch is skipped) keep
+  // the field stuck on the "Fetching location..." placeholder.
+  useEffect(() => {
+    const td = route?.params?.tripData;
+    if (!td) return;
+    const lat = Number(td.start_latitude);
+    const lng = Number(td.start_longitude);
+    if (Number.isNaN(lat) || Number.isNaN(lng) || (!lat && !lng)) return;
+    console.log('[VehicleTrackingForm] hydrating started location from tripData:', { lat, lng });
+    setCurrentCoords({ latitude: lat, longitude: lng });
+    Location.reverseGeocodeAsync({ latitude: lat, longitude: lng })
+      .then(reverseGeocode => {
+        if (reverseGeocode && reverseGeocode.length > 0) {
+          const a = reverseGeocode[0];
+          const name = [a.name, a.street, a.city, a.region].filter(Boolean).join(', ');
+          setCurrentLocationName(name);
+          console.log('[VehicleTrackingForm] hydrated started location name:', name);
+        }
+      })
+      .catch(err => console.warn('[VehicleTrackingForm] reverse-geocode for stored coords failed:', err?.message));
+  }, [route?.params?.tripData]);
+
   // Get existing trip data from route params (when editing/continuing a trip)
   const existingTripData = route?.params?.tripData;
   const isEditMode = !!existingTripData;
@@ -167,6 +203,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // Skip prewarm whenever the trip is past the draft state.
+      const td = route?.params?.tripData;
+      if (td && (td.start_trip || td.end_trip || td.trip_cancel)) {
+        console.log('[VehicleTrackingForm] skipping GPS prewarm — trip already started/ended/cancelled');
+        return;
+      }
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (cancelled || status !== 'granted') return;
@@ -191,33 +233,37 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   
   const [formData, setFormData] = useState({
     date: existingTripData?.date ? new Date(existingTripData.date) : new Date(),
-    vehicle: (initialTripState === 'in_progress' && existingTripData?.vehicle_name) ? existingTripData.vehicle_name : (existingTripData?.vehicle || ''),
-    driver: (initialTripState === 'in_progress' && existingTripData?.driver_name) ? existingTripData.driver_name : (existingTripData?.driver || ''),
-    plateNumber: (initialTripState === 'in_progress' && existingTripData?.number_plate) ? existingTripData.number_plate : (existingTripData?.plateNumber || ''),
-    // Autofill Pretrip Ltr (from pre_trip_litres) for in-progress trip
+    // Prefer the API's snake_case fields whenever they exist — they're what
+    // fetchVehicleTrackingTripsOdoo returns for both draft and in_progress
+    // trips. The previous code only consulted them when initialTripState
+    // was 'in_progress', so a draft re-opened after Save showed empty.
+    vehicle: existingTripData?.vehicle_name || existingTripData?.vehicle || '',
+    driver: existingTripData?.driver_name || existingTripData?.driver || '',
+    plateNumber: existingTripData?.number_plate || existingTripData?.plateNumber || '',
     tankCapacity:
-      (initialTripState === 'in_progress' && typeof existingTripData?.pre_trip_litres !== 'undefined')
+      typeof existingTripData?.pre_trip_litres !== 'undefined' && existingTripData?.pre_trip_litres !== ''
         ? String(existingTripData.pre_trip_litres ?? '')
         : '',
-    // Autofill start_latitude and start_longitude for in-progress trip
     start_latitude:
-      (initialTripState === 'in_progress' && typeof existingTripData?.start_latitude !== 'undefined')
+      typeof existingTripData?.start_latitude !== 'undefined' && existingTripData?.start_latitude !== ''
         ? String(existingTripData.start_latitude ?? '')
         : '',
     start_longitude:
-      (initialTripState === 'in_progress' && typeof existingTripData?.start_longitude !== 'undefined')
+      typeof existingTripData?.start_longitude !== 'undefined' && existingTripData?.start_longitude !== ''
         ? String(existingTripData.start_longitude ?? '')
         : '',
-    source: (initialTripState === 'in_progress' && existingTripData?.source_name) ? existingTripData.source_name : (existingTripData?.source || ''),
-    destination: (initialTripState === 'in_progress' && existingTripData?.destination_name) ? existingTripData.destination_name : (existingTripData?.destination || ''),
+    source: existingTripData?.source_name || existingTripData?.source || '',
+    destination: existingTripData?.destination_name || existingTripData?.destination || '',
     source_id: existingTripData?.source_id || '',
     destination_id: existingTripData?.destination_id || '',
-    estimatedTime: (initialTripState === 'in_progress' && typeof existingTripData?.estimated_time !== 'undefined') ? String(existingTripData.estimated_time) : (existingTripData?.estimatedTime || ''),
+    estimatedTime:
+      typeof existingTripData?.estimated_time !== 'undefined' && existingTripData?.estimated_time !== ''
+        ? String(existingTripData.estimated_time)
+        : (existingTripData?.estimatedTime || ''),
     startTrip: existingTripData?.start_trip || false,
-    // Autofill Start KM for in-progress trip
     startKM:
-      (initialTripState === 'in_progress' && (typeof existingTripData?.start_km !== 'undefined' || typeof existingTripData?.startKM !== 'undefined'))
-        ? String(existingTripData.start_km ?? existingTripData.startKM ?? '')
+      (typeof existingTripData?.start_km !== 'undefined' && existingTripData?.start_km !== 0 && existingTripData?.start_km !== '')
+        ? String(existingTripData.start_km)
         : (existingTripData?.startKM || ''),
     endTrip: existingTripData?.end_trip || false,
     // BUGFIX: Odoo returns snake_case (end_km). Read snake first, fall back to camel.
@@ -920,7 +966,17 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   };
 
   const verifySource = async () => {
+    console.log('[verifySource] called — trace:', new Error().stack?.split('\n').slice(1, 5).join(' | '));
+    // Defensive: only verify in the draft (not_started) state — once the
+    // trip is started/ended/cancelled there's nothing to re-verify.
+    if (initialTripState !== 'not_started') {
+      console.log('[verifySource] skipped — trip already started/ended/cancelled, state=', initialTripState);
+      setSourceMatched(null);
+      setSourceDistance(null);
+      return { matched: false, distance: null };
+    }
     if (!sourceCoords) {
+      console.log('[verifySource] no sourceCoords — bailing');
       showToastMessage('Source has no coordinates to verify', 'warning');
       setSourceMatched(false);
       setSourceDistance(null);
@@ -929,10 +985,34 @@ const VehicleTrackingForm = ({ navigation, route }) => {
 
     try {
       const current = await getCurrentLocation('Verify Source');
+      // Seed page state with the verified GPS so Start Trip can save it as-is
+      // (instead of fetching a fresh pair and overwriting the user's intent).
+      console.log('[verifySource] storing GPS into currentCoords + formData:', current);
+      setCurrentCoords({ latitude: current.latitude, longitude: current.longitude });
+      setFormData(prev => ({
+        ...prev,
+        startLatitude: current.latitude,
+        startLongitude: current.longitude,
+        start_latitude: String(current.latitude),
+        start_longitude: String(current.longitude),
+      }));
+      // Resolve the address for the verified coords so the "Started Location"
+      // field reflects the same GPS that will be saved on Start Trip.
+      Location.reverseGeocodeAsync({ latitude: current.latitude, longitude: current.longitude })
+        .then(rev => {
+          if (rev && rev.length > 0) {
+            const a = rev[0];
+            const name = [a.name, a.street, a.city, a.region].filter(Boolean).join(', ');
+            setCurrentLocationName(name);
+            console.log('[verifySource] resolved address:', name);
+          }
+        })
+        .catch(() => { /* ignore — coords still saved without name */ });
       const dist = getDistanceMeters(current.latitude, current.longitude, sourceCoords.latitude, sourceCoords.longitude);
       setSourceDistance(dist);
       const matched = dist <= SOURCE_MATCH_THRESHOLD;
       setSourceMatched(matched);
+      console.log('[verifySource] result:', { matched, distance: dist });
       if (matched) {
         showToastMessage(`Source verified (${Math.round(dist)} m)`, 'success');
       } else {
@@ -940,7 +1020,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       }
       return { matched, distance: dist };
     } catch (error) {
-      console.error('Error verifying source:', error);
+      console.error('[verifySource] FAILED:', error?.message);
       showToastMessage('Failed to verify source location', 'error');
       setSourceMatched(false);
       return { matched: false, distance: null };
@@ -975,49 +1055,62 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   };
 
   const handleStartTripToggle = async (value) => {
-    // If trying to start the trip, verify source first
-    if (value) {
-      // Log all filled form data before verifying source
-      console.log('Start Trip clicked. Current filled form data:', formData);
-      const { matched, distance } = await verifySource();
-      if (matched) {
-        // Capture current GPS location and set startLatitude/startLongitude immediately
-        try {
-          const location = await getCurrentLocation('Start Trip Immediate');
-          setFormData(prev => {
-            const updated = {
-              ...prev,
-              startTrip: true,
-              startLatitude: location.latitude,
-              startLongitude: location.longitude,
-            };
-            // Also store as string for Odoo compatibility
-            updated.start_latitude = String(location.latitude);
-            updated.start_longitude = String(location.longitude);
-            console.log('Start Trip updated formData:', updated);
-            return updated;
-          });
-          showToastMessage(`Start location captured: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`, 'success');
-        } catch (error) {
-          console.error('Failed to capture GPS:', error);
-          showToastMessage('GPS capture failed, using default location', 'warning');
-          setFormData(prev => {
-            const updated = {
-              ...prev,
-              startTrip: true,
-              startLatitude: 25.2048,
-              startLongitude: 55.2708,
-            };
-            console.log('Start Trip updated formData (fallback):', updated);
-            return updated;
-          });
-        }
-      } else {
-        // Source not matched - do not allow starting the trip
-        showToastMessage(`Cannot start trip: You must be at the source location. Current distance: ${distance ? Math.round(distance) + ' m' : 'unknown'}`, 'error');
-      }
-    } else {
+    console.log('[StartTripToggle] called with value=', value, {
+      'formData.start_latitude': formData.start_latitude,
+      'formData.start_longitude': formData.start_longitude,
+      'formData.startLatitude': formData.startLatitude,
+      'formData.startLongitude': formData.startLongitude,
+      sourceMatched,
+      sourceDistance,
+    });
+    if (!value) {
+      console.log('[StartTripToggle] toggling OFF');
       handleInputChange('startTrip', false);
+      return;
+    }
+    if (sourceMatched === false) {
+      console.log('[StartTripToggle] BLOCKED — sourceMatched=false, distance=', sourceDistance);
+      showToastMessage(`Cannot start trip: source mismatch (${sourceDistance ? Math.round(sourceDistance) + ' m' : 'unknown'} from source).`, 'error');
+      return;
+    }
+    const haveStartCoords =
+      !!(formData.start_latitude && formData.start_longitude) ||
+      !!(formData.startLatitude && formData.startLongitude);
+    console.log('[StartTripToggle] haveStartCoords=', haveStartCoords, ' currentCoords=', currentCoords);
+    if (haveStartCoords) {
+      console.log('[StartTripToggle] PATH=use-page-coords — no re-fetch, no re-verify');
+      setFormData(prev => ({ ...prev, startTrip: true }));
+      return;
+    }
+    if (currentCoords && currentCoords.latitude != null && currentCoords.longitude != null) {
+      console.log('[StartTripToggle] PATH=use-currentCoords — promoting to formData:', currentCoords);
+      setFormData(prev => ({
+        ...prev,
+        startTrip: true,
+        startLatitude: currentCoords.latitude,
+        startLongitude: currentCoords.longitude,
+        start_latitude: String(currentCoords.latitude),
+        start_longitude: String(currentCoords.longitude),
+      }));
+      return;
+    }
+    console.log('[StartTripToggle] PATH=defensive-fetch — no page GPS available; capturing one fix');
+    try {
+      const location = await getCurrentLocation('Start Trip Immediate');
+      console.log('[StartTripToggle] defensive fetch result:', location);
+      setFormData(prev => ({
+        ...prev,
+        startTrip: true,
+        startLatitude: location.latitude,
+        startLongitude: location.longitude,
+        start_latitude: String(location.latitude),
+        start_longitude: String(location.longitude),
+      }));
+      showToastMessage(`Start location captured: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`, 'success');
+    } catch (error) {
+      console.error('[StartTripToggle] defensive fetch FAILED:', error?.message);
+      showToastMessage('GPS capture failed; starting without coords', 'warning');
+      setFormData(prev => ({ ...prev, startTrip: true }));
     }
   };
 
@@ -1237,8 +1330,15 @@ const VehicleTrackingForm = ({ navigation, route }) => {
 
   const handleSubmit = async () => {
     const newErrors = validateForm();
+    console.log('[handleSubmit] activeAction=', activeAction, ' isEditMode=', isEditMode,
+      ' existingTripData.id=', existingTripData?.id,
+      ' formData snapshot:', {
+        vehicle: formData.vehicle, source: formData.source, destination: formData.destination,
+        startKM: formData.startKM, endKM: formData.endKM, remarks: formData.remarks,
+        startTrip: formData.startTrip, endTrip: formData.endTrip, isTripStarted: formData.isTripStarted,
+      });
     if (newErrors && Object.keys(newErrors).length > 0) {
-      console.log('[VehicleTrackingForm] Validation errors:', newErrors);
+      console.warn('[handleSubmit] BLOCKED by validation:', newErrors);
       console.log('[VehicleTrackingForm] Form data at submit:', formData);
       // Show the first specific error so users know which field is missing
       const firstErr = Object.values(newErrors)[0];
@@ -1391,20 +1491,59 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         }));
         console.log('[VehicleTrackingForm] Start Trip: auto-setting fuel_checking=true for Odoo create');
 
-        try {
-          showToastMessage('Capturing GPS location...', 'info');
-          const location = await getCurrentLocation('Start Trip');
+        // Use whatever start_latitude/start_longitude is already on the page —
+        // set by the user manually, by Verify Source, or by the Start Trip
+        // toggle fallback. Only fall back to a fresh fetch when the form has
+        // no coords at all.
+        const sLat = Number(formData.start_latitude || formData.startLatitude || NaN);
+        const sLng = Number(formData.start_longitude || formData.startLongitude || NaN);
+        const hasFormCoords = !Number.isNaN(sLat) && !Number.isNaN(sLng);
+        console.log('[handleSubmit][start-trip] formData GPS:', {
+          start_latitude: formData.start_latitude, start_longitude: formData.start_longitude,
+          startLatitude: formData.startLatitude, startLongitude: formData.startLongitude,
+          parsed_sLat: sLat, parsed_sLng: sLng,
+          sourceMatched, sourceDistance,
+          currentCoords,
+        });
+        if (hasFormCoords) {
+          console.log('[handleSubmit][start-trip] PATH=use-page-coords — submitData.start_lat/lng:', sLat, sLng);
           submitData = {
             ...submitData,
             start_trip: true,
-            start_latitude: location.latitude,
-            start_longitude: location.longitude,
+            start_latitude: sLat,
+            start_longitude: sLng,
           };
-          showToastMessage(`GPS captured: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`, 'success');
-        } catch (error) {
-          console.error('Failed to capture GPS:', error);
-          showToastMessage('GPS capture failed, using default location', 'warning');
+        } else if (currentCoords && currentCoords.latitude != null && currentCoords.longitude != null) {
+          console.log('[handleSubmit][start-trip] PATH=use-currentCoords — fallback to verify/mount GPS:', currentCoords);
+          submitData = {
+            ...submitData,
+            start_trip: true,
+            start_latitude: currentCoords.latitude,
+            start_longitude: currentCoords.longitude,
+          };
+        } else {
+          console.log('[handleSubmit][start-trip] PATH=defensive-fetch — no page GPS available');
+          try {
+            showToastMessage('Capturing GPS location...', 'info');
+            const location = await getCurrentLocation('Start Trip');
+            console.log('[handleSubmit][start-trip] defensive fetch result:', location);
+            submitData = {
+              ...submitData,
+              start_trip: true,
+              start_latitude: location.latitude,
+              start_longitude: location.longitude,
+            };
+            showToastMessage(`GPS captured: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`, 'success');
+          } catch (error) {
+            console.error('[handleSubmit][start-trip] defensive fetch FAILED:', error?.message);
+            showToastMessage('GPS capture failed, using default location', 'warning');
+            submitData = { ...submitData, start_trip: true };
+          }
         }
+        console.log('[handleSubmit][start-trip] final submitData GPS:', {
+          start_latitude: submitData.start_latitude,
+          start_longitude: submitData.start_longitude,
+        });
       }
 
       // If End Trip is checked, capture end GPS, auto-stamp end time, and
@@ -1490,11 +1629,20 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       }
 
       // Send to Odoo using JSON-RPC
+      console.log('[handleSubmit] DISPATCHING createVehicleTrackingTripOdoo with payload keys=', Object.keys(submitData),
+        ' has-id=', 'id' in submitData,
+        ' vehicle_id=', submitData.vehicle_id,
+        ' source_id=', submitData.source_id,
+        ' destination_id=', submitData.destination_id,
+        ' start_trip=', submitData.start_trip,
+        ' end_trip=', submitData.end_trip);
       let response;
       try {
         response = await createVehicleTrackingTripOdoo({ payload: submitData });
+        console.log('[handleSubmit] RPC OK — tripId=', response?.tripId, ' activeAction=', activeAction);
         console.log('Odoo createVehicleTrackingTripOdoo response:', response);
       } catch (odooErr) {
+        console.error('[handleSubmit] RPC FAILED — staying on form:', odooErr?.message);
         console.error('Odoo trip creation failed:', odooErr);
         // Inspect error and if it mentions vehicle.tracking or unknown comodels, fallback to REST backend
         const errPayload = odooErr && (odooErr.data || odooErr.response || odooErr);
@@ -1557,6 +1705,17 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         showToastMessage('Fuel entry added', 'success');
       }
 
+      // Belt-and-suspenders refresh: pass a refreshKey so the parent's
+      // useEffect re-fires the trip list refetch immediately on focus, in
+      // addition to the existing useFocusEffect.
+      const goBackWithRefresh = () => {
+        console.log('[handleSubmit] navigating back — activeAction=', activeAction, ' final tripId=', response?.tripId);
+        navigation.navigate({
+          name: 'VehicleTrackingScreen',
+          params: { refreshKey: Date.now(), justSavedTripId: response?.tripId },
+          merge: true,
+        });
+      };
       if (formData.startTrip && !formData.isTripStarted) {
         setFormData(prev => ({
           ...prev,
@@ -1566,7 +1725,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           tripStatus: 'in_progress',
         }));
         showToastMessage('Trip started successfully!', 'success');
-        setTimeout(() => navigation.goBack(), 1500);
+        setTimeout(goBackWithRefresh, 1500);
       } else if (formData.endTrip && formData.isTripStarted) {
         // BUGFIX: previous version was missing ...prev, wiping the whole form.
         setFormData(prev => ({
@@ -1579,13 +1738,13 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         }));
         console.log('[VehicleTrackingForm] End Trip success — tripStatus → completed');
         showToastMessage('Trip completed successfully!', 'success');
-        setTimeout(() => navigation.goBack(), 2000);
+        setTimeout(goBackWithRefresh, 2000);
       } else {
         showToastMessage(
           activeAction === 'save' ? 'Saved as draft' : 'Vehicle tracking entry added successfully',
           'success'
         );
-        navigation.goBack();
+        goBackWithRefresh();
       }
     } catch (error) {
       console.error('Error submitting form:', error);
@@ -1974,19 +2133,21 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             style={getFieldStyle('source')}
           />
           {/* Source Match Indicator */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 8 }}>
-            <Text style={{ fontSize: 13, fontFamily: FONT_FAMILY.urbanistMedium, marginRight: 8 }}>Source Match:</Text>
-            {sourceMatched === null ? (
-              <Text style={{ color: COLORS.gray }}>Not verified</Text>
-            ) : sourceMatched === true ? (
-              <Text style={{ color: COLORS.green }}>✓ Verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
-            ) : (
-              <Text style={{ color: '#B00020' }}>✗ Not verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
-            )}
-            <Pressable onPress={verifySource} style={{ marginLeft: 12 }}>
-              <Text style={{ color: COLORS.primaryThemeColor }}>Verify</Text>
-            </Pressable>
-          </View>
+          {initialTripState === 'not_started' && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 8 }}>
+              <Text style={{ fontSize: 13, fontFamily: FONT_FAMILY.urbanistMedium, marginRight: 8 }}>Source Match:</Text>
+              {sourceMatched === null ? (
+                <Text style={{ color: COLORS.gray }}>Not verified</Text>
+              ) : sourceMatched === true ? (
+                <Text style={{ color: COLORS.green }}>✓ Verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
+              ) : (
+                <Text style={{ color: '#B00020' }}>✗ Not verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
+              )}
+              <Pressable onPress={verifySource} style={{ marginLeft: 12 }}>
+                <Text style={{ color: COLORS.primaryThemeColor }}>Verify</Text>
+              </Pressable>
+            </View>
+          )}
 
           {/* Destination */}
           <FormInput

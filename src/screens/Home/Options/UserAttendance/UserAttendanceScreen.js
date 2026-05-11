@@ -3387,6 +3387,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                             line={line}
                             index={idx}
                             busy={fieldStatus === 'checked_out' || fieldBusy}
+                            attendanceCheckedOut={!!fieldData?.check_out}
                             onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
                             onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
                             onDelete={() => handleFieldDeleteLine(line)}

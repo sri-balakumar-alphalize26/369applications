@@ -487,6 +487,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
                     line={line}
                     index={idx}
                     busy={busy}
+                    attendanceCheckedOut={!!attendance?.check_out}
                     onOpenTrip={() => handleOpenTrip(line.trip_id)}
                     onViewVisits={() => handleViewVisits(line.visit_ids)}
                     onDelete={() => handleDeleteLine(line)}
@@ -494,15 +495,17 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
                 ))
               )}
 
-              <TouchableOpacity
-                style={[styles.addBtn, busy && { opacity: 0.6 }]}
-                disabled={busy}
-                activeOpacity={0.85}
-                onPress={openAddTrip}
-              >
-                <MaterialIcons name="add" size={18} color="#fff" />
-                <Text style={styles.addBtnText}>Add Additional Trip</Text>
-              </TouchableOpacity>
+              {!attendance?.check_out && (
+                <TouchableOpacity
+                  style={[styles.addBtn, busy && { opacity: 0.6 }]}
+                  disabled={busy}
+                  activeOpacity={0.85}
+                  onPress={openAddTrip}
+                >
+                  <MaterialIcons name="add" size={18} color="#fff" />
+                  <Text style={styles.addBtnText}>Add Additional Trip</Text>
+                </TouchableOpacity>
+              )}
 
               {/* Section: Trip Totals */}
               <TripTotalsSection attendance={attendance} />

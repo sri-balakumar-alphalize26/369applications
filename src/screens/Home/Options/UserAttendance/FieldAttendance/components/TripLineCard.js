@@ -24,8 +24,10 @@ const TripLineCard = ({
   onViewVisits,
   onDelete,
   busy,
+  attendanceCheckedOut,
 }) => {
   const ended = !!line?.trip_ended;
+  const canDelete = !ended && !attendanceCheckedOut;
   const visitCount = Array.isArray(line?.visit_ids) ? line.visit_ids.length : 0;
 
   return (
@@ -103,15 +105,17 @@ const TripLineCard = ({
             <Text style={styles.btnSecondaryText}>Visits ({visitCount})</Text>
           </TouchableOpacity>
         ) : null}
-        <TouchableOpacity
-          style={[styles.btnDanger, busy && { opacity: 0.6 }]}
-          disabled={busy}
-          activeOpacity={0.85}
-          onPress={onDelete}
-        >
-          <MaterialIcons name="delete-outline" size={13} color="#E53935" />
-          <Text style={styles.btnDangerText}>Delete</Text>
-        </TouchableOpacity>
+        {canDelete && (
+          <TouchableOpacity
+            style={[styles.btnDanger, busy && { opacity: 0.6 }]}
+            disabled={busy}
+            activeOpacity={0.85}
+            onPress={onDelete}
+          >
+            <MaterialIcons name="delete-outline" size={13} color="#E53935" />
+            <Text style={styles.btnDangerText}>Delete</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

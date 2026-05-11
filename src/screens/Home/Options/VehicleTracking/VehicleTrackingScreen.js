@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -126,7 +126,7 @@ const SectionHeader = ({ title, count, color }) => (
   </View>
 );
 
-const VehicleTrackingScreen = ({ navigation }) => {
+const VehicleTrackingScreen = ({ navigation, route }) => {
   const [selectedDate, setSelectedDate] = useState(todayString());
   const [vehicleEntries, setVehicleEntries] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -149,6 +149,16 @@ const VehicleTrackingScreen = ({ navigation }) => {
       fetchEntriesForDate(selectedDate || todayString());
     }, [selectedDate, fetchEntriesForDate])
   );
+
+  // Belt-and-suspenders refresh: VehicleTrackingForm pushes a `refreshKey`
+  // param via navigation.navigate after a successful save/update. This
+  // effect fires immediately on that change, complementing useFocusEffect.
+  useEffect(() => {
+    if (route?.params?.refreshKey) {
+      console.log('[VehicleTrackingScreen] refreshKey received — refetching trips for', selectedDate);
+      fetchEntriesForDate(selectedDate || todayString());
+    }
+  }, [route?.params?.refreshKey, selectedDate, fetchEntriesForDate]);
 
   const handleDateSelect = (day) => {
     setSelectedDate(day.dateString);
