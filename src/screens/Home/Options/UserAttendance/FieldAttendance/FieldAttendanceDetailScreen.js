@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { MaterialIcons } from '@expo/vector-icons';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
@@ -189,6 +190,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   // re-opens that sheet + its picker when the user comes back.
   const handleCreateNewTripFrom = useCallback((fromSheet) => {
     setAwaitingTripCreation(fromSheet);
+    setNewTripIdToHighlight(null);
     if (fromSheet === 'primary') setEditOpen(false);
     if (fromSheet === 'additional') setAddOpen(false);
     navigation.navigate('VehicleTrackingForm', {
@@ -204,7 +206,11 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   useEffect(() => {
     const rk = route?.params?.refreshKey;
     const fromSheet = route?.params?.fromSheet;
-    const newTripId = route?.params?.newTripId;
+    const newTripIdFromParams = route?.params?.newTripId;
+    // Channel is the reliable source for the new tripId; route.params is a
+    // backstop in case the producer also dispatched setParams.
+    const newTripIdFromChannel = newTripIdFromParams ? null : consumePendingNewTrip();
+    const newTripId = newTripIdFromParams ?? newTripIdFromChannel;
     if (!rk || !fromSheet) return;
     if (lastHandledRefreshKey.current === rk) return;
     lastHandledRefreshKey.current = rk;

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -15,6 +15,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
 
 const FIELD_COLOR = '#1976D2';
+const NEW_GREEN = '#2E7D32';
+const NEW_GREEN_BG = '#E8F5E9';
 const LIST_MAX_HEIGHT = Math.floor(Dimensions.get('window').height * 0.75);
 
 const fmtTime = (s) => {
@@ -27,6 +29,7 @@ const VisitPickerSheet = ({
   visits,
   loading,
   selectedId,
+  newVisitId,
   onSelect,
   onClose,
   onCreateNew,
@@ -34,6 +37,7 @@ const VisitPickerSheet = ({
   emptySubtitle = 'Log a customer visit first to attach it here.',
 }) => {
   const [search, setSearch] = useState('');
+  const flatListRef = useRef(null);
 
   useEffect(() => {
     if (!visible) setSearch('');
@@ -57,22 +61,44 @@ const VisitPickerSheet = ({
     return filtered;
   }, [visits, search]);
 
+  // Scroll the freshly-created visit into view once the rows are populated.
+  useEffect(() => {
+    if (!visible || newVisitId == null || !rows.length) return;
+    const idx = rows.findIndex((v) => Number(v.id) === Number(newVisitId));
+    if (idx < 0) return;
+    const t = setTimeout(() => {
+      try {
+        flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
+      } catch (e) { /* best-effort */ }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [visible, newVisitId, rows]);
+
   const renderItem = ({ item }) => {
     const isSelected = Number(item.id) === Number(selectedId);
+    const isNew = newVisitId != null && Number(item.id) === Number(newVisitId);
     const partnerLabel = Array.isArray(item.partner_id) ? item.partner_id[1] : (item.name || `Visit #${item.id}`);
     return (
       <TouchableOpacity
-        style={[styles.row, isSelected && styles.rowSelected]}
+        style={[styles.row, isSelected && styles.rowSelected, isNew && styles.rowNew]}
         activeOpacity={0.75}
         onPress={() => { onSelect && onSelect(item); }}
       >
-        <View style={styles.rowIcon}>
-          <MaterialIcons name="person" size={18} color={FIELD_COLOR} />
+        <View style={[styles.rowIcon, isNew && styles.rowIconNew]}>
+          <MaterialIcons name="person" size={18} color={isNew ? NEW_GREEN : FIELD_COLOR} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {partnerLabel}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <Text style={styles.rowTitle} numberOfLines={1}>
+              {partnerLabel}
+            </Text>
+            {isNew ? (
+              <View style={styles.newBadge}>
+                <MaterialIcons name="fiber-new" size={11} color="#fff" />
+                <Text style={styles.newBadgeText}>NEW</Text>
+              </View>
+            ) : null}
+          </View>
           <Text style={styles.rowSub} numberOfLines={1}>
             {item.name ? `${item.name} · ` : ''}
             {fmtTime(item.date_time) || '—'}
@@ -83,7 +109,9 @@ const VisitPickerSheet = ({
             </Text>
           ) : null}
         </View>
-        {isSelected ? (
+        {isNew ? (
+          <MaterialIcons name="auto-awesome" size={22} color={NEW_GREEN} />
+        ) : isSelected ? (
           <MaterialIcons name="check-circle" size={22} color={FIELD_COLOR} />
         ) : null}
       </TouchableOpacity>
@@ -150,6 +178,7 @@ const VisitPickerSheet = ({
             </View>
           ) : (
             <FlatList
+              ref={flatListRef}
               style={{ maxHeight: LIST_MAX_HEIGHT }}
               data={rows}
               keyExtractor={(item) => String(item.id)}
@@ -157,6 +186,7 @@ const VisitPickerSheet = ({
               contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
+              onScrollToIndexFailed={() => {}}
             />
           )}
         </View>
@@ -208,6 +238,13 @@ const styles = StyleSheet.create({
     }),
   },
   rowSelected: { borderColor: FIELD_COLOR, backgroundColor: '#E3F2FD' },
+  rowNew: { borderColor: NEW_GREEN, borderWidth: 1.5, backgroundColor: NEW_GREEN_BG },
+  rowIconNew: { backgroundColor: '#C8E6C9' },
+  newBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: NEW_GREEN, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4,
+  },
+  newBadgeText: { fontSize: 9, fontFamily: FONT_FAMILY.urbanistBold, color: '#fff', letterSpacing: 0.5 },
   createRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: '#F5F9FF', borderRadius: 10, padding: 10,

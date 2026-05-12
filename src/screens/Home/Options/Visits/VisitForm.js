@@ -5,6 +5,7 @@ import { NavigationHeader } from '@components/Header'
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers'
 import { TextInput as FormInput } from '@components/common/TextInput'
 import { formatDate } from '@utils/common/date'
+import { setPendingNewVisit } from '@utils/newVisitChannel'
 import { LoadingButton } from '@components/common/Button'
 import CustomListModal from '@components/Modal/CustomListModal'
 import * as ImagePicker from 'expo-image-picker'
@@ -704,6 +705,10 @@ const VisitForm = ({ navigation, route }) => {
         // back so the focus-return effect can re-open the visit picker
         // with the new draft visit available.
         if (route?.params?.returnTo === 'fieldAttendance') {
+          // Cross-screen channel: the consuming screen (UserAttendanceScreen
+          // or FieldAttendanceDetailScreen) reads this on focus to highlight
+          // the just-created visit with a green NEW badge.
+          setPendingNewVisit(newId);
           navigation.goBack();
         } else {
           // Pass a refresh signal so the list screen forces a fresh fetch with

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CommonActions } from '@react-navigation/native';
+import { setPendingNewTrip } from '@utils/newTripChannel';
 import { Camera } from 'expo-camera';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1717,6 +1718,10 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         // user actually came from refocuses with its preserved state and the
         // freshly-merged params.
         if (route?.params?.returnTo === 'fieldAttendance') {
+          // Primary path: write the new tripId to a module-level channel that
+          // the consuming screen reads on focus. Reliable regardless of how
+          // React Navigation handles param propagation across screens.
+          setPendingNewTrip(response?.tripId);
           const navState = navigation.getState();
           const currentIdx = navState.routes.findIndex(r => r.key === route.key);
           const previousRoute = currentIdx > 0 ? navState.routes[currentIdx - 1] : null;

@@ -31,6 +31,7 @@ const AddTripLineSheet = ({
   autoOpenPicker,
   onAutoOpenConsumed,
   newTripIdToHighlight,
+  newVisitIdToHighlight,
   onCreateNewVisit,
   autoOpenVisitPicker,
   onAutoOpenVisitPickerConsumed,
@@ -84,12 +85,18 @@ const AddTripLineSheet = ({
   }, [visible, autoOpenPicker, newTripIdToHighlight]);
 
   // One-shot auto-open of the visit picker — fires on return from
-  // creating a brand-new customer visit.
+  // creating a brand-new customer visit. A fresh newVisitIdToHighlight
+  // re-arms the one-shot so a second sequential create also pops the picker.
   const autoVisitFiredRef = useRef(false);
+  const lastNewVisitIdRef = useRef(null);
   useEffect(() => {
     if (!visible) {
       autoVisitFiredRef.current = false;
       return;
+    }
+    if (newVisitIdToHighlight != null && lastNewVisitIdRef.current !== newVisitIdToHighlight) {
+      autoVisitFiredRef.current = false;
+      lastNewVisitIdRef.current = newVisitIdToHighlight;
     }
     if (autoOpenVisitPicker && !autoVisitFiredRef.current) {
       autoVisitFiredRef.current = true;
@@ -97,7 +104,7 @@ const AddTripLineSheet = ({
       if (onAutoOpenVisitPickerConsumed) onAutoOpenVisitPickerConsumed();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, autoOpenVisitPicker]);
+  }, [visible, autoOpenVisitPicker, newVisitIdToHighlight]);
 
   const openTripPicker = async () => {
     setTripsLoading(true);
@@ -273,6 +280,7 @@ const AddTripLineSheet = ({
         visits={visits}
         loading={visitsLoading}
         selectedId={visitIds[0] || null}
+        newVisitId={newVisitIdToHighlight}
         onSelect={onVisitSelected}
         onClose={() => setVisitPickerOpen(false)}
         title="Add Visit"

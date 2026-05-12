@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
+import { consumePendingNewTrip } from '@utils/newTripChannel';
+import { consumePendingNewVisit } from '@utils/newVisitChannel';
 import { StyledAlertModal } from '@components/Modal';
 import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from '@components/containers';
@@ -208,6 +210,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [autoOpenPickerEdit, setAutoOpenPickerEdit] = useState(false);
   const [autoOpenPickerAdd, setAutoOpenPickerAdd] = useState(false);
   const [fieldNewTripIdToHighlight, setFieldNewTripIdToHighlight] = useState(null);
+  const [fieldNewVisitIdToHighlight, setFieldNewVisitIdToHighlight] = useState(null);
   const [pendingFieldVisitReopen, setPendingFieldVisitReopen] = useState(null);   // 'edit' | 'add' | null
   const [autoOpenVisitPickerEdit, setAutoOpenVisitPickerEdit] = useState(false);
   const [autoOpenVisitPickerAdd, setAutoOpenVisitPickerAdd] = useState(false);
@@ -771,6 +774,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       console.log('[FieldAttendance] save primary — write OK');
       showToastMessage('Primary trip saved');
       setEditPrimaryOpen(false);
+      setFieldNewTripIdToHighlight(null);
+      setFieldNewVisitIdToHighlight(null);
       // Optimistic patch so the card updates instantly. Survives the
       // fieldStatus/fieldData useEffect that can momentarily clear fieldDetail
       // while the follow-up refreshes are in flight.
@@ -803,6 +808,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       await createFieldTripLineOdoo(fieldData.attendance_id, trip_id, visit_ids);
       showToastMessage('Trip added');
       setAddLineOpen(false);
+      setFieldNewTripIdToHighlight(null);
+      setFieldNewVisitIdToHighlight(null);
       await refreshFieldDetail(fieldData.attendance_id);
     } catch (e) {
       showToastMessage(e?.message || 'Failed to add trip');
@@ -945,6 +952,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const handleCreateNewTrip = useCallback((context) => {
     setEditPrimaryOpen(false);
     setAddLineOpen(false);
+    setFieldNewTripIdToHighlight(null);
     setPendingFieldPickerReopen(context || 'edit');
     navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance' });
   }, [navigation]);
@@ -953,6 +961,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const handleCreateNewVisit = useCallback((context) => {
     setEditPrimaryOpen(false);
     setAddLineOpen(false);
+    setFieldNewVisitIdToHighlight(null);
     setPendingFieldVisitReopen(context || 'edit');
     navigation.navigate('VisitForm', { returnTo: 'fieldAttendance' });
   }, [navigation]);
@@ -971,9 +980,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       // previous route's params before goBack).
       if (pendingFieldPickerReopen) {
         const ctx = pendingFieldPickerReopen;
-        const newTripId = route?.params?.newTripId ? Number(route.params.newTripId) : null;
+        const fromChannel = consumePendingNewTrip();
+        const fromParams = route?.params?.newTripId ? Number(route.params.newTripId) : null;
+        const newTripId = fromChannel ?? fromParams;
         setPendingFieldPickerReopen(null);
-        if (newTripId) setFieldNewTripIdToHighlight(newTripId);
+        setFieldNewTripIdToHighlight(newTripId);
         setTimeout(() => {
           if (ctx === 'edit') {
             setAutoOpenPickerEdit(true);
@@ -1001,10 +1012,13 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       }
 
       // Case C: came back from "Create New Visit" flow — restore the
-      // parent sheet AND auto-open the visit picker so the new visit shows.
+      // parent sheet AND auto-open the visit picker, highlighting the
+      // freshly-created visit via the newVisitChannel.
       if (pendingFieldVisitReopen) {
         const ctx = pendingFieldVisitReopen;
+        const newVisitId = consumePendingNewVisit();
         setPendingFieldVisitReopen(null);
+        setFieldNewVisitIdToHighlight(newVisitId);
         setTimeout(() => {
           if (ctx === 'edit') {
             setAutoOpenVisitPickerEdit(true);
@@ -3922,12 +3936,13 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         loadDraftVisits={fieldLoadDraftVisitsPrimary}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSavePrimary}
-        onClose={() => { setEditPrimaryOpen(false); setFieldNewTripIdToHighlight(null); }}
+        onClose={() => { setEditPrimaryOpen(false); setFieldNewTripIdToHighlight(null); setFieldNewVisitIdToHighlight(null); }}
         saving={editPrimarySaving}
         onCreateNewTrip={() => handleCreateNewTrip('edit')}
         autoOpenPicker={autoOpenPickerEdit}
         onAutoOpenConsumed={() => setAutoOpenPickerEdit(false)}
         newTripIdToHighlight={fieldNewTripIdToHighlight}
+        newVisitIdToHighlight={fieldNewVisitIdToHighlight}
         onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
         onViewVisits={(visitIds) => handleFieldViewVisits(visitIds)}
         onCreateNewVisit={() => handleCreateNewVisit('edit')}
@@ -3941,12 +3956,13 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         loadDraftVisits={fieldLoadDraftVisitsAdditional}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSaveTripLine}
-        onClose={() => { setAddLineOpen(false); setFieldNewTripIdToHighlight(null); }}
+        onClose={() => { setAddLineOpen(false); setFieldNewTripIdToHighlight(null); setFieldNewVisitIdToHighlight(null); }}
         saving={addLineSaving}
         onCreateNewTrip={() => handleCreateNewTrip('add')}
         autoOpenPicker={autoOpenPickerAdd}
         onAutoOpenConsumed={() => setAutoOpenPickerAdd(false)}
         newTripIdToHighlight={fieldNewTripIdToHighlight}
+        newVisitIdToHighlight={fieldNewVisitIdToHighlight}
         onCreateNewVisit={() => handleCreateNewVisit('add')}
         autoOpenVisitPicker={autoOpenVisitPickerAdd}
         onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerAdd(false)}
