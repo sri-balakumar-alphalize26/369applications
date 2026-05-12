@@ -207,6 +207,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [pendingFieldPickerReopen, setPendingFieldPickerReopen] = useState(null);  // 'edit' | 'add' | null
   const [autoOpenPickerEdit, setAutoOpenPickerEdit] = useState(false);
   const [autoOpenPickerAdd, setAutoOpenPickerAdd] = useState(false);
+  const [fieldNewTripIdToHighlight, setFieldNewTripIdToHighlight] = useState(null);
   const [pendingFieldVisitReopen, setPendingFieldVisitReopen] = useState(null);   // 'edit' | 'add' | null
   const [autoOpenVisitPickerEdit, setAutoOpenVisitPickerEdit] = useState(false);
   const [autoOpenVisitPickerAdd, setAutoOpenVisitPickerAdd] = useState(false);
@@ -965,10 +966,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       if (attendanceMode !== 'field' || !isVerified || !verifiedEmployee?.id || offline) return;
       refreshFieldAttendance({ silent: true });
 
-      // Case A: came back from "Create New Trip" flow — restore the picker.
+      // Case A: came back from "Create New Trip" flow — restore the picker
+      // and highlight the just-created trip (VTF passes newTripId via the
+      // previous route's params before goBack).
       if (pendingFieldPickerReopen) {
         const ctx = pendingFieldPickerReopen;
+        const newTripId = route?.params?.newTripId ? Number(route.params.newTripId) : null;
         setPendingFieldPickerReopen(null);
+        if (newTripId) setFieldNewTripIdToHighlight(newTripId);
         setTimeout(() => {
           if (ctx === 'edit') {
             setAutoOpenPickerEdit(true);
@@ -978,6 +983,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             setAddLineOpen(true);
           }
         }, 350);
+        if (route?.params?.newTripId || route?.params?.refreshKey) {
+          navigation.setParams({ newTripId: undefined, refreshKey: undefined, fromSheet: undefined });
+        }
       }
 
       // Case B: came back from "Open in Vehicle Tracking" — restore the
@@ -3914,11 +3922,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         loadDraftVisits={fieldLoadDraftVisitsPrimary}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSavePrimary}
-        onClose={() => setEditPrimaryOpen(false)}
+        onClose={() => { setEditPrimaryOpen(false); setFieldNewTripIdToHighlight(null); }}
         saving={editPrimarySaving}
         onCreateNewTrip={() => handleCreateNewTrip('edit')}
         autoOpenPicker={autoOpenPickerEdit}
         onAutoOpenConsumed={() => setAutoOpenPickerEdit(false)}
+        newTripIdToHighlight={fieldNewTripIdToHighlight}
         onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
         onViewVisits={(visitIds) => handleFieldViewVisits(visitIds)}
         onCreateNewVisit={() => handleCreateNewVisit('edit')}
@@ -3932,11 +3941,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         loadDraftVisits={fieldLoadDraftVisitsAdditional}
         loadVisitsByIds={fieldLoadVisitsByIds}
         onSave={handleFieldSaveTripLine}
-        onClose={() => setAddLineOpen(false)}
+        onClose={() => { setAddLineOpen(false); setFieldNewTripIdToHighlight(null); }}
         saving={addLineSaving}
         onCreateNewTrip={() => handleCreateNewTrip('add')}
         autoOpenPicker={autoOpenPickerAdd}
         onAutoOpenConsumed={() => setAutoOpenPickerAdd(false)}
+        newTripIdToHighlight={fieldNewTripIdToHighlight}
         onCreateNewVisit={() => handleCreateNewVisit('add')}
         autoOpenVisitPicker={autoOpenVisitPickerAdd}
         onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerAdd(false)}

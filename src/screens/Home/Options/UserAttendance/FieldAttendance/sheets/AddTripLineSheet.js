@@ -61,12 +61,19 @@ const AddTripLineSheet = ({
   }, [visible]);
 
   // One-shot auto-open of the inner trip picker — fires when the parent
-  // requests it (e.g., user just came back from creating a new trip).
+  // requests it (e.g., user just came back from creating a new trip). A
+  // fresh newTripIdToHighlight re-arms the one-shot so a second sequential
+  // create also pops the picker.
   const autoFiredRef = useRef(false);
+  const lastNewIdRef = useRef(null);
   useEffect(() => {
     if (!visible) {
       autoFiredRef.current = false;
       return;
+    }
+    if (newTripIdToHighlight != null && lastNewIdRef.current !== newTripIdToHighlight) {
+      autoFiredRef.current = false;
+      lastNewIdRef.current = newTripIdToHighlight;
     }
     if (autoOpenPicker && !autoFiredRef.current) {
       autoFiredRef.current = true;
@@ -74,7 +81,7 @@ const AddTripLineSheet = ({
       if (onAutoOpenConsumed) onAutoOpenConsumed();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, autoOpenPicker]);
+  }, [visible, autoOpenPicker, newTripIdToHighlight]);
 
   // One-shot auto-open of the visit picker — fires on return from
   // creating a brand-new customer visit.
@@ -249,7 +256,8 @@ const AddTripLineSheet = ({
         visible={tripPickerOpen}
         trips={trips}
         loading={tripsLoading}
-        selectedId={newTripIdToHighlight ?? tripId}
+        selectedId={tripId}
+        newTripId={newTripIdToHighlight}
         onSelect={onTripSelected}
         onClose={() => setTripPickerOpen(false)}
         title="Pick a Trip"

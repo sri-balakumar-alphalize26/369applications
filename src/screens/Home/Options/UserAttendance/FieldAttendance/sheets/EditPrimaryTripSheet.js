@@ -118,12 +118,19 @@ const EditPrimaryTripSheet = ({
   }, [visible, attendance, loadVisitsByIds]);
 
   // One-shot auto-open of the trip picker — parent sets autoOpenPicker=true
-  // when the user is returning from creating a brand-new trip.
+  // when the user is returning from creating a brand-new trip. A fresh
+  // newTripIdToHighlight re-arms the one-shot so a second sequential create
+  // also pops the picker.
   const autoFiredRef = useRef(false);
+  const lastNewIdRef = useRef(null);
   useEffect(() => {
     if (!visible) {
       autoFiredRef.current = false;
       return;
+    }
+    if (newTripIdToHighlight != null && lastNewIdRef.current !== newTripIdToHighlight) {
+      autoFiredRef.current = false;
+      lastNewIdRef.current = newTripIdToHighlight;
     }
     if (autoOpenPicker && !autoFiredRef.current) {
       autoFiredRef.current = true;
@@ -131,7 +138,7 @@ const EditPrimaryTripSheet = ({
       if (onAutoOpenConsumed) onAutoOpenConsumed();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, autoOpenPicker]);
+  }, [visible, autoOpenPicker, newTripIdToHighlight]);
 
   // One-shot auto-open of the visit picker — parent sets
   // autoOpenVisitPicker=true on return from "Create New Visit".
@@ -408,7 +415,8 @@ const EditPrimaryTripSheet = ({
         visible={tripPickerOpen}
         trips={trips}
         loading={tripsLoading}
-        selectedId={newTripIdToHighlight ?? tripId}
+        selectedId={tripId}
+        newTripId={newTripIdToHighlight}
         onSelect={onTripSelected}
         onClose={() => setTripPickerOpen(false)}
         title="Pick Source Trip"

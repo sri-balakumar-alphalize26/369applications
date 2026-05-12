@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { CommonActions } from '@react-navigation/native';
 import { Camera } from 'expo-camera';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -1710,18 +1711,26 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       // addition to the existing useFocusEffect.
       const goBackWithRefresh = () => {
         console.log('[handleSubmit] navigating back — activeAction=', activeAction, ' final tripId=', response?.tripId);
-        // When launched from the Field Attendance trip picker, return there
-        // so the picker can reopen with the new trip highlighted.
+        // When launched from any field-attendance entry point (FAD or
+        // UserAttendanceScreen's inline duplicate), set the new trip data on
+        // the previous route's params, then pop VTF off. Whichever screen the
+        // user actually came from refocuses with its preserved state and the
+        // freshly-merged params.
         if (route?.params?.returnTo === 'fieldAttendance') {
-          navigation.navigate({
-            name: 'FieldAttendanceDetailScreen',
-            params: {
-              newTripId: response?.tripId,
-              fromSheet: route.params.fromSheet,
-              refreshKey: Date.now(),
-            },
-            merge: true,
-          });
+          const navState = navigation.getState();
+          const currentIdx = navState.routes.findIndex(r => r.key === route.key);
+          const previousRoute = currentIdx > 0 ? navState.routes[currentIdx - 1] : null;
+          if (previousRoute) {
+            navigation.dispatch({
+              ...CommonActions.setParams({
+                newTripId: response?.tripId,
+                fromSheet: route.params.fromSheet,
+                refreshKey: Date.now(),
+              }),
+              source: previousRoute.key,
+            });
+          }
+          navigation.goBack();
           return;
         }
         navigation.navigate({

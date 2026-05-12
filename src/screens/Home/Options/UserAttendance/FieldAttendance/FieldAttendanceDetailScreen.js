@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -197,14 +197,39 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
     });
   }, [navigation]);
 
-  // Picker-return handshake: covers both Save (newTripId in params) and Back
-  // (no params, but awaitingTripCreation is still set). One-shot per round-trip.
+  // Primary handshake — driven by route params VehicleTrackingForm pushes on
+  // Save / Start Trip / End Trip. Idempotent via lastHandledRefreshKey, so
+  // any number of intermediate re-renders or silent refreshes cannot replay it.
+  const lastHandledRefreshKey = useRef(null);
+  useEffect(() => {
+    const rk = route?.params?.refreshKey;
+    const fromSheet = route?.params?.fromSheet;
+    const newTripId = route?.params?.newTripId;
+    if (!rk || !fromSheet) return;
+    if (lastHandledRefreshKey.current === rk) return;
+    lastHandledRefreshKey.current = rk;
+
+    setNewTripIdToHighlight(newTripId ? Number(newTripId) : null);
+    if (fromSheet === 'primary') {
+      setEditOpen(true);
+      setEditAutoOpenPicker(true);
+    } else if (fromSheet === 'additional') {
+      setAddOpen(true);
+      setAddAutoOpenPicker(true);
+    }
+    setAwaitingTripCreation(null);
+    navigation.setParams({ newTripId: undefined, fromSheet: undefined, refreshKey: undefined });
+  }, [route?.params?.refreshKey, route?.params?.fromSheet, route?.params?.newTripId, navigation]);
+
+  // Fallback — user opened VTF via "Create New Trip" but came back without
+  // saving (no refreshKey from VTF). Reopen the source sheet without highlight.
   useFocusEffect(
     useCallback(() => {
       if (!awaitingTripCreation) return;
+      // Route-param path owns successful saves — defer to it.
+      if (route?.params?.refreshKey && route?.params?.fromSheet) return;
       const fromSheet = awaitingTripCreation;
-      const newTripId = route?.params?.newTripId;
-      setNewTripIdToHighlight(newTripId || null);
+      setNewTripIdToHighlight(null);
       if (fromSheet === 'primary') {
         setEditOpen(true);
         setEditAutoOpenPicker(true);
@@ -213,8 +238,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
         setAddAutoOpenPicker(true);
       }
       setAwaitingTripCreation(null);
-      if (newTripId) navigation.setParams({ newTripId: undefined, fromSheet: undefined });
-    }, [awaitingTripCreation, route?.params?.newTripId, navigation])
+    }, [awaitingTripCreation, route?.params?.refreshKey, route?.params?.fromSheet])
   );
 
   const onPullRefresh = async () => {
@@ -238,6 +262,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
       console.log('[FieldAttendanceDetail] save primary — write OK for attendanceId:', attendanceId);
       showToastMessage('Primary trip saved');
       setEditOpen(false);
+      setNewTripIdToHighlight(null);
       // Optimistic patch — show the picked trip immediately so the user sees
       // feedback even if the subsequent refresh is slow or hits a stale read.
       if (vals.source_trip_id) {
@@ -311,6 +336,7 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
       await createFieldTripLineOdoo(attendanceId, trip_id, visit_ids);
       showToastMessage('Trip added');
       setAddOpen(false);
+      setNewTripIdToHighlight(null);
       await refresh({ silent: true });
     } catch (e) {
       console.error('[FieldAttendanceDetail] add line error:', e?.message);
@@ -420,6 +446,22 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
   const headerTitle = attendance?.check_in
     ? `Field Attendance · ${fmtDateOnly(attendance.check_in)}`
     : 'Field Attendance';
+
+  // Render-time projection of "return from Create New Trip" route params onto
+  // sheet visibility. The route-param useEffect above still promotes these
+  // into state for long-term tracking, but the immediate render uses the
+  // params directly so the modal opens on the very first frame after FAD
+  // focuses/remounts — no waiting for setState batching to flush.
+  const rpFromSheet = route?.params?.fromSheet;
+  const rpRefreshKey = route?.params?.refreshKey;
+  const rpNewTripId = route?.params?.newTripId;
+  const returnFromCreate = !!(rpRefreshKey && rpFromSheet);
+
+  const effectiveEditOpen = editOpen || (returnFromCreate && rpFromSheet === 'primary');
+  const effectiveAddOpen = addOpen || (returnFromCreate && rpFromSheet === 'additional');
+  const effectiveEditAutoOpenPicker = editAutoOpenPicker || (returnFromCreate && rpFromSheet === 'primary');
+  const effectiveAddAutoOpenPicker = addAutoOpenPicker || (returnFromCreate && rpFromSheet === 'additional');
+  const effectiveNewTripId = newTripIdToHighlight ?? (rpNewTripId ? Number(rpNewTripId) : null);
 
   return (
     <SafeAreaView backgroundColor={COLORS.white}>
@@ -555,32 +597,44 @@ const FieldAttendanceDetailScreen = ({ navigation, route }) => {
 
       {/* Sheets */}
       <EditPrimaryTripSheet
-        visible={editOpen}
+        visible={effectiveEditOpen}
         attendance={attendance}
         loadAvailableTrips={loadAvailableTripsPrimary}
         loadDraftVisits={loadDraftVisitsPrimary}
         loadVisitsByIds={loadVisitsByIds}
         onSave={handleSavePrimary}
-        onClose={() => setEditOpen(false)}
+        onClose={() => {
+          setEditOpen(false);
+          setNewTripIdToHighlight(null);
+          if (returnFromCreate && rpFromSheet === 'primary') {
+            navigation.setParams({ newTripId: undefined, fromSheet: undefined, refreshKey: undefined });
+          }
+        }}
         saving={editSaving}
         onCreateNewTrip={() => handleCreateNewTripFrom('primary')}
-        autoOpenPicker={editAutoOpenPicker}
+        autoOpenPicker={effectiveEditAutoOpenPicker}
         onAutoOpenConsumed={() => setEditAutoOpenPicker(false)}
-        newTripIdToHighlight={newTripIdToHighlight}
+        newTripIdToHighlight={effectiveNewTripId}
       />
       <AddTripLineSheet
-        visible={addOpen}
+        visible={effectiveAddOpen}
         loadAvailableTrips={loadAvailableTripsAdditional}
         loadDraftVisits={loadDraftVisitsAdditional}
         loadVisitsByIds={loadVisitsByIds}
         onSave={handleSaveTripLine}
-        onClose={() => setAddOpen(false)}
+        onClose={() => {
+          setAddOpen(false);
+          setNewTripIdToHighlight(null);
+          if (returnFromCreate && rpFromSheet === 'additional') {
+            navigation.setParams({ newTripId: undefined, fromSheet: undefined, refreshKey: undefined });
+          }
+        }}
         saving={addSaving}
         onOpenSourceTrip={(tripId) => handleOpenTrip(tripId)}
         onCreateNewTrip={() => handleCreateNewTripFrom('additional')}
-        autoOpenPicker={addAutoOpenPicker}
+        autoOpenPicker={effectiveAddAutoOpenPicker}
         onAutoOpenConsumed={() => setAddAutoOpenPicker(false)}
-        newTripIdToHighlight={newTripIdToHighlight}
+        newTripIdToHighlight={effectiveNewTripId}
       />
       <TripDetailSheet
         visible={tripSheetOpen}

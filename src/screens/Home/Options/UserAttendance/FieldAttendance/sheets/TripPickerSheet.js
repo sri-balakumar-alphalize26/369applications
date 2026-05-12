@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   View,
@@ -29,11 +29,15 @@ const STATUS_COLOR = {
   cancelled: '#E53935',
 };
 
+const NEW_GREEN = '#2E7D32';
+const NEW_GREEN_BG = '#E8F5E9';
+
 const TripPickerSheet = ({
   visible,
   trips,
   loading,
   selectedId,
+  newTripId,
   onSelect,
   onClose,
   onCreateNew,
@@ -44,6 +48,8 @@ const TripPickerSheet = ({
   useEffect(() => {
     if (!visible) setSearch('');
   }, [visible]);
+
+  const flatListRef = useRef(null);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -64,21 +70,41 @@ const TripPickerSheet = ({
     return filtered;
   }, [trips, search]);
 
+  // Scroll the freshly-created trip into view once the rows are populated.
+  useEffect(() => {
+    if (!visible || newTripId == null || !rows.length) return;
+    const idx = rows.findIndex((t) => Number(t.id) === Number(newTripId));
+    if (idx < 0) return;
+    const t = setTimeout(() => {
+      try {
+        flatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
+      } catch (e) { /* best-effort */ }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [visible, newTripId, rows]);
+
   const renderItem = ({ item }) => {
     const isSelected = item.id === selectedId;
+    const isNew = newTripId != null && Number(item.id) === Number(newTripId);
     const statusColor = STATUS_COLOR[item.trip_status] || '#666';
     return (
       <TouchableOpacity
-        style={[styles.row, isSelected && styles.rowSelected]}
+        style={[styles.row, isSelected && styles.rowSelected, isNew && styles.rowNew]}
         activeOpacity={0.75}
         onPress={() => { onSelect(item); }}
       >
-        <View style={styles.rowIcon}>
-          <MaterialIcons name="directions-car" size={18} color={FIELD_COLOR} />
+        <View style={[styles.rowIcon, isNew && styles.rowIconNew]}>
+          <MaterialIcons name="directions-car" size={18} color={isNew ? NEW_GREEN : FIELD_COLOR} />
         </View>
         <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             <Text style={styles.rowTitle} numberOfLines={1}>{item.ref || `Trip #${item.id}`}</Text>
+            {isNew ? (
+              <View style={styles.newBadge}>
+                <MaterialIcons name="fiber-new" size={11} color="#fff" />
+                <Text style={styles.newBadgeText}>NEW</Text>
+              </View>
+            ) : null}
             <View style={[styles.statusPill, { backgroundColor: statusColor + '22', borderColor: statusColor }]}>
               <Text style={[styles.statusPillText, { color: statusColor }]}>
                 {String(item.trip_status || 'draft').replace('_', ' ').toUpperCase()}
@@ -97,7 +123,9 @@ const TripPickerSheet = ({
             {item.km_travelled != null ? ` · ${item.km_travelled} km` : ''}
           </Text>
         </View>
-        {isSelected ? (
+        {isNew ? (
+          <MaterialIcons name="auto-awesome" size={22} color={NEW_GREEN} />
+        ) : isSelected ? (
           <MaterialIcons name="check-circle" size={22} color={FIELD_COLOR} />
         ) : null}
       </TouchableOpacity>
@@ -164,6 +192,7 @@ const TripPickerSheet = ({
             </View>
           ) : (
             <FlatList
+              ref={flatListRef}
               style={{ maxHeight: LIST_MAX_HEIGHT }}
               data={rows}
               keyExtractor={(item) => String(item.id)}
@@ -171,6 +200,7 @@ const TripPickerSheet = ({
               contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 24 }}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator
+              onScrollToIndexFailed={() => {}}
             />
           )}
         </View>
@@ -222,6 +252,13 @@ const styles = StyleSheet.create({
     }),
   },
   rowSelected: { borderColor: FIELD_COLOR, backgroundColor: '#E3F2FD' },
+  rowNew: { borderColor: NEW_GREEN, borderWidth: 1.5, backgroundColor: NEW_GREEN_BG },
+  rowIconNew: { backgroundColor: '#C8E6C9' },
+  newBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: NEW_GREEN, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4,
+  },
+  newBadgeText: { fontSize: 9, fontFamily: FONT_FAMILY.urbanistBold, color: '#fff', letterSpacing: 0.5 },
   createRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: '#F5F9FF', borderRadius: 10, padding: 10,
