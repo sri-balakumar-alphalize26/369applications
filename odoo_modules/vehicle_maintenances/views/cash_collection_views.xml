@@ -38,6 +38,7 @@
             <form>
                 <header>
                     <button name="action_validate" string="VALIDATE" type="object" class="oe_highlight" invisible="is_validated == True"/>
+                    <button name="action_reset_to_draft" string="RESET TO DRAFT" type="object" invisible="is_validated == False"/>
                 </header>
                 <sheet>
                     <div class="oe_title">
@@ -45,15 +46,15 @@
                     </div>
                     <group>
                         <group>
-                            <field name="date"/>
-                            <field name="vehicle_id"/>
-                            <field name="driver_id"/>
-                            <field name="number_plate"/>
+                            <field name="date" readonly="is_validated == True"/>
+                            <field name="vehicle_id" readonly="is_validated == True"/>
+                            <field name="driver_id" readonly="is_validated == True"/>
+                            <field name="number_plate" readonly="is_validated == True"/>
                         </group>
                         <group>
-                            <field name="maintenance_type_id"/>
-                            <field name="handover_to_partner_id"/>
-                            <field name="company_id"/>
+                            <field name="maintenance_type_id" readonly="is_validated == True"/>
+                            <field name="handover_to_partner_id" readonly="is_validated == True"/>
+                            <field name="company_id" readonly="is_validated == True"/>
                             <field name="is_validated"/>
                             <field name="validated_by"/>
                             <field name="validation_date"/>
@@ -61,27 +62,27 @@
                     </group>
                     <group>
                         <group>
-                            <field name="current_km"/>
+                            <field name="current_km" readonly="is_validated == True"/>
                         </group>
                         <group>
-                            <field name="amount"/>
+                            <field name="amount" readonly="is_validated == True"/>
                         </group>
                     </group>
                     <group>
                         <group>
-                            <field name="handover_from" widget="signature"/>
+                            <field name="handover_from" widget="signature" readonly="is_validated == True"/>
                         </group>
                         <group>
-                            <field name="handover_to" widget="signature"/>
+                            <field name="handover_to" widget="signature" readonly="is_validated == True"/>
                         </group>
                     </group>
                     <separator string="Attachment Details"/>
                     <group>
-                        <field name="image_url" widget="image" options="{'size': [300, 300]}"/>
+                        <field name="image_url" widget="image" options="{'size': [300, 300]}" readonly="is_validated == True"/>
                     </group>
                     <separator string="Remarks"/>
                     <group>
-                        <field name="remarks" nolabel="1"/>
+                        <field name="remarks" nolabel="1" readonly="is_validated == True"/>
                     </group>
                 </sheet>
             </form>

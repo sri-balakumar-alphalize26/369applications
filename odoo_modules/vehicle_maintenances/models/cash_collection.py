@@ -46,6 +46,12 @@ class CashCollection(models.Model):
             rec.validated_by = self.env.user.id
             rec.validation_date = fields.Date.today()
 
+    def action_reset_to_draft(self):
+        for rec in self:
+            rec.is_validated = False
+            rec.validated_by = False
+            rec.validation_date = False
+
     @api.onchange('vehicle_id')
     def _onchange_vehicle_id(self):
         if self.vehicle_id:
