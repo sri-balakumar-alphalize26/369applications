@@ -77,7 +77,7 @@
                     </group>
                     <separator string="Attachment Details"/>
                     <group>
-                        <field name="image_url"/>
+                        <field name="image_url" widget="image" options="{'size': [300, 300]}"/>
                     </group>
                     <separator string="Remarks"/>
                     <group>

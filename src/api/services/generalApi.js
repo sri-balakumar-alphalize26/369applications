@@ -10348,7 +10348,7 @@ export const fetchVehicleMaintenanceOdoo = async (params = {}) => {
       amount: r.amount || 0,
       handover_from: r.handover_from || null,
       handover_to: r.handover_to || null,
-      image_url: r.image_url || '',
+      image_url: r.image_url ? `data:image/jpeg;base64,${r.image_url}` : '',
       remarks: r.remarks || '',
       is_validated: !!r.is_validated,
       validated_by: Array.isArray(r.validated_by) ? r.validated_by[1] : '',
@@ -10481,6 +10481,10 @@ export const createVehicleMaintenanceOdoo = async ({ payload, username, password
       if (maintenancePayload[field]) {
         try {
           const uri = maintenancePayload[field];
+          if (typeof uri === 'string' && uri.startsWith('data:')) {
+            maintenancePayload[field] = uri.split(',', 2)[1] || '';
+            continue;
+          }
           if (uri && (uri.startsWith('file://') || uri.startsWith('/'))) {
             const b64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
             if (b64 && b64.length > 0) {

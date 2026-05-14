@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, ScrollView, StyleSheet, Pressable, Modal, FlatList,
-  TouchableOpacity, Image, Alert,
+  TouchableOpacity, Image,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { Camera } from 'expo-camera';
 import SignatureScreen from 'react-native-signature-canvas';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { NavigationHeader } from '@components/Header';
 import { SafeAreaView } from '@components/containers';
 import OfflineBanner from '@components/common/OfflineBanner';
@@ -43,9 +45,9 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
     handoverToPartnerName: existingData?.handover_to_partner_name || '',
     currentKm: existingData?.current_km ? String(existingData.current_km) : '',
     amount: existingData?.amount ? String(existingData.amount) : '',
-    handoverFromUri: '',
-    handoverToUri: '',
-    imageUri: '',
+    handoverFromUri: existingData?.handover_from || '',
+    handoverToUri: existingData?.handover_to || '',
+    imageUri: existingData?.image_url || '',
     remarks: existingData?.remarks || '',
   });
 
@@ -65,6 +67,11 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [signatureModal, setSignatureModal] = useState({ visible: false, field: null });
+  const [previewImageUri, setPreviewImageUri] = useState(null);
+  const [imagePickerVisible, setImagePickerVisible] = useState(false);
+  const [showInAppCamera, setShowInAppCamera] = useState(false);
+  const [isCapturingPhoto, setIsCapturingPhoto] = useState(false);
+  const inAppCameraRef = useRef(null);
   const signatureRef = useRef(null);
 
   // Validate-confirm popup state for the admin Validate button.
@@ -77,6 +84,7 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
   const currentUser = useAuthStore((state) => state.user);
   const isAdmin = !!(currentUser?.is_admin || currentUser?.related_profile?.is_admin
     || (Array.isArray(currentUser?.roles) && currentUser.roles.includes('admin')));
+  const isLocked = !!recordState.is_validated;
 
   const handleValidate = async () => {
     if (!existingData?.id || typeof existingData.id !== 'number') {
@@ -156,48 +164,54 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
     setModals(prev => ({ ...prev, handoverToPartner: false }));
   };
 
-  // Small delay to let Alert dismiss before launching picker (prevents Android crash)
-  const delayedAction = (fn) => () => setTimeout(fn, 300);
+  const handleImagePicker = () => setImagePickerVisible(true);
 
-  const handleImagePicker = () => {
-    Alert.alert(
-      "Select Image",
-      "Choose an option",
-      [
-        { text: "Camera", onPress: delayedAction(openCamera) },
-        { text: "Gallery", onPress: delayedAction(openGallery) },
-        { text: "Cancel", style: "cancel" }
-      ]
-    );
+  // Close the branded picker first, then launch the OS picker so the modal
+  // fully unmounts before the camera/gallery intent fires (prevents Android crash).
+  const dispatchImageSource = (source) => {
+    setImagePickerVisible(false);
+    setTimeout(() => {
+      if (source === 'camera') openCamera();
+      else if (source === 'gallery') openGallery();
+    }, 300);
   };
 
-  const openCamera = () => {
-    (async () => {
-      try {
-        const { status } = await ImagePicker.requestCameraPermissionsAsync();
-        if (status !== 'granted') {
-          showToastMessage('Camera permission is required', 'warning');
-          return;
-        }
-        const result = await ImagePicker.launchCameraAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.8,
-          allowsEditing: false,
-        });
-        if (result?.cancelled || result?.canceled) {
-          showToastMessage('Camera cancelled', 'info');
-          return;
-        }
-        const asset = result.assets ? result.assets[0] : (result.uri ? { uri: result.uri } : null);
-        if (asset && asset.uri) {
-          handleInputChange('imageUri', asset.uri);
-          showToastMessage('Image captured successfully!', 'success');
-        }
-      } catch (e) {
-        console.error('launchCamera exception:', e);
-        showToastMessage('Camera error occurred', 'error');
+  // Opens the inline in-app camera modal (no OS preview screen — matches
+  // Customer Visit flow). The OS preview was crashing the app on shutter.
+  const openCamera = async () => {
+    try {
+      const { status } = await Camera.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        showToastMessage('Camera permission is required', 'warning');
+        return;
       }
-    })();
+      setShowInAppCamera(true);
+    } catch (e) {
+      console.error('openCamera permission error:', e);
+      showToastMessage('Camera error occurred', 'error');
+    }
+  };
+
+  const captureFromInAppCamera = async () => {
+    if (!inAppCameraRef.current || isCapturingPhoto) return;
+    try {
+      setIsCapturingPhoto(true);
+      const photo = await inAppCameraRef.current.takePictureAsync({
+        quality: 0.3,
+        skipProcessing: true,
+        exif: false,
+      });
+      setShowInAppCamera(false);
+      if (photo?.uri) {
+        handleInputChange('imageUri', photo.uri);
+        showToastMessage('Image captured successfully!', 'success');
+      }
+    } catch (e) {
+      console.error('takePictureAsync exception:', e);
+      showToastMessage('Camera error occurred', 'error');
+    } finally {
+      setIsCapturingPhoto(false);
+    }
   };
 
   const openGallery = () => {
@@ -297,13 +311,19 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
   };
 
   const renderDropdownModal = (visible, data, onSelect, onClose, title, labelKey = 'name') => (
-    <Modal visible={visible} animationType="slide" transparent>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>{title}</Text>
-            <Pressable onPress={onClose}>
-              <Text style={styles.modalClose}>Close</Text>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <Pressable style={styles.brandedOverlay} onPress={onClose}>
+        <Pressable style={styles.brandedCard} onPress={() => {}}>
+          <View style={styles.brandedLogoWrap}>
+            <Image
+              source={require('@assets/images/logo/logo.png')}
+              style={styles.brandedLogo}
+            />
+          </View>
+          <View style={styles.brandedHeader}>
+            <Text style={styles.brandedTitle}>{title}</Text>
+            <Pressable hitSlop={10} onPress={onClose}>
+              <MaterialCommunityIcons name="close" size={22} color={COLORS.gray} />
             </Pressable>
           </View>
           <FlatList
@@ -321,8 +341,8 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
               <Text style={styles.modalEmptyText}>No items found</Text>
             }
           />
-        </View>
-      </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 
@@ -356,7 +376,7 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
             ) : null}
             {recordState.is_validated ? (
               <Text style={{ color: '#666', fontFamily: FONT_FAMILY.urbanistMedium, fontSize: 11, marginTop: 2 }}>
-                Validated by {recordState.validated_by || '-'}{recordState.validation_date ? ' on ' + recordState.validation_date : ''}
+                Validated by {recordState.validated_by || '-'}{recordState.validation_date ? ' on ' + recordState.validation_date : ''} — locked for editing
               </Text>
             ) : null}
           </View>
@@ -397,7 +417,11 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
         <Text style={styles.sectionTitle}>Vehicle Information</Text>
         <View style={styles.sectionGroup}>
           {/* Date */}
-          <Pressable onPress={() => setModals(prev => ({ ...prev, datePicker: true }))}>
+          <Pressable
+            onPress={() => setModals(prev => ({ ...prev, datePicker: true }))}
+            disabled={isLocked}
+            style={isLocked && { opacity: 0.6 }}
+          >
             <FormInput
               label="Date :"
               value={formatDate(formData.date)}
@@ -409,8 +433,9 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           {/* Vehicle */}
           <Text style={styles.fieldLabel}>Vehicle <Text style={{ color: 'red' }}>*</Text></Text>
           <Pressable
-            style={styles.selectBox}
+            style={[styles.selectBox, isLocked && { opacity: 0.6 }]}
             onPress={() => setModals(prev => ({ ...prev, vehicle: true }))}
+            disabled={isLocked}
           >
             <Text style={[styles.selectBoxText, { color: formData.vehicleName ? COLORS.black : COLORS.gray }]}>
               {formData.vehicleName || 'Select vehicle'}
@@ -441,8 +466,9 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           {/* Maintenance Type */}
           <Text style={styles.fieldLabel}>Maintenance Type <Text style={{ color: 'red' }}>*</Text></Text>
           <Pressable
-            style={styles.selectBox}
+            style={[styles.selectBox, isLocked && { opacity: 0.6 }]}
             onPress={() => setModals(prev => ({ ...prev, maintenanceType: true }))}
+            disabled={isLocked}
           >
             <Text style={[styles.selectBoxText, { color: formData.maintenanceTypeName ? COLORS.black : COLORS.gray }]}>
               {formData.maintenanceTypeName || 'Select maintenance type'}
@@ -453,8 +479,9 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           {/* Handover To Partner */}
           <Text style={styles.fieldLabel}>Handover To</Text>
           <Pressable
-            style={styles.selectBox}
+            style={[styles.selectBox, isLocked && { opacity: 0.6 }]}
             onPress={() => setModals(prev => ({ ...prev, handoverToPartner: true }))}
+            disabled={isLocked}
           >
             <Text style={[styles.selectBoxText, { color: formData.handoverToPartnerName ? COLORS.black : COLORS.gray }]}>
               {formData.handoverToPartnerName || 'Select person to hand over to'}
@@ -469,6 +496,7 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
             onChangeText={(v) => handleInputChange('currentKm', v)}
             keyboardType="numeric"
             placeholder="0.000"
+            editable={!isLocked}
           />
 
           {/* Amount */}
@@ -478,6 +506,7 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
             onChangeText={(v) => handleInputChange('amount', v)}
             keyboardType="numeric"
             placeholder="0.000"
+            editable={!isLocked}
           />
         </View>
 
@@ -488,33 +517,40 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           <View style={styles.signatureSection}>
             <Text style={styles.fieldLabel}>Handover From</Text>
             {formData.handoverFromUri ? (
-              <View style={styles.signaturePreviewRow}>
+              <View style={styles.signatureCardFilled}>
                 <Image
                   source={{ uri: `data:image/png;base64,${formData.handoverFromUri}` }}
-                  style={styles.signaturePreview}
+                  style={styles.signaturePreviewImage}
                   resizeMode="contain"
                 />
-                <View style={styles.signatureBtnRow}>
-                  <Pressable
-                    style={styles.signatureEditBtn}
-                    onPress={() => setSignatureModal({ visible: true, field: 'handoverFromUri' })}
-                  >
-                    <Text style={styles.signatureBtnText}>Re-sign</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.signatureClearBtn}
-                    onPress={() => handleInputChange('handoverFromUri', '')}
-                  >
-                    <Text style={styles.signatureClearBtnText}>Clear</Text>
-                  </Pressable>
-                </View>
+                {!isLocked && (
+                  <View style={styles.signatureOverlay}>
+                    <Pressable
+                      style={[styles.signatureActionBtn, styles.signatureActionBtnReplace]}
+                      onPress={() => setSignatureModal({ visible: true, field: 'handoverFromUri' })}
+                    >
+                      <MaterialCommunityIcons name="draw" size={16} color="#fff" />
+                      <Text style={styles.signatureActionText}>Re-sign</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.signatureActionBtn, styles.signatureActionBtnDanger]}
+                      onPress={() => handleInputChange('handoverFromUri', '')}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color="#fff" />
+                      <Text style={styles.signatureActionText}>Clear</Text>
+                    </Pressable>
+                  </View>
+                )}
               </View>
             ) : (
               <Pressable
-                style={styles.signatureOpenBtn}
+                style={[styles.signatureCardEmpty, isLocked && { opacity: 0.6 }]}
                 onPress={() => setSignatureModal({ visible: true, field: 'handoverFromUri' })}
+                disabled={isLocked}
               >
-                <Text style={styles.signatureOpenBtnText}>Tap to Sign</Text>
+                <MaterialCommunityIcons name="signature-freehand" size={36} color={COLORS.primaryThemeColor} />
+                <Text style={styles.signatureCardEmptyTitle}>Tap to Sign</Text>
+                <Text style={styles.signatureCardEmptySubtitle}>Capture handover signature</Text>
               </Pressable>
             )}
           </View>
@@ -523,33 +559,40 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           <View style={styles.signatureSection}>
             <Text style={styles.fieldLabel}>Handover To</Text>
             {formData.handoverToUri ? (
-              <View style={styles.signaturePreviewRow}>
+              <View style={styles.signatureCardFilled}>
                 <Image
                   source={{ uri: `data:image/png;base64,${formData.handoverToUri}` }}
-                  style={styles.signaturePreview}
+                  style={styles.signaturePreviewImage}
                   resizeMode="contain"
                 />
-                <View style={styles.signatureBtnRow}>
-                  <Pressable
-                    style={styles.signatureEditBtn}
-                    onPress={() => setSignatureModal({ visible: true, field: 'handoverToUri' })}
-                  >
-                    <Text style={styles.signatureBtnText}>Re-sign</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.signatureClearBtn}
-                    onPress={() => handleInputChange('handoverToUri', '')}
-                  >
-                    <Text style={styles.signatureClearBtnText}>Clear</Text>
-                  </Pressable>
-                </View>
+                {!isLocked && (
+                  <View style={styles.signatureOverlay}>
+                    <Pressable
+                      style={[styles.signatureActionBtn, styles.signatureActionBtnReplace]}
+                      onPress={() => setSignatureModal({ visible: true, field: 'handoverToUri' })}
+                    >
+                      <MaterialCommunityIcons name="draw" size={16} color="#fff" />
+                      <Text style={styles.signatureActionText}>Re-sign</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.signatureActionBtn, styles.signatureActionBtnDanger]}
+                      onPress={() => handleInputChange('handoverToUri', '')}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color="#fff" />
+                      <Text style={styles.signatureActionText}>Clear</Text>
+                    </Pressable>
+                  </View>
+                )}
               </View>
             ) : (
               <Pressable
-                style={styles.signatureOpenBtn}
+                style={[styles.signatureCardEmpty, isLocked && { opacity: 0.6 }]}
                 onPress={() => setSignatureModal({ visible: true, field: 'handoverToUri' })}
+                disabled={isLocked}
               >
-                <Text style={styles.signatureOpenBtnText}>Tap to Sign</Text>
+                <MaterialCommunityIcons name="signature-freehand" size={36} color={COLORS.primaryThemeColor} />
+                <Text style={styles.signatureCardEmptyTitle}>Tap to Sign</Text>
+                <Text style={styles.signatureCardEmptySubtitle}>Capture handover signature</Text>
               </Pressable>
             )}
           </View>
@@ -558,22 +601,41 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
         {/* Attachment Details */}
         <Text style={styles.sectionTitle}>Attachment Details</Text>
         <View style={styles.sectionGroup}>
-          <View style={styles.imageUploadContainer}>
-            <Pressable style={[
-              styles.imagePickerButton,
-              formData.imageUri && styles.imagePickerButtonSelected
-            ]} onPress={handleImagePicker}>
-              <Text style={styles.imagePickerIcon}>
-                {formData.imageUri ? '\u2713' : '\uD83D\uDCF7'}
-              </Text>
-              <Text style={styles.imagePickerText}>
-                {formData.imageUri ? '\u2713' : '+'}
-              </Text>
+          {formData.imageUri ? (
+            <View style={styles.imageCardFilled}>
+              <Pressable onPress={() => setPreviewImageUri(formData.imageUri)} style={styles.imagePreviewWrap}>
+                <Image source={{ uri: formData.imageUri }} style={styles.imagePreview} resizeMode="cover" />
+                {!isLocked && (
+                  <View style={styles.imageOverlay}>
+                    <Pressable
+                      style={[styles.imageActionBtn, styles.imageActionBtnReplace]}
+                      onPress={handleImagePicker}
+                    >
+                      <MaterialCommunityIcons name="image-edit" size={16} color="#fff" />
+                      <Text style={styles.imageActionText}>Replace</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.imageActionBtn, styles.imageActionBtnDanger]}
+                      onPress={() => handleInputChange('imageUri', '')}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color="#fff" />
+                      <Text style={styles.imageActionText}>Remove</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              onPress={handleImagePicker}
+              style={[styles.imageCardEmpty, isLocked && { opacity: 0.6 }]}
+              disabled={isLocked}
+            >
+              <MaterialCommunityIcons name="camera-plus-outline" size={36} color={COLORS.primaryThemeColor} />
+              <Text style={styles.imageCardEmptyTitle}>Add Maintenance Photo</Text>
+              <Text style={styles.imageCardEmptySubtitle}>Tap to use Camera or Gallery</Text>
             </Pressable>
-            {formData.imageUri && (
-              <Text style={styles.imageSelectedText}>Image selected</Text>
-            )}
-          </View>
+          )}
         </View>
 
         {/* Remarks */}
@@ -587,16 +649,19 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
             multiline
             numberOfLines={4}
             style={styles.remarksInput}
+            editable={!isLocked}
           />
         </View>
 
         {/* Submit */}
-        <LoadingButton
-          title={isEditMode ? 'Update' : 'Submit'}
-          onPress={handleSubmit}
-          loading={isSubmitting}
-          style={styles.submitButton}
-        />
+        {!isLocked && (
+          <LoadingButton
+            title={isEditMode ? 'Update' : 'Submit'}
+            onPress={handleSubmit}
+            loading={isSubmitting}
+            style={styles.submitButton}
+          />
+        )}
       </ScrollView>
 
       {/* Date Picker Modal */}
@@ -641,11 +706,14 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
       <Modal visible={signatureModal.visible} animationType="slide">
         <View style={styles.signatureModalContainer}>
           <View style={styles.signatureModalHeader}>
-            <Text style={styles.modalTitle}>
+            <Text style={styles.signatureModalTitle}>
               {signatureModal.field === 'handoverFromUri' ? 'Handover From Signature' : 'Handover To Signature'}
             </Text>
-            <Pressable onPress={() => setSignatureModal({ visible: false, field: null })}>
-              <Text style={styles.modalClose}>Cancel</Text>
+            <Pressable
+              hitSlop={10}
+              onPress={() => setSignatureModal({ visible: false, field: null })}
+            >
+              <MaterialCommunityIcons name="close" size={24} color={COLORS.primaryThemeColor} />
             </Pressable>
           </View>
           <SignatureScreen
@@ -668,6 +736,76 @@ const VehicleMaintenanceForm = ({ navigation, route }) => {
           />
         </View>
       </Modal>
+
+      {/* Full-screen image preview (lightbox). Tap anywhere to dismiss. */}
+      <Modal
+        visible={!!previewImageUri}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setPreviewImageUri(null)}
+      >
+        <Pressable style={styles.previewOverlay} onPress={() => setPreviewImageUri(null)}>
+          <Pressable
+            style={styles.previewClose}
+            onPress={() => setPreviewImageUri(null)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <MaterialCommunityIcons name="close" size={28} color="#fff" />
+          </Pressable>
+          {previewImageUri ? (
+            <Image source={{ uri: previewImageUri }} style={styles.previewImage} resizeMode="contain" />
+          ) : null}
+        </Pressable>
+      </Modal>
+
+      {/* Inline in-app camera (no OS preview screen — matches Customer Visit flow). */}
+      <Modal
+        visible={showInAppCamera}
+        animationType="slide"
+        onRequestClose={() => setShowInAppCamera(false)}
+      >
+        <View style={styles.cameraModalContainer}>
+          <Camera
+            ref={inAppCameraRef}
+            style={styles.cameraView}
+            type={Camera.Constants.Type.back}
+          >
+            <View style={styles.cameraOverlay}>
+              <View style={styles.cameraTopBar}>
+                <TouchableOpacity
+                  style={styles.cameraCloseBtn}
+                  onPress={() => setShowInAppCamera(false)}
+                >
+                  <MaterialCommunityIcons name="close" size={28} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.cameraTitle}>Take Photo</Text>
+                <View style={{ width: 40 }} />
+              </View>
+              <View style={styles.cameraBottomBar}>
+                <TouchableOpacity
+                  style={[styles.cameraShutterBtn, isCapturingPhoto && { opacity: 0.4 }]}
+                  onPress={captureFromInAppCamera}
+                  disabled={isCapturingPhoto}
+                >
+                  <View style={styles.cameraShutterInner} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Camera>
+        </View>
+      </Modal>
+
+      {/* Branded Camera / Gallery / Cancel picker (matches logout-style popup). */}
+      <StyledAlertModal
+        isVisible={imagePickerVisible}
+        message="Select Image"
+        confirmText="Camera"
+        middleText="Gallery"
+        cancelText="Cancel"
+        onConfirm={() => dispatchImageSource('camera')}
+        onMiddle={() => dispatchImageSource('gallery')}
+        onCancel={() => setImagePickerVisible(false)}
+      />
 
       <OverlayLoader visible={loading} />
 
@@ -736,94 +874,211 @@ const styles = StyleSheet.create({
     marginTop: 30,
     marginBottom: 20,
   },
-  // Image upload
-  imageUploadContainer: {
-    marginVertical: 8,
-    alignItems: 'flex-start',
-  },
-  imagePickerButton: {
-    width: 80,
-    height: 80,
-    backgroundColor: '#4CAF50',
-    borderRadius: 8,
-    justifyContent: 'center',
+  // Image attachment card (empty + filled states)
+  imageCardEmpty: {
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: COLORS.primaryThemeColor,
+    borderRadius: 12,
+    paddingVertical: 24,
     alignItems: 'center',
-    position: 'relative',
+    justifyContent: 'center',
+    backgroundColor: '#FAFBFF',
+    marginTop: 6,
   },
-  imagePickerButtonSelected: {
-    backgroundColor: '#2E7D32',
+  imageCardEmptyTitle: {
+    marginTop: 8,
+    fontSize: 14,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: COLORS.black,
   },
-  imagePickerIcon: {
-    fontSize: 24,
-    color: 'white',
+  imageCardEmptySubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.gray,
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
+  imageCardFilled: {
+    marginTop: 6,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  imagePreviewWrap: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+  },
+  imagePreview: {
+    width: '100%',
+    height: '100%',
+  },
+  imageOverlay: {
     position: 'absolute',
     top: 8,
     right: 8,
+    flexDirection: 'row',
+    gap: 6,
   },
-  imagePickerText: {
-    fontSize: 32,
-    color: 'white',
-    fontWeight: 'bold',
+  imageActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    gap: 4,
   },
-  imageSelectedText: {
-    marginTop: 8,
-    fontSize: 12,
-    color: COLORS.primaryThemeColor,
-    fontFamily: FONT_FAMILY.urbanistMedium,
+  imageActionBtnDanger: {
+    backgroundColor: 'rgba(229,57,53,0.85)',
   },
-  // Signature
-  signatureSection: { marginVertical: 8 },
-  signatureOpenBtn: {
-    height: 80,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    borderStyle: 'dashed',
+  imageActionBtnReplace: {
+    backgroundColor: 'rgba(113,75,103,0.92)',
+  },
+  imageActionText: {
+    color: '#fff',
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.urbanistBold,
+  },
+  // Lightbox preview
+  previewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  signatureOpenBtnText: {
-    fontSize: 15,
-    color: COLORS.primaryThemeColor,
-    fontFamily: FONT_FAMILY.urbanistSemiBold,
+  previewClose: {
+    position: 'absolute',
+    top: 40,
+    right: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
   },
-  signaturePreviewRow: { alignItems: 'center' },
-  signaturePreview: {
+  previewImage: {
     width: '100%',
-    height: 120,
-    borderRadius: 8,
+    height: '90%',
+  },
+  // Inline in-app camera
+  cameraModalContainer: { flex: 1, backgroundColor: '#000' },
+  cameraView: { flex: 1 },
+  cameraOverlay: {
+    flex: 1,
+    justifyContent: 'space-between',
+    backgroundColor: 'transparent',
+  },
+  cameraTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 50,
+    paddingBottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  cameraCloseBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cameraTitle: {
+    color: '#fff',
+    fontFamily: FONT_FAMILY.urbanistBold,
+    fontSize: 16,
+  },
+  cameraBottomBar: {
+    alignItems: 'center',
+    paddingBottom: 40,
+    paddingTop: 24,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  cameraShutterBtn: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    borderColor: '#fff',
+  },
+  cameraShutterInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#fff',
+  },
+  // Signature — inline two-state card (mirrors imageCard* pattern)
+  signatureSection: { marginVertical: 8 },
+  signatureCardEmpty: {
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: COLORS.primaryThemeColor,
+    borderRadius: 12,
+    paddingVertical: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FAFBFF',
+    marginTop: 6,
+  },
+  signatureCardEmptyTitle: {
+    marginTop: 8,
+    fontSize: 14,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: COLORS.black,
+  },
+  signatureCardEmptySubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    color: COLORS.gray,
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
+  signatureCardFilled: {
+    marginTop: 6,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#E0E0E0',
     backgroundColor: '#FAFAFA',
+    overflow: 'hidden',
+    paddingVertical: 8,
+    alignItems: 'center',
   },
-  signatureBtnRow: {
+  signaturePreviewImage: {
+    width: '100%',
+    height: 140,
+  },
+  signatureOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
     flexDirection: 'row',
-    marginTop: 8,
-    gap: 12,
+    gap: 6,
   },
-  signatureEditBtn: {
-    backgroundColor: COLORS.primaryThemeColor,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 6,
+  signatureActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    gap: 4,
   },
-  signatureBtnText: {
-    color: 'white',
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.urbanistSemiBold,
+  signatureActionBtnDanger: {
+    backgroundColor: 'rgba(229,57,53,0.85)',
   },
-  signatureClearBtn: {
-    backgroundColor: '#f44336',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 6,
+  signatureActionBtnReplace: {
+    backgroundColor: 'rgba(113,75,103,0.92)',
   },
-  signatureClearBtnText: {
-    color: 'white',
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.urbanistSemiBold,
+  signatureActionText: {
+    color: '#fff',
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.urbanistBold,
   },
+  // Signature drawing modal (full-screen canvas)
   signatureModalContainer: {
     flex: 1,
     backgroundColor: COLORS.white,
@@ -837,39 +1092,13 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E0E0E0',
     paddingTop: 50,
   },
+  signatureModalTitle: {
+    fontSize: 16,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: COLORS.primaryThemeColor,
+  },
   signatureCanvas: {
     flex: 1,
-  },
-  // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContainer: {
-    backgroundColor: COLORS.white,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    maxHeight: '70%',
-    paddingBottom: 30,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontFamily: FONT_FAMILY.urbanistBold,
-    color: COLORS.black,
-  },
-  modalClose: {
-    fontSize: 14,
-    color: COLORS.primaryThemeColor,
-    fontFamily: FONT_FAMILY.urbanistSemiBold,
   },
   modalItem: {
     padding: 14,
@@ -886,6 +1115,62 @@ const styles = StyleSheet.create({
     padding: 20,
     color: COLORS.gray,
     fontFamily: FONT_FAMILY.urbanistMedium,
+  },
+  // Branded centered popup (matches Vehicle Tracking selectors)
+  brandedOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  brandedCard: {
+    width: '100%',
+    maxWidth: 460,
+    maxHeight: '70%',
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: COLORS.primaryThemeColor,
+    paddingHorizontal: 6,
+    paddingTop: 50,
+    paddingBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  brandedLogoWrap: {
+    position: 'absolute',
+    top: -40,
+    alignSelf: 'center',
+    borderRadius: 80,
+    backgroundColor: COLORS.white,
+    borderWidth: 2,
+    borderColor: COLORS.orange || '#FF9800',
+  },
+  brandedLogo: {
+    height: 80,
+    width: 80,
+    borderRadius: 80,
+    resizeMode: 'contain',
+  },
+  brandedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEE',
+    marginBottom: 4,
+  },
+  brandedTitle: {
+    fontSize: 16,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: COLORS.primaryThemeColor,
   },
 });
 

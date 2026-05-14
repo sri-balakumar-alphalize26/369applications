@@ -32,7 +32,7 @@ class CashCollection(models.Model):
     handover_from = fields.Binary(string='Handover From', attachment=True)
     handover_to = fields.Binary(string='Handover To Image', attachment=True)
 
-    image_url = fields.Char(string='Image Url')
+    image_url = fields.Image(string='Image Url', attachment=True)
 
     is_validated = fields.Boolean(string='Validate', default=False)
     validated_by = fields.Many2one('res.users', string='Validated By', readonly=True)

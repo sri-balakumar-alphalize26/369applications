@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
 import { RoundedScrollContainer } from '@components/containers';
@@ -36,6 +37,17 @@ const VehicleMaintenanceScreen = ({ navigation }) => {
       setLoading(false);
     }
   };
+
+  // Refetch whenever the screen regains focus (user returning from the form
+  // after creating, editing, or validating a record) so the list reflects
+  // the latest server state. No-op until the user picks a date.
+  useFocusEffect(
+    useCallback(() => {
+      if (selectedDate) {
+        fetchEntries(selectedDate);
+      }
+    }, [selectedDate])
+  );
 
   const handleDateSelect = (day) => {
     setSelectedDate(day.dateString);
