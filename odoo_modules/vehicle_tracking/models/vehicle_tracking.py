@@ -32,7 +32,11 @@ class VehicleTracking(models.Model):
     start_km = fields.Integer(string='Start Km', default=0)
     end_km = fields.Integer(string='End Km', default=0)
     km_travelled = fields.Integer(string='KM Travelled', compute='_compute_km_travelled', store=True)
-    purpose_of_visit_id = fields.Many2one('vehicle.purpose', string="Purpose of Visit")
+    # Shared purpose model with customer.visit -- both fields point at
+    # `visit.purpose` so adding a purpose in either place surfaces in both.
+    # See migrations/19.0.2.0.0/pre-migration.py for the one-time data
+    # migration from the old vehicle.purpose model.
+    purpose_of_visit_id = fields.Many2one('visit.purpose', string="Purpose of Visit")
 
     start_time = fields.Datetime(string='Start Time', default=fields.Datetime.now)
     end_time = fields.Datetime(string='End Time')

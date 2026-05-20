@@ -1,6 +1,6 @@
 {
     'name': 'Vehicle Tracking',
-    'version': '1.1',
+    'version': '19.0.2.1.0',
     'summary': 'Track vehicle movement, trips, driver logs with AI Fraud Detection',
     'description': """
 Odoo 19 Vehicle Tracking Module with AI Fraud Detection

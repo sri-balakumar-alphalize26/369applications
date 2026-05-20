@@ -4,7 +4,7 @@ import pytz
 from datetime import datetime, time, timedelta
 
 from odoo import api, fields, models, _
-from odoo.exceptions import AccessError
+from odoo.exceptions import AccessError, UserError
 
 _logger = logging.getLogger(__name__)
 
@@ -36,6 +36,26 @@ class HrAttendance(models.Model):
         'field.attendance.trip.line',
         'attendance_id',
         string='Additional Trips',
+    )
+    # Count of trip lines -- gates the "Secondary Trip" vs "Additional Trips"
+    # section heading. 1 line = Secondary, 2+ = Additional, 0 = section hidden.
+    trip_line_count = fields.Integer(
+        string='Trip Line Count',
+        compute='_compute_trip_line_count',
+    )
+    # Visibility of the two Return-Home buttons that appear under the
+    # Additional Trips section once outbound trips are done.
+    show_primary_return_button = fields.Boolean(
+        string='Show Return Trip Button',
+        compute='_compute_return_buttons',
+    )
+    show_office_to_home_button = fields.Boolean(
+        string='Show Office-to-Home Button',
+        compute='_compute_return_buttons',
+    )
+    has_return_trip_lines = fields.Boolean(
+        string='Has Return Trip Lines',
+        compute='_compute_return_buttons',
     )
     visited_stops_display = fields.Char(
         string='Visited Stops',
@@ -70,6 +90,14 @@ class HrAttendance(models.Model):
     source_trip_fuel_amount = fields.Float(
         related='source_trip_id.total_fuel_amount', readonly=True,
     )
+    # Writable related — lets the Edit Primary Trip popup set/edit Start KM
+    # without forcing the user to open the source trip in another tab.
+    # Propagates through to vehicle.tracking.start_km on save.
+    source_trip_start_km = fields.Integer(
+        related='source_trip_id.start_km',
+        string='Start KM',
+        readonly=False,
+    )
     source_visit_count = fields.Integer(
         string='Visit Count',
         compute='_compute_source_visit_count',
@@ -88,6 +116,21 @@ class HrAttendance(models.Model):
     # vehicle.tracking lifecycle lock — ended trips are immutable.
     source_trip_ended = fields.Boolean(
         related='source_trip_id.end_trip', readonly=True,
+    )
+    # Lock flag for Start KM — true once the user clicks Start Trip on the
+    # vehicle.tracking record (or the popup auto-starts it). Tightens the
+    # readonly gate beyond source_trip_ended so the odometer reading can't
+    # be edited mid-trip.
+    source_trip_started = fields.Boolean(
+        related='source_trip_id.start_trip', readonly=True,
+    )
+    # Inline label shown next to the Add Fuel button so the user can confirm
+    # how many fuel logs have been added without opening the trip form.
+    # Empty string when the trip has no fuel logs yet (the view hides the
+    # span entirely in that case).
+    source_trip_fuel_log_summary = fields.Char(
+        string='Fuel Log Summary',
+        compute='_compute_source_trip_fuel_log_summary',
     )
     # Trips NOT yet used by this employee on any attendance — feeds the
     # Source Trip domain in both the primary and additional popups so the
@@ -153,6 +196,63 @@ class HrAttendance(models.Model):
         for rec in self:
             rec.has_source_visits = bool(rec.source_visit_ids)
 
+    @api.depends('trip_line_ids', 'trip_line_ids.is_return_trip')
+    def _compute_trip_line_count(self):
+        """Count of OUTBOUND trip lines only (return-home lines are excluded
+        so the Secondary / Additional Trips section heading doesn't flip
+        when the user adds a return leg)."""
+        for rec in self:
+            rec.trip_line_count = len(
+                rec.trip_line_ids.filtered(lambda l: not l.is_return_trip)
+            )
+
+    @api.depends('trip_line_ids.is_return_trip',
+                 'trip_line_ids.return_leg_type',
+                 'trip_line_ids.is_office_to_home_leg',
+                 'trip_line_ids.trip_id.end_trip',
+                 'source_trip_id.end_trip')
+    def _compute_return_buttons(self):
+        """Drive visibility of the Return-Home buttons:
+          - show_primary_return_button: at least one outbound trip ended
+            AND no return-trip line exists yet
+          - show_office_to_home_button: a via_office FIRST leg exists
+            AND no Office→Home SECOND leg exists yet
+          - has_return_trip_lines: any return line at all (drives the
+            Return Home section visibility)
+        """
+        for rec in self:
+            outbound_lines = rec.trip_line_ids.filtered(lambda l: not l.is_return_trip)
+            any_outbound_ended = (
+                bool(rec.source_trip_id and rec.source_trip_id.end_trip)
+                or any(l.trip_id and l.trip_id.end_trip for l in outbound_lines)
+            )
+            return_lines = rec.trip_line_ids.filtered(lambda l: l.is_return_trip)
+            # First leg of via_office: return_leg_type='via_office' AND not office_to_home
+            has_via_office_first = any(
+                l.return_leg_type == 'via_office' and not l.is_office_to_home_leg
+                for l in return_lines
+            )
+            has_office_to_home = any(l.is_office_to_home_leg for l in return_lines)
+            has_direct = any(l.return_leg_type == 'direct' for l in return_lines)
+            rec.show_primary_return_button = (
+                any_outbound_ended
+                and not (has_via_office_first or has_office_to_home or has_direct)
+            )
+            rec.show_office_to_home_button = has_via_office_first and not has_office_to_home
+            rec.has_return_trip_lines = bool(return_lines)
+
+    @api.depends('source_trip_id', 'source_trip_id.fuel_log_ids')
+    def _compute_source_trip_fuel_log_summary(self):
+        for rec in self:
+            trip = rec.source_trip_id
+            count = len(trip.fuel_log_ids) if trip else 0
+            if count == 0:
+                rec.source_trip_fuel_log_summary = ''
+            elif count == 1:
+                rec.source_trip_fuel_log_summary = _('1 fuel log added')
+            else:
+                rec.source_trip_fuel_log_summary = _('%d fuel logs added') % count
+
     @api.depends('employee_id', 'source_trip_id', 'trip_line_ids.trip_id')
     def _compute_available_trip_ids(self):
         """Trips that are still UNUSED across this employee's attendances.
@@ -181,11 +281,12 @@ class HrAttendance(models.Model):
                              others.mapped('trip_line_ids.trip_id')
             self_used = rec.source_trip_id | rec.trip_line_ids.mapped('trip_id')
             used_total = used_by_others | self_used
-            # Hard-exclude ended/cancelled trips so they never reach the
-            # picker dropdown regardless of how the view domain parses.
+            # Only draft trips are pickable — once started or ended, a trip
+            # is already owned by whoever started it and shouldn't appear in
+            # another attendance's picker.
             available = Tracking.search([
                 ('id', 'not in', used_total.ids),
-                ('trip_status', 'not in', ('ended', 'cancelled')),
+                ('trip_status', '=', 'draft'),
             ])
             rec.available_trip_ids = available
 
@@ -248,10 +349,30 @@ class HrAttendance(models.Model):
             return
         trip = self.source_trip_id
         if not (self.gps_latitude or self.gps_longitude):
-            self.gps_latitude = self._to_float_or_zero(trip.start_latitude)
-            self.gps_longitude = self._to_float_or_zero(trip.start_longitude)
+            lat, lng = self._resolve_trip_gps(trip)
+            self.gps_latitude = lat
+            self.gps_longitude = lng
         if not self.gps_location_name and trip.source_id:
             self.gps_location_name = trip.source_id.name
+
+    # --- Constraints --------------------------------------------------------
+
+    @api.constrains('source_trip_id', 'source_trip_start_km')
+    def _check_source_trip_start_km(self):
+        """Prevent saving the Primary Trip popup with Start KM = 0 on a draft
+        trip. A trip cannot logically start without an odometer reading.
+        Skips trips that have already started or been cancelled — those are
+        locked or out of scope respectively.
+        """
+        for rec in self:
+            trip = rec.source_trip_id
+            if not trip or trip.start_trip or trip.trip_cancel:
+                continue
+            if trip.start_km <= 0:
+                raise UserError(_(
+                    "Please enter Start KM (greater than 0) for trip %s "
+                    "before saving the Primary Trip."
+                ) % (trip.ref or ''))
 
     # --- Action methods -----------------------------------------------------
 
@@ -266,6 +387,34 @@ class HrAttendance(models.Model):
             'res_id': self.source_trip_id.id,
             'view_mode': 'form',
             'target': 'new',  # open in dialog so user edits without losing the attendance context
+        }
+
+    def action_add_source_trip_fuel(self):
+        """Open the vehicle.fuel.log popup pre-linked to source_trip_id so the
+        user can log a fuel stop without navigating into the trip itself.
+        Pre-fills vehicle/driver from the trip and the odometer from the last
+        fuel log (or start_km when there is no prior fuel log)."""
+        self.ensure_one()
+        trip = self.source_trip_id
+        if not trip:
+            raise UserError(_("Set up a Primary Trip first."))
+        last_fuel = trip.fuel_log_ids.sorted('create_date', reverse=True)[:1]
+        default_odometer = last_fuel.odometer if last_fuel else trip.start_km
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Add Fuel'),
+            'res_model': 'vehicle.fuel.log',
+            'view_mode': 'form',
+            'view_id': self.env.ref(
+                'vehicle_tracking.view_vehicle_fuel_log_form_popup'
+            ).id,
+            'target': 'new',
+            'context': {
+                'default_vehicle_tracking_id': trip.id,
+                'default_vehicle_id': trip.vehicle_id.id if trip.vehicle_id else False,
+                'default_driver_id': trip.driver_id.id if trip.driver_id else False,
+                'default_odometer': default_odometer,
+            },
         }
 
     def action_view_source_visits(self):
@@ -322,6 +471,86 @@ class HrAttendance(models.Model):
             'target': 'new',
             'context': {'default_attendance_id': self.id},
         }
+
+    def action_open_return_trip_popup(self):
+        """Opens the Setup Return Trip popup for the FIRST leg. The popup
+        looks like Setup Primary Trip + one extra field (Route radio:
+        Via Office / Direct) at the top. The user picks a draft trip and
+        Start KM; on save the trip auto-starts via the existing
+        _auto_start_trip_and_visit hook."""
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Primary Trip (Via Office or Direct)'),
+            'res_model': 'field.attendance.trip.line',
+            'view_mode': 'form',
+            'view_id': self.env.ref(
+                'hr_field_attendance.view_field_attendance_return_trip_form'
+            ).id,
+            'target': 'new',
+            'context': {
+                'default_attendance_id': self.id,
+                'default_is_return_trip': True,
+                'show_return_route_field': True,
+            },
+        }
+
+    def action_open_office_to_home_popup(self):
+        """Opens the SECOND-leg popup (Office -> Home). Same form view as
+        the first-leg popup but the Route radio is hidden -- the leg is
+        flagged as office_to_home via context default."""
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': _('Primary Trip (Office to Home)'),
+            'res_model': 'field.attendance.trip.line',
+            'view_mode': 'form',
+            'view_id': self.env.ref(
+                'hr_field_attendance.view_field_attendance_return_trip_form'
+            ).id,
+            'target': 'new',
+            'context': {
+                'default_attendance_id': self.id,
+                'default_is_return_trip': True,
+                'default_return_leg_type': 'via_office',
+                'default_is_office_to_home_leg': True,
+                'show_return_route_field': False,
+            },
+        }
+
+    def action_open_checkout_confirm_wizard(self):
+        """Field-attendance intercept on Check Out Now. If a return trip leg
+        is still open (start_trip=True but end_trip=False, not cancelled),
+        redirect the user to that trip's End Trip dialog FIRST -- the
+        action_end_trip override sees the `redirect_to_checkout_attendance_id`
+        context flag and finalizes the checkout after End KM is entered.
+
+        For non-field attendance OR when no open return trip exists, fall
+        through to the standard late-checkout-confirm wizard.
+        """
+        self.ensure_one()
+        if self.attendance_source == 'field':
+            open_return = self.trip_line_ids.filtered(
+                lambda l: l.is_return_trip and l.trip_id
+                          and l.trip_id.start_trip and not l.trip_id.end_trip
+                          and not l.trip_id.trip_cancel
+            )
+            if open_return:
+                last = open_return.sorted('sequence', reverse=True)[:1]
+                trip = last.trip_id
+                return {
+                    'type': 'ir.actions.act_window',
+                    'name': _('Close Return Trip — %s') % (trip.ref or ''),
+                    'res_model': 'vehicle.tracking',
+                    'res_id': trip.id,
+                    'view_mode': 'form',
+                    'target': 'new',
+                    'context': {
+                        'show_end_disclaimer': True,
+                        'redirect_to_checkout_attendance_id': self.id,
+                    },
+                }
+        return super().action_open_checkout_confirm_wizard()
 
     def action_edit_primary_trip(self):
         """Open hr.attendance in a popup with a stripped form view that
@@ -414,6 +643,16 @@ class HrAttendance(models.Model):
                 self._sync_gps_from_first_visit()
             except Exception:
                 _logger.exception("[field-attendance] post-write gps sync failed")
+        # Auto-start the source trip when the user saves the Edit Primary Trip
+        # popup with Start KM filled. Mirrors the manual "Start Trip" button on
+        # the vehicle.tracking record. The @api.constrains above already
+        # guarantees start_km > 0 by this point, so the helper only checks the
+        # draft-not-cancelled state.
+        if any(k in vals for k in ('source_trip_id', 'source_trip_start_km')):
+            try:
+                self._auto_start_source_trip()
+            except Exception:
+                _logger.exception("[field-attendance] auto-start source trip failed")
         # On checkout: end the last open trip (the one whose visits the user
         # just finished) and mark every linked visit as Done. Mirrors the UX
         # of the mobile app's "End Trip & Mark Attendance" tap.
@@ -423,6 +662,21 @@ class HrAttendance(models.Model):
             except Exception:
                 _logger.exception("[field-attendance] checkout finalize failed")
         return res
+
+    def _auto_start_source_trip(self):
+        """Transition source_trip_id from draft -> in_progress when the popup
+        save brought it to a startable state (start_km > 0). Mirrors the
+        'Start Trip' button on the trip form so the user doesn't have to open
+        the trip in another tab just to flip start_trip."""
+        for rec in self:
+            trip = rec.source_trip_id
+            if not trip or trip.start_trip or trip.trip_cancel:
+                continue
+            if trip.start_km > 0:
+                trip.write({
+                    'start_trip': True,
+                    'start_time': trip.start_time or fields.Datetime.now(),
+                })
 
     def _on_checkout_finalize_trips_and_visits(self):
         """Auto-end the most recent unfinished trip and mark every visit
@@ -531,6 +785,25 @@ class HrAttendance(models.Model):
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _resolve_trip_gps(self, trip):
+        """Return (lat, lng) for a vehicle.tracking record, falling back to the
+        trip's source vehicle.location when the trip's own GPS chars are empty.
+
+        Backend-created trips never have start_latitude/start_longitude filled —
+        those are only populated when the trip is started from the mobile app
+        with phone GPS. The vehicle.location records, however, always have
+        latitude/longitude set during configuration, so they're a reliable
+        fallback for the attendance's GPS sync.
+        """
+        if not trip:
+            return 0.0, 0.0
+        lat = self._to_float_or_zero(trip.start_latitude)
+        lng = self._to_float_or_zero(trip.start_longitude)
+        if not (lat or lng) and trip.source_id:
+            lat = trip.source_id.latitude or 0.0
+            lng = trip.source_id.longitude or 0.0
+        return lat, lng
 
     @api.model
     def get_today_field_attendance(self, employee_id):
@@ -643,8 +916,7 @@ class HrAttendance(models.Model):
             ], order='start_time asc', limit=1)
             if trips:
                 primary_trip_id = trips[0].id
-                gps_lat = self._to_float_or_zero(trips[0].start_latitude)
-                gps_lng = self._to_float_or_zero(trips[0].start_longitude)
+                gps_lat, gps_lng = self._resolve_trip_gps(trips[0])
                 gps_name = trips[0].source_id.name if trips[0].source_id else ''
             Visit = self.env['customer.visit'].sudo()
             visits = Visit.search([
@@ -689,7 +961,48 @@ class HrAttendance(models.Model):
             'expected_start_time': float(new_record.expected_start_time or 0.0),
             'check_in': str(new_record.check_in) if new_record.check_in else None,
             'needs_late_reason': bool(new_record.is_late) and not new_record.late_reason,
+            'should_show_trip_popup': (
+                not new_record.source_trip_id
+                and new_record._is_first_field_checkin_today()
+            ),
         }
+
+    def _is_first_field_checkin_today(self):
+        """True when this record is the employee's only field attendance for
+        their local day. Used by the mobile app to decide whether to show the
+        post-check-in Primary/Secondary trip popup."""
+        self.ensure_one()
+        if not self.employee_id:
+            return True
+        utc_start, utc_end, _local = self._employee_today_window(self.employee_id)
+        prior_count = self.env['hr.attendance'].sudo().search_count([
+            ('employee_id', '=', self.employee_id.id),
+            ('attendance_source', '=', 'field'),
+            ('check_in', '>=', utc_start),
+            ('check_in', '<', utc_end),
+            ('id', '!=', self.id),
+        ])
+        return prior_count == 0
+
+    def attach_primary_trip(self, vehicle_tracking_id):
+        """Attach a vehicle.tracking record to this attendance as
+        source_trip_id. Called by the mobile app right after the user starts
+        a trip from the post-check-in popup. Refuses if a primary is already
+        set so we never silently overwrite a trip the user already picked."""
+        self.ensure_one()
+        self._check_field_attendance_access(self.employee_id)
+        if self.source_trip_id:
+            return {
+                'success': False,
+                'message': _('Primary trip already set for today.'),
+                'attendance_id': self.id,
+                'trip_id': self.source_trip_id.id,
+            }
+        trip = self.env['vehicle.tracking'].sudo().browse(vehicle_tracking_id)
+        if not trip.exists():
+            return {'success': False, 'message': _('Trip not found.')}
+        self.write({'source_trip_id': trip.id})
+        return {'success': True, 'attendance_id': self.id, 'trip_id': trip.id}
 
     @api.model
     def create_field_attendance(self, employee_id):
@@ -763,8 +1076,7 @@ class HrAttendance(models.Model):
         if visit_lat or visit_lng:
             gps_lat, gps_lng = visit_lat, visit_lng
         else:
-            gps_lat = self._to_float_or_zero(primary_trip.start_latitude)
-            gps_lng = self._to_float_or_zero(primary_trip.start_longitude)
+            gps_lat, gps_lng = self._resolve_trip_gps(primary_trip)
 
         vals = {
             'employee_id': employee.id,

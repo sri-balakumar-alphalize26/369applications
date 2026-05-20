@@ -94,4 +94,9 @@
 
     <menuitem id="menu_customer_visit" name="Customer Visits" parent="menu_customer_visit_root" action="action_customer_visit" sequence="10"/>
 
+    <!-- NOTE: view_customer_visit_picker lives in hr_field_attendance because
+         it references the source_trip_id field, which is declared in
+         hr_field_attendance/models/customer_visit_inherit.py to avoid a
+         circular dependency on vehicle_tracking. -->
+
 </odoo>

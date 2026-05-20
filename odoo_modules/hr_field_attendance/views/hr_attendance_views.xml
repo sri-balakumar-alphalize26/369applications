@@ -14,9 +14,16 @@
                 <div class="alert alert-warning" role="alert"
                      invisible="not context.get('show_end_disclaimer')">
                     <strong>⚠ Closing previous trip</strong> &#8212; you're starting the next trip.
-                    Please enter the <strong>End KM</strong> below and click the
-                    green <strong>End Trip</strong> button at the top.
-                    The next trip's popup will then open automatically.
+                    Please enter the <strong>End KM</strong> below and click the big
+                    <strong>Save &amp; End Trip</strong> button.
+                </div>
+                <div class="mb-2"
+                     invisible="not context.get('show_end_disclaimer')">
+                    <button name="action_save_and_end_trip"
+                            type="object"
+                            string="Save &amp; End Trip"
+                            class="btn btn-primary btn-lg"
+                            icon="fa-check"/>
                 </div>
             </xpath>
         </field>
@@ -37,12 +44,40 @@
                 <field name="driver_id"/>
                 <field name="source_id" string="Source"/>
                 <field name="destination_id" string="Destination"/>
-                <field name="km_travelled" string="KM"/>
+                <field name="start_km" string="Start KM"/>
                 <field name="trip_status" widget="badge"
                        decoration-muted="trip_status == 'draft'"
                        decoration-info="trip_status == 'in_progress'"
                        decoration-success="trip_status == 'ended'"
                        decoration-danger="trip_status == 'cancelled'"/>
+                <button name="action_open_picker_edit" type="object"
+                        string="Edit" icon="fa-pencil" class="btn-link"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Custom list view used inside the Visit picker dialog (Many2one
+         dropdown -> Search more). Each row has an Edit button so the user
+         can fix a visit's details without leaving the picker. Mirrors the
+         pattern used above for vehicle.tracking.
+         Lives here (not in customer_visit) because it references
+         source_trip_id, which is declared in customer_visit_inherit.py
+         to avoid a circular dependency on vehicle_tracking. -->
+    <record id="view_customer_visit_picker" model="ir.ui.view">
+        <field name="name">customer.visit.picker.list</field>
+        <field name="model">customer.visit</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <list string="Pick a Visit">
+                <field name="source_trip_id" string="Source Trip"/>
+                <field name="partner_id" string="Customer"/>
+                <field name="date_time" string="Date / Time"/>
+                <field name="location_name" string="Location"/>
+                <field name="latitude" string="Lat"/>
+                <field name="longitude" string="Lng"/>
+                <field name="state" widget="badge"
+                       decoration-muted="state == 'draft'"
+                       decoration-success="state == 'done'"/>
                 <button name="action_open_picker_edit" type="object"
                         string="Edit" icon="fa-pencil" class="btn-link"/>
             </list>
@@ -101,14 +136,29 @@
                 <group string="Field Attendance" invisible="attendance_source != 'field'">
                     <field name="source_visit_count" invisible="1"/>
                     <field name="source_trip_ended" invisible="1"/>
-                    <!-- Empty state: only show the Setup Primary Trip button. -->
+                    <field name="show_primary_return_button" invisible="1"/>
+                    <field name="show_office_to_home_button" invisible="1"/>
+                    <field name="has_return_trip_lines" invisible="1"/>
+                    <!-- Empty state: Setup Primary + Setup Secondary side-by-side.
+                         Both gated on `id` so they appear only after the record is saved.
+                         Bracketed labels are one-time onboarding hints — populated-state
+                         buttons stay terse. Setup Secondary shows a confirm popup so users
+                         don't accidentally pick the wrong path on a Home → Office commute. -->
                     <div colspan="2" class="text-center my-3"
                          invisible="source_trip_id">
                         <button name="action_edit_primary_trip"
                                 type="object"
-                                string="Setup Primary Trip"
+                                string="Setup Primary Trip (Home to Office)"
+                                class="btn-primary me-2"
+                                icon="fa-plus"
+                                invisible="not id"/>
+                        <button name="action_add_additional_trip"
+                                type="object"
+                                string="Setup Secondary Trip (Home to Visit)"
                                 class="btn-primary"
-                                icon="fa-plus"/>
+                                icon="fa-plus"
+                                invisible="not id"
+                                confirm="If you're going from home to office, use Primary Trip. If you're directly going for a customer visit, continue with Secondary Trip."/>
                     </div>
                     <!-- Has-trip state: bordered card with details + Edit/Open/View buttons. -->
                     <div colspan="2" class="card mb-3"
@@ -145,15 +195,47 @@
                             <button name="action_view_source_visits"
                                     type="object"
                                     string="View Visits"
-                                    class="btn-secondary"
+                                    class="btn-secondary me-2"
                                     icon="fa-map-marker"
                                     invisible="source_visit_count == 0"/>
+                            <button name="action_add_source_trip_fuel"
+                                    type="object"
+                                    string="Add Fuel"
+                                    class="btn-primary me-2"
+                                    icon="fa-tint"
+                                    invisible="source_trip_ended"/>
+                            <span class="text-muted ms-1"
+                                  invisible="not source_trip_fuel_log_summary">
+                                <field name="source_trip_fuel_log_summary" nolabel="1" readonly="1"/>
+                            </span>
                         </div>
                     </div>
-                    <group string="Additional Trips" colspan="2"
-                           invisible="not source_trip_id">
-                        <field name="trip_line_ids" nolabel="1">
-                            <kanban class="o_kanban_mobile" create="0" delete="0">
+                    <group colspan="2"
+                           invisible="not source_trip_id and not trip_line_ids">
+                        <field name="trip_line_count" invisible="1"/>
+                        <!-- 1 line = "Secondary Trip"; 2+ lines = "Additional Trips";
+                             0 lines = the wider group is hidden (handled above) -->
+                        <separator string="Secondary Trip" colspan="2"
+                                   invisible="trip_line_count != 1"/>
+                        <separator string="Additional Trips" colspan="2"
+                                   invisible="trip_line_count &lt;= 1"/>
+                        <!-- Force each trip-line kanban card to span the FULL container
+                             width (one card per row). Without this override the default
+                             Odoo kanban grid would render cards at ~50% width which makes
+                             the long visit-address text wrap awkwardly. -->
+                        <style>
+                            .o_field_widget[name='trip_line_ids'] .o_kanban_renderer .o_kanban_record {
+                                width: 100% !important;
+                                max-width: 100% !important;
+                                flex: 0 0 100% !important;
+                                margin: 0 0 10px 0 !important;
+                            }
+                        </style>
+                        <field name="trip_line_ids" nolabel="1"
+                               invisible="trip_line_count == 0"
+                               colspan="2"
+                               domain="[('is_return_trip', '=', False)]">
+                            <kanban create="0" delete="0" records_draggable="false">
                                 <field name="trip_id"/>
                                 <field name="gps_latitude"/>
                                 <field name="gps_longitude"/>
@@ -161,57 +243,75 @@
                                 <field name="duration"/>
                                 <field name="source_location"/>
                                 <field name="destination_location"/>
+                                <field name="visit_id"/>
+                                <field name="visit_partner_id"/>
+                                <field name="visit_date_time"/>
+                                <field name="visit_location_name"/>
+                                <field name="visit_latitude"/>
+                                <field name="visit_longitude"/>
+                                <field name="trip_fuel_log_summary"/>
+                                <field name="trip_ended"/>
                                 <templates>
                                     <t t-name="card">
                                         <div class="oe_kanban_card oe_kanban_global_click"
-                                             style="padding:12px; margin-bottom:10px; border:1px solid #d0d0d0; border-radius:6px; width:100%;">
-                                            <div class="row">
-                                                <div class="col-6">
-                                                    <strong>Source Trip: </strong>
-                                                    <field name="trip_id"/>
+                                             style="padding:0; margin-bottom:10px; border:1px solid #d0d0d0; border-radius:6px; width:100%; background-color:#ffffff; overflow:hidden;">
+                                            <div class="row g-0" style="margin:0;">
+                                                <!-- LEFT: Trip Details -->
+                                                <div class="col-6" style="padding:14px 16px; box-sizing:border-box;">
+                                                    <div style="font-weight:600; color:#666; margin-bottom:8px; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; border-bottom:1px solid #eee; padding-bottom:6px;">
+                                                        Trip Details
+                                                    </div>
+                                                    <div style="line-height:1.7;">
+                                                        <div><strong>Source Trip: </strong><field name="trip_id"/></div>
+                                                        <div><strong>Source Location: </strong><field name="source_location"/></div>
+                                                        <div><strong>Destination Location: </strong><field name="destination_location"/></div>
+                                                        <div><strong>KM Travelled: </strong><field name="km_travelled"/></div>
+                                                        <div><strong>Duration (Hrs): </strong><field name="duration" widget="float_time"/></div>
+                                                        <div><strong>GPS Latitude: </strong><field name="gps_latitude"/></div>
+                                                        <div><strong>GPS Longitude: </strong><field name="gps_longitude"/></div>
+                                                    </div>
                                                 </div>
-                                                <div class="col-6">
-                                                    <strong>GPS Latitude: </strong>
-                                                    <field name="gps_latitude"/>
+                                                <!-- RIGHT: Visit Details (border-left so the divider extends with the taller column) -->
+                                                <div class="col-6" style="padding:14px 16px; box-sizing:border-box; border-left:1px solid #e0e0e0;">
+                                                    <div style="font-weight:600; color:#666; margin-bottom:8px; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; border-bottom:1px solid #eee; padding-bottom:6px;">
+                                                        Visit Details
+                                                    </div>
+                                                    <t t-if="record.visit_id.raw_value">
+                                                        <div style="line-height:1.7;">
+                                                            <div><strong>Visit: </strong><field name="visit_id"/></div>
+                                                            <div><strong>Customer: </strong><field name="visit_partner_id"/></div>
+                                                            <div><strong>Date / Time: </strong><field name="visit_date_time"/></div>
+                                                            <div><strong>Visit Location: </strong><field name="visit_location_name"/></div>
+                                                            <div><strong>Visit Latitude: </strong><field name="visit_latitude"/></div>
+                                                            <div><strong>Visit Longitude: </strong><field name="visit_longitude"/></div>
+                                                        </div>
+                                                    </t>
+                                                    <t t-if="!record.visit_id.raw_value">
+                                                        <div class="text-muted fst-italic">No visit attached</div>
+                                                    </t>
                                                 </div>
                                             </div>
-                                            <div class="row mt-1">
-                                                <div class="col-6">
-                                                    <strong>Source Location: </strong>
-                                                    <field name="source_location"/>
-                                                </div>
-                                                <div class="col-6">
-                                                    <strong>GPS Longitude: </strong>
-                                                    <field name="gps_longitude"/>
-                                                </div>
-                                            </div>
-                                            <div class="row mt-1">
-                                                <div class="col-6">
-                                                    <strong>Destination Location: </strong>
-                                                    <field name="destination_location"/>
-                                                </div>
-                                                <div class="col-6">
-                                                    <strong>KM Travelled: </strong>
-                                                    <field name="km_travelled"/>
-                                                </div>
-                                            </div>
-                                            <div class="row mt-1">
-                                                <div class="col-12">
-                                                    <strong>Duration (Hrs): </strong>
-                                                    <field name="duration" widget="float_time"/>
-                                                </div>
-                                            </div>
-                                            <div class="mt-2">
+                                            <div style="padding:10px 16px; border-top:1px solid #e0e0e0; background-color:#fafafa;">
                                                 <button name="action_open_trip" type="object"
                                                         class="btn btn-secondary btn-sm me-2"
                                                         icon="fa-truck">
                                                     Open Source Trip
                                                 </button>
                                                 <button name="action_view_visits" type="object"
-                                                        class="btn btn-secondary btn-sm"
+                                                        class="btn btn-secondary btn-sm me-2"
                                                         icon="fa-map-marker">
                                                     View Visits
                                                 </button>
+                                                <button name="action_add_trip_fuel" type="object"
+                                                        class="btn btn-primary btn-sm me-2"
+                                                        icon="fa-tint"
+                                                        invisible="trip_ended">
+                                                    Add Fuel
+                                                </button>
+                                                <span class="text-muted ms-1"
+                                                      invisible="not trip_fuel_log_summary">
+                                                    <field name="trip_fuel_log_summary"/>
+                                                </span>
                                             </div>
                                         </div>
                                     </t>
@@ -229,12 +329,18 @@
                                         <group>
                                             <field name="trip_id"
                                                    readonly="trip_ended"
-                                                   domain="[('trip_status', 'not in', ('ended', 'cancelled')), ('id', 'in', parent.available_trip_ids)]"
+                                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', parent.available_trip_ids)]"
                                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
                                             <field name="source_location" readonly="1"
                                                    invisible="not trip_id"/>
                                             <field name="destination_location" readonly="1"
                                                    invisible="not trip_id"/>
+                                            <field name="start_km"
+                                                   invisible="not trip_id"
+                                                   readonly="trip_ended"/>
+                                            <field name="gps_location_name"
+                                                   invisible="not trip_id"
+                                                   readonly="trip_ended"/>
                                         </group>
                                         <group>
                                             <field name="gps_latitude" readonly="1"
@@ -249,29 +355,25 @@
                                                 string="Open Source Trip"
                                                 class="btn-secondary"
                                                 icon="fa-truck"/>
-                                        <button name="action_view_visits"
-                                                type="object"
-                                                string="View Visits"
-                                                class="btn-secondary"
-                                                icon="fa-map-marker"/>
                                     </group>
-                                    <separator string="Visits" colspan="2"
-                                               invisible="not trip_id"/>
-                                    <!-- Visit list — NEVER shows Add a line per user request.
-                                         X-delete still works to remove a visit if needed. -->
-                                    <field name="visit_ids" colspan="2"
-                                           invisible="not trip_id"
-                                           readonly="trip_ended"
-                                           domain="[('state', '=', 'draft')]"
-                                           options="{'no_create': True, 'no_quick_create': True}">
-                                        <list create="false">
-                                            <field name="name"/>
-                                            <field name="partner_id"/>
-                                            <field name="date_time"/>
-                                            <field name="location_name"/>
-                                            <field name="state"/>
-                                        </list>
-                                    </field>
+                                    <!-- Visit picker + visit-detail rows live BELOW Open Source Trip
+                                         so the trip context is established before the user attaches a visit. -->
+                                    <group invisible="not trip_id">
+                                        <group>
+                                            <field name="visit_id"
+                                                   readonly="trip_ended"
+                                                   domain="[('state', '=', 'draft')]"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
+                                                   options="{'no_quick_create': True}"/>
+                                            <field name="visit_partner_id" invisible="not visit_id"/>
+                                            <field name="visit_date_time" invisible="not visit_id"/>
+                                            <field name="visit_location_name" invisible="not visit_id"/>
+                                        </group>
+                                        <group>
+                                            <field name="visit_latitude" invisible="not visit_id"/>
+                                            <field name="visit_longitude" invisible="not visit_id"/>
+                                        </group>
+                                    </group>
                                 </sheet>
                                 <footer>
                                     <button string="Save" special="save" class="btn-primary"
@@ -289,10 +391,139 @@
                         <div colspan="2" class="text-center my-3">
                             <button name="action_add_additional_trip"
                                     type="object"
-                                    string="Add Additional Trips"
+                                    string="Secondary Trip"
+                                    class="btn-primary me-2"
+                                    icon="fa-plus"
+                                    invisible="trip_line_ids"/>
+                            <button name="action_add_additional_trip"
+                                    type="object"
+                                    string="Add Additional Trip"
+                                    class="btn-primary me-2"
+                                    icon="fa-plus"
+                                    invisible="not trip_line_ids"/>
+                            <button name="action_open_return_trip_popup"
+                                    type="object"
+                                    string="Primary Trip (Via Office or Direct)"
+                                    class="btn-primary me-2"
+                                    icon="fa-home"
+                                    invisible="not show_primary_return_button"/>
+                            <button name="action_open_office_to_home_popup"
+                                    type="object"
+                                    string="Primary Trip (Office to Home)"
                                     class="btn-primary"
-                                    icon="fa-plus"/>
+                                    icon="fa-home"
+                                    invisible="not show_office_to_home_button"/>
                         </div>
+                    </group>
+                    <!-- RETURN HOME section: dedicated kanban for return-trip legs.
+                         Same card design as Additional Trips (full-width, two-column
+                         Trip/Visit layout) but filtered to is_return_trip=True. -->
+                    <group colspan="2" invisible="not has_return_trip_lines">
+                        <separator string="Return Home" colspan="2"/>
+                        <style>
+                            .o_field_widget[name='return_trip_kanban'] .o_kanban_renderer .o_kanban_record {
+                                width: 100% !important;
+                                max-width: 100% !important;
+                                flex: 0 0 100% !important;
+                                margin: 0 0 10px 0 !important;
+                            }
+                        </style>
+                        <field name="trip_line_ids"
+                               nolabel="1" colspan="2"
+                               domain="[('is_return_trip', '=', True)]"
+                               context="{'default_is_return_trip': True}">
+                            <kanban create="0" delete="0" records_draggable="false">
+                                <field name="trip_id"/>
+                                <field name="gps_latitude"/>
+                                <field name="gps_longitude"/>
+                                <field name="km_travelled"/>
+                                <field name="duration"/>
+                                <field name="source_location"/>
+                                <field name="destination_location"/>
+                                <field name="return_leg_type"/>
+                                <field name="is_office_to_home_leg"/>
+                                <field name="trip_fuel_log_summary"/>
+                                <field name="trip_ended"/>
+                                <templates>
+                                    <t t-name="card">
+                                        <div class="oe_kanban_card oe_kanban_global_click"
+                                             style="padding:0; margin-bottom:10px; border:1px solid #d0d0d0; border-radius:6px; width:100%; background-color:#ffffff; overflow:hidden;">
+                                            <div style="padding:14px 16px;">
+                                                <div style="font-weight:600; color:#666; margin-bottom:8px; text-transform:uppercase; font-size:11px; letter-spacing:0.5px; border-bottom:1px solid #eee; padding-bottom:6px;">
+                                                    <t t-if="record.is_office_to_home_leg.raw_value">Return Trip — Office → Home</t>
+                                                    <t t-if="!record.is_office_to_home_leg.raw_value and record.return_leg_type.raw_value == 'via_office'">Return Trip — Visit → Office</t>
+                                                    <t t-if="!record.is_office_to_home_leg.raw_value and record.return_leg_type.raw_value == 'direct'">Return Trip — Visit → Home (Direct)</t>
+                                                </div>
+                                                <div class="row" style="line-height:1.7;">
+                                                    <div class="col-6">
+                                                        <div><strong>Source Trip: </strong><field name="trip_id"/></div>
+                                                        <div><strong>Source Location: </strong><field name="source_location"/></div>
+                                                        <div><strong>Destination Location: </strong><field name="destination_location"/></div>
+                                                        <div><strong>KM Travelled: </strong><field name="km_travelled"/></div>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <div><strong>Duration (Hrs): </strong><field name="duration" widget="float_time"/></div>
+                                                        <div><strong>GPS Latitude: </strong><field name="gps_latitude"/></div>
+                                                        <div><strong>GPS Longitude: </strong><field name="gps_longitude"/></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div style="padding:10px 16px; border-top:1px solid #e0e0e0; background-color:#fafafa;">
+                                                <button name="action_open_trip" type="object"
+                                                        class="btn btn-secondary btn-sm me-2"
+                                                        icon="fa-truck">Open Source Trip</button>
+                                                <button name="action_add_trip_fuel" type="object"
+                                                        class="btn btn-primary btn-sm me-2"
+                                                        icon="fa-tint"
+                                                        invisible="trip_ended">Add Fuel</button>
+                                                <span class="text-muted ms-1"
+                                                      invisible="not trip_fuel_log_summary">
+                                                    <field name="trip_fuel_log_summary"/>
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </t>
+                                </templates>
+                            </kanban>
+                            <form string="Setup Return Trip">
+                                <sheet>
+                                    <field name="trip_ended" invisible="1"/>
+                                    <field name="is_return_trip" invisible="1"/>
+                                    <div class="alert alert-info" role="alert" invisible="not trip_ended">
+                                        This trip has been ended and is now read-only.
+                                    </div>
+                                    <group>
+                                        <group>
+                                            <field name="trip_id"
+                                                   readonly="trip_ended"
+                                                   domain="[('trip_status', '=', 'draft')]"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                            <field name="source_location" readonly="1" invisible="not trip_id"/>
+                                            <field name="destination_location" readonly="1" invisible="not trip_id"/>
+                                            <field name="start_km" invisible="not trip_id" readonly="trip_ended"/>
+                                            <field name="gps_location_name" invisible="not trip_id" readonly="trip_ended"/>
+                                        </group>
+                                        <group>
+                                            <field name="gps_latitude" readonly="1" invisible="not trip_id"/>
+                                            <field name="gps_longitude" readonly="1" invisible="not trip_id"/>
+                                        </group>
+                                    </group>
+                                    <group colspan="2" invisible="not trip_id">
+                                        <button name="action_open_trip" type="object"
+                                                string="Open Source Trip"
+                                                class="btn-secondary" icon="fa-truck"/>
+                                    </group>
+                                </sheet>
+                                <footer>
+                                    <button string="Save" special="save" class="btn-primary" data-hotkey="q"/>
+                                    <button string="Discard" special="cancel" class="btn-secondary" data-hotkey="z"/>
+                                    <button name="action_delete_self" type="object"
+                                            string="Delete" class="btn-danger ms-auto"
+                                            icon="fa-trash" invisible="not id"
+                                            confirm="Delete this return trip leg?"/>
+                                </footer>
+                            </form>
+                        </field>
                     </group>
                     <group string="Trip Totals" colspan="2"
                            invisible="not source_trip_id">
@@ -330,12 +561,18 @@
                         <group>
                             <field name="trip_id"
                                    readonly="trip_ended"
-                                   domain="[('trip_status', 'not in', ('ended', 'cancelled'))]"
+                                   domain="[('trip_status', '=', 'draft')]"
                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
                             <field name="source_location" readonly="1"
                                    invisible="not trip_id"/>
                             <field name="destination_location" readonly="1"
                                    invisible="not trip_id"/>
+                            <field name="start_km"
+                                   invisible="not trip_id"
+                                   readonly="trip_ended"/>
+                            <field name="gps_location_name"
+                                   invisible="not trip_id"
+                                   readonly="trip_ended"/>
                         </group>
                         <group>
                             <field name="gps_latitude" readonly="1"
@@ -350,28 +587,32 @@
                                 string="Open Source Trip"
                                 class="btn-secondary"
                                 icon="fa-truck"/>
-                        <button name="action_view_visits"
+                    </group>
+                    <!-- Visit picker + visit-detail rows live BELOW Open Source Trip
+                         so the trip context is established before the user attaches a visit. -->
+                    <group invisible="not trip_id">
+                        <group>
+                            <field name="visit_id"
+                                   readonly="trip_ended"
+                                   domain="[('state', '=', 'draft')]"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
+                                   options="{'no_quick_create': True}"/>
+                            <field name="visit_partner_id" invisible="not visit_id"/>
+                            <field name="visit_date_time" invisible="not visit_id"/>
+                            <field name="visit_location_name" invisible="not visit_id"/>
+                        </group>
+                        <group>
+                            <field name="visit_latitude" invisible="not visit_id"/>
+                            <field name="visit_longitude" invisible="not visit_id"/>
+                        </group>
+                    </group>
+                    <group colspan="2" invisible="not visit_id">
+                        <button name="action_open_visit"
                                 type="object"
-                                string="View Visits"
+                                string="Open Source Visit"
                                 class="btn-secondary"
                                 icon="fa-map-marker"/>
                     </group>
-                    <separator string="Visits" colspan="2"
-                               invisible="not trip_id"/>
-                    <!-- Visit list — never shows Add a line. X-delete works. -->
-                    <field name="visit_ids" colspan="2"
-                           invisible="not trip_id"
-                           readonly="trip_ended"
-                           domain="[('state', '=', 'draft')]"
-                           options="{'no_create': True, 'no_quick_create': True}">
-                        <list create="false">
-                            <field name="name"/>
-                            <field name="partner_id"/>
-                            <field name="date_time"/>
-                            <field name="location_name"/>
-                            <field name="state"/>
-                        </list>
-                    </field>
                 </sheet>
                 <footer>
                     <button string="Save" special="save" class="btn-primary"
@@ -385,6 +626,77 @@
                             icon="fa-trash"
                             invisible="not id"
                             confirm="Delete this additional trip from this attendance?"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Setup Return Trip popup. Used by the "Primary Trip (Via Office or
+         Direct)" and "Primary Trip (Office to Home)" buttons on the Field
+         Attendance form. Trip-only (no visit). The Route radio at the top
+         is shown only on the first-leg popup (context flag
+         show_return_route_field). The second-leg popup hides it and the
+         return_leg_type is set via context default. -->
+    <record id="view_field_attendance_return_trip_form" model="ir.ui.view">
+        <field name="name">field.attendance.trip.line.return.form</field>
+        <field name="model">field.attendance.trip.line</field>
+        <field name="priority">99</field>
+        <field name="arch" type="xml">
+            <form string="Setup Return Trip">
+                <sheet>
+                    <field name="trip_ended" invisible="1"/>
+                    <field name="is_return_trip" invisible="1"/>
+                    <div class="alert alert-info" role="alert" invisible="not trip_ended">
+                        This trip has been ended and is now read-only.
+                    </div>
+                    <!-- Route radio shown only on the first-leg popup. -->
+                    <group invisible="not context.get('show_return_route_field')">
+                        <field name="return_leg_type" widget="radio"
+                               options="{'horizontal': true}"
+                               required="context.get('show_return_route_field')"/>
+                    </group>
+                    <group>
+                        <group>
+                            <field name="trip_id"
+                                   readonly="trip_ended"
+                                   domain="[('trip_status', '=', 'draft')]"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                            <field name="source_location" readonly="1"
+                                   invisible="not trip_id"/>
+                            <field name="destination_location" readonly="1"
+                                   invisible="not trip_id"/>
+                            <field name="start_km"
+                                   invisible="not trip_id"
+                                   readonly="trip_ended"/>
+                            <field name="gps_location_name"
+                                   invisible="not trip_id"
+                                   readonly="trip_ended"/>
+                        </group>
+                        <group>
+                            <field name="gps_latitude" readonly="1"
+                                   invisible="not trip_id"/>
+                            <field name="gps_longitude" readonly="1"
+                                   invisible="not trip_id"/>
+                        </group>
+                    </group>
+                    <group colspan="2" invisible="not trip_id">
+                        <button name="action_open_trip"
+                                type="object"
+                                string="Open Source Trip"
+                                class="btn-secondary"
+                                icon="fa-truck"/>
+                    </group>
+                </sheet>
+                <footer>
+                    <button string="Save" special="save" class="btn-primary"
+                            data-hotkey="q"/>
+                    <button string="Discard" special="cancel"
+                            class="btn-secondary" data-hotkey="z"/>
+                    <button name="action_delete_self" type="object"
+                            string="Delete" class="btn-danger ms-auto"
+                            icon="fa-trash"
+                            invisible="not id"
+                            confirm="Delete this return trip leg?"/>
                 </footer>
             </form>
         </field>
@@ -404,6 +716,7 @@
                     <field name="has_source_visits" invisible="1"/>
                     <field name="available_trip_ids" invisible="1"/>
                     <field name="source_trip_ended" invisible="1"/>
+                    <field name="source_trip_started" invisible="1"/>
                     <div class="alert alert-info" role="alert"
                          invisible="not source_trip_ended">
                         This trip has been ended and is now read-only.
@@ -412,12 +725,15 @@
                         <group>
                             <field name="source_trip_id"
                                    readonly="source_trip_ended"
-                                   domain="['|', '&amp;', ('trip_status', 'not in', ('ended', 'cancelled')), ('id', 'in', available_trip_ids), ('id', '=', source_trip_id)]"
+                                   domain="['|', '&amp;', ('trip_status', '=', 'draft'), ('id', 'in', available_trip_ids), ('id', '=', source_trip_id)]"
                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
                             <field name="source_trip_source_location" readonly="1"
                                    invisible="not source_trip_id"/>
                             <field name="source_trip_destination_location" readonly="1"
                                    invisible="not source_trip_id"/>
+                            <field name="source_trip_start_km"
+                                   invisible="not source_trip_id"
+                                   readonly="source_trip_started"/>
                             <field name="gps_location_name"
                                    readonly="source_trip_ended"/>
                         </group>
@@ -434,46 +750,7 @@
                                 string="Open Source Trip"
                                 class="btn-secondary"
                                 icon="fa-truck"/>
-                        <button name="action_view_source_visits"
-                                type="object"
-                                string="View Visits"
-                                class="btn-secondary"
-                                icon="fa-map-marker"/>
                     </group>
-                    <separator string="Visits" colspan="2"
-                               invisible="not source_trip_id"/>
-                    <!-- Empty state: editable list with Add a line so the user can pick the FIRST visit.
-                         Gate uses `source_visit_ids` truthy check directly — re-evaluates immediately
-                         on in-form M2M edits, unlike the prior `has_source_visits` computed shadow
-                         which Odoo 19's form editor doesn't always re-fire. -->
-                    <field name="source_visit_ids" colspan="2"
-                           invisible="not source_trip_id or source_visit_ids"
-                           readonly="source_trip_ended"
-                           domain="[('state', '=', 'draft')]"
-                           options="{'no_create': True, 'no_quick_create': True}">
-                        <list>
-                            <field name="name"/>
-                            <field name="partner_id"/>
-                            <field name="date_time"/>
-                            <field name="location_name"/>
-                            <field name="state"/>
-                        </list>
-                    </field>
-                    <!-- Has-rows state: no Add a line (list create="false"), X-delete still works so
-                         the user can swap. Visible only when the M2M actually has rows. -->
-                    <field name="source_visit_ids" colspan="2"
-                           invisible="not source_trip_id or not source_visit_ids"
-                           readonly="source_trip_ended"
-                           domain="[('state', '=', 'draft')]"
-                           options="{'no_create': True, 'no_quick_create': True}">
-                        <list create="false">
-                            <field name="name"/>
-                            <field name="partner_id"/>
-                            <field name="date_time"/>
-                            <field name="location_name"/>
-                            <field name="state"/>
-                        </list>
-                    </field>
                 </sheet>
                 <footer>
                     <button string="Save" special="save" class="btn-primary"

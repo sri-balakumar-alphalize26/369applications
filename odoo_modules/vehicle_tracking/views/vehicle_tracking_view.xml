@@ -78,7 +78,7 @@
           <group>
             <group>
               <field name="source_id" placeholder="Select Source Location" required="1" readonly="end_trip or trip_cancel"/>
-              <field name="start_km" required="1" readonly="end_trip or trip_cancel"/>
+              <field name="start_km" required="1" readonly="start_trip or end_trip or trip_cancel"/>
               <label for="end_km"/>
               <div>
                   <field name="end_km" required="end_trip" nolabel="1"

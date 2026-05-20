@@ -1,6 +1,6 @@
 {
     'name': 'Customer Visit',
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.1.0',
     'category': 'Sales',
     'summary': 'Customer Visit Tracking and Visit Plan Management',
     'depends': ['base', 'hr', 'mail'],

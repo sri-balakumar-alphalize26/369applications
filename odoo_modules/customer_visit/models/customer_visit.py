@@ -35,9 +35,41 @@ class CustomerVisit(models.Model):
     voice_note_player = fields.Html(string='Play Voice Note', compute='_compute_voice_note_player', sanitize=False)
     state = fields.Selection([
         ('draft', 'Draft'),
+        ('in_progress', 'Started'),
         ('done', 'Done'),
     ], string='Status', default='draft', tracking=True)
     company_id = fields.Many2one('res.company', string='Company', default=lambda self: self.env.company)
+
+    # NOTE: the cross-module `source_trip_id` field that references
+    # vehicle.tracking lives in hr_field_attendance/models/customer_visit_inherit.py.
+    # customer_visit cannot reference vehicle_tracking directly because
+    # vehicle_tracking already depends on customer_visit (declaring the FK here
+    # would form a circular dependency).
+
+    @api.model
+    def name_search(self, name='', domain=None, operator='ilike', limit=100):
+        """Restrict Visit dropdowns that pass `hide_done_visits=True` in
+        context to draft visits only. Mirrors vehicle.tracking.name_search."""
+        domain = list(domain or [])
+        if self.env.context.get('hide_done_visits'):
+            domain = domain + [('state', '=', 'draft')]
+        return super().name_search(
+            name=name, domain=domain, operator=operator, limit=limit,
+        )
+
+    def action_open_picker_edit(self):
+        """Open this visit in a dialog form so the user can edit it without
+        leaving the Visit picker dialog. Triggered by the per-row Edit
+        button in view_customer_visit_picker."""
+        self.ensure_one()
+        return {
+            'type': 'ir.actions.act_window',
+            'name': 'Edit Visit — %s' % (self.name or ''),
+            'res_model': 'customer.visit',
+            'res_id': self.id,
+            'view_mode': 'form',
+            'target': 'new',
+        }
 
     @api.depends('voice_note', 'voice_note_filename')
     def _compute_voice_note_player(self):
