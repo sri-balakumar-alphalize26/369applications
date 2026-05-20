@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import logging
 from odoo import api, fields, models, _
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
@@ -148,6 +148,36 @@ class FieldAttendanceTripLine(models.Model):
         string='Visit Longitude', digits=(16, 8),
     )
 
+    @api.model
+    def _validate_vals_start_km_or_raise(self, vals):
+        """Validate a single create/write vals dict: if trip_id is present and
+        the trip is still in draft state, start_km MUST be > 0.
+
+        This is called BEFORE super().create() / super().write() so it reads
+        directly from the incoming vals dict, avoiding the timing issues that
+        plague @api.constrains on related fields (writeback ordering, cache
+        staleness, deferred constraint firing).
+        """
+        trip_id = vals.get('trip_id')
+        if not trip_id:
+            return
+        trip = self.env['vehicle.tracking'].browse(trip_id)
+        if not trip.exists():
+            return
+        if trip.start_trip or trip.end_trip or trip.trip_cancel:
+            return  # already past this validation point
+        # When start_km is in vals (user touched it), use that value.
+        # When it's not, fall back to the trip's current start_km.
+        if 'start_km' in vals:
+            start_km = vals.get('start_km') or 0
+        else:
+            start_km = trip.start_km or 0
+        if start_km <= 0:
+            raise ValidationError(_(
+                "Please enter Start KM (greater than 0) for trip %s "
+                "before saving."
+            ) % (trip.ref or ''))
+
     def _resolve_primary_visit(self):
         """Single source of truth for 'which visit drives this trip line'.
         Prefers the new visit_id field; falls back to the first legacy
@@ -167,6 +197,14 @@ class FieldAttendanceTripLine(models.Model):
     # is treated as readonly on the field-attendance form (no edits allowed).
     trip_ended = fields.Boolean(
         related='trip_id.end_trip', readonly=True,
+    )
+    # Mirror of the parent attendance's is_checked_out gate. Exposed here so
+    # kanban-card buttons (Add Fuel etc.) can hide themselves once the
+    # attendance is finalised, without needing parent.* lookups in the
+    # kanban template (which Odoo 19's kanban arch doesn't support for
+    # button visibility expressions).
+    attendance_checked_out = fields.Boolean(
+        related='attendance_id.is_checked_out', readonly=True,
     )
 
     # Boolean shadow of visit_ids for the popup view's `invisible` modifiers
@@ -234,6 +272,15 @@ class FieldAttendanceTripLine(models.Model):
                 visit.write({'state': 'in_progress'})
 
     def write(self, vals):
+        # Pre-write validation: when the write would change trip_id or
+        # start_km, validate BEFORE applying. The resolved trip is either the
+        # new one in vals, or each record's current trip_id.
+        if 'trip_id' in vals or 'start_km' in vals:
+            for rec in self:
+                rec_vals = dict(vals)
+                if 'trip_id' not in rec_vals and rec.trip_id:
+                    rec_vals['trip_id'] = rec.trip_id.id
+                self._validate_vals_start_km_or_raise(rec_vals)
         res = super().write(vals)
         if any(k in vals for k in ('trip_id', 'visit_id', 'start_km')):
             try:
@@ -349,6 +396,11 @@ class FieldAttendanceTripLine(models.Model):
         on already-locked records) doesn't silently no-op the auto-end
         when the trip was already touched.
         """
+        # Pre-create validation: block save when start_km is missing/zero on
+        # a draft trip. Reads directly from vals (the user's typed value),
+        # avoiding any timing issues with related-field writeback / cache.
+        for vals in vals_list:
+            self._validate_vals_start_km_or_raise(vals)
         records = super().create(vals_list)
         now = fields.Datetime.now()
         for line in records:

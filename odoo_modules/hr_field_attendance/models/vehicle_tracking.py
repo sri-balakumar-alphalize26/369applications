@@ -157,6 +157,44 @@ class VehicleTracking(models.Model):
                     'target': 'new',
                     'context': {'default_attendance_id': attendance_id},
                 }
+            # NEW: Primary Trip (Via Office or Direct) close-previous flow
+            return_trip_att_id = self.env.context.get('redirect_to_return_trip_attendance_id')
+            if return_trip_att_id:
+                return {
+                    'type': 'ir.actions.act_window',
+                    'name': _('Primary Trip (Via Office or Direct)'),
+                    'res_model': 'field.attendance.trip.line',
+                    'view_mode': 'form',
+                    'view_id': self.env.ref(
+                        'hr_field_attendance.view_field_attendance_return_trip_form'
+                    ).id,
+                    'target': 'new',
+                    'context': {
+                        'default_attendance_id': return_trip_att_id,
+                        'default_is_return_trip': True,
+                        'show_return_route_field': True,
+                    },
+                }
+            # NEW: Primary Trip (Office to Home) close-previous flow
+            office_home_att_id = self.env.context.get('redirect_to_office_to_home_attendance_id')
+            if office_home_att_id:
+                return {
+                    'type': 'ir.actions.act_window',
+                    'name': _('Primary Trip (Office to Home)'),
+                    'res_model': 'field.attendance.trip.line',
+                    'view_mode': 'form',
+                    'view_id': self.env.ref(
+                        'hr_field_attendance.view_field_attendance_return_trip_form'
+                    ).id,
+                    'target': 'new',
+                    'context': {
+                        'default_attendance_id': office_home_att_id,
+                        'default_is_return_trip': True,
+                        'default_return_leg_type': 'via_office',
+                        'default_is_office_to_home_leg': True,
+                        'show_return_route_field': False,
+                    },
+                }
             checkout_att_id = self.env.context.get('redirect_to_checkout_attendance_id')
             if checkout_att_id:
                 att = self.env['hr.attendance'].browse(checkout_att_id)
@@ -219,6 +257,44 @@ class VehicleTracking(models.Model):
                 ).id,
                 'target': 'new',
                 'context': {'default_attendance_id': attendance_id},
+            }
+        # NEW: Primary Trip (Via Office or Direct) close-previous flow
+        return_trip_att_id = self.env.context.get('redirect_to_return_trip_attendance_id')
+        if return_trip_att_id:
+            return {
+                'type': 'ir.actions.act_window',
+                'name': _('Primary Trip (Via Office or Direct)'),
+                'res_model': 'field.attendance.trip.line',
+                'view_mode': 'form',
+                'view_id': self.env.ref(
+                    'hr_field_attendance.view_field_attendance_return_trip_form'
+                ).id,
+                'target': 'new',
+                'context': {
+                    'default_attendance_id': return_trip_att_id,
+                    'default_is_return_trip': True,
+                    'show_return_route_field': True,
+                },
+            }
+        # NEW: Primary Trip (Office to Home) close-previous flow
+        office_home_att_id = self.env.context.get('redirect_to_office_to_home_attendance_id')
+        if office_home_att_id:
+            return {
+                'type': 'ir.actions.act_window',
+                'name': _('Primary Trip (Office to Home)'),
+                'res_model': 'field.attendance.trip.line',
+                'view_mode': 'form',
+                'view_id': self.env.ref(
+                    'hr_field_attendance.view_field_attendance_return_trip_form'
+                ).id,
+                'target': 'new',
+                'context': {
+                    'default_attendance_id': office_home_att_id,
+                    'default_is_return_trip': True,
+                    'default_return_leg_type': 'via_office',
+                    'default_is_office_to_home_leg': True,
+                    'show_return_route_field': False,
+                },
             }
         checkout_att_id = self.env.context.get('redirect_to_checkout_attendance_id')
         if checkout_att_id:

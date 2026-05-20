@@ -37,6 +37,21 @@ class HrAttendance(models.Model):
         'attendance_id',
         string='Additional Trips',
     )
+    # Split views of trip_line_ids by is_return_trip flag. Using one
+    # `<field name="trip_line_ids">` per section with a `domain=` attribute
+    # in the XML view did NOT filter reliably under Odoo 19 (two fields with
+    # the same name in the same form view race on the records they display).
+    # Computed one2manys with explicit Python filters render correctly.
+    outbound_trip_line_ids = fields.One2many(
+        'field.attendance.trip.line',
+        compute='_compute_split_trip_lines',
+        string='Outbound Trip Lines',
+    )
+    return_trip_line_ids = fields.One2many(
+        'field.attendance.trip.line',
+        compute='_compute_split_trip_lines',
+        string='Return Trip Lines',
+    )
     # Count of trip lines -- gates the "Secondary Trip" vs "Additional Trips"
     # section heading. 1 line = Secondary, 2+ = Additional, 0 = section hidden.
     trip_line_count = fields.Integer(
@@ -124,6 +139,25 @@ class HrAttendance(models.Model):
     source_trip_started = fields.Boolean(
         related='source_trip_id.start_trip', readonly=True,
     )
+    # Single source of truth for "this day's field attendance is finalised":
+    # gates every state-mutating action button on the form so the page goes
+    # fully read-only once Check Out Now is clicked. View-only actions
+    # (Open Source Trip, View Visits) are NOT gated by this flag.
+    is_checked_out = fields.Boolean(
+        string='Checked Out',
+        compute='_compute_is_checked_out',
+    )
+    # Aggregate display strings used by the field-attendance kanban view's
+    # expandable details panel. They concatenate every trip / visit attached
+    # to the day so HR sees the full picture without opening the form.
+    all_trips_display = fields.Char(
+        string='All Trips',
+        compute='_compute_all_trips_visits_display',
+    )
+    all_visits_display = fields.Char(
+        string='All Visits',
+        compute='_compute_all_trips_visits_display',
+    )
     # Inline label shown next to the Add Fuel button so the user can confirm
     # how many fuel logs have been added without opening the trip form.
     # Empty string when the trip has no fuel logs yet (the view hides the
@@ -206,40 +240,99 @@ class HrAttendance(models.Model):
                 rec.trip_line_ids.filtered(lambda l: not l.is_return_trip)
             )
 
+    @api.depends('trip_line_ids', 'trip_line_ids.is_return_trip')
+    def _compute_split_trip_lines(self):
+        """Split trip_line_ids into outbound and return-home subsets, each
+        as its own one2many. The view binds each kanban to ONE of these
+        fields so the SECONDARY TRIP card grid only ever shows outbound
+        lines and the RETURN HOME card grid only ever shows return lines —
+        with no duplicate rendering across sections."""
+        for rec in self:
+            rec.outbound_trip_line_ids = rec.trip_line_ids.filtered(
+                lambda l: not l.is_return_trip
+            )
+            rec.return_trip_line_ids = rec.trip_line_ids.filtered(
+                lambda l: l.is_return_trip
+            )
+
     @api.depends('trip_line_ids.is_return_trip',
                  'trip_line_ids.return_leg_type',
                  'trip_line_ids.is_office_to_home_leg',
-                 'trip_line_ids.trip_id.end_trip',
-                 'source_trip_id.end_trip')
+                 'trip_line_ids.sequence')
     def _compute_return_buttons(self):
-        """Drive visibility of the Return-Home buttons:
-          - show_primary_return_button: at least one outbound trip ended
-            AND no return-trip line exists yet
-          - show_office_to_home_button: a via_office FIRST leg exists
-            AND no Office→Home SECOND leg exists yet
-          - has_return_trip_lines: any return line at all (drives the
-            Return Home section visibility)
+        """Drive visibility of the Return-Home buttons based on the LAST
+        trip line's state — supporting a CYCLE workflow where the user
+        can: secondary trip -> return -> add additional trip -> return -> ...
+
+        Logic keys off the highest-sequence trip line:
+          - Last line is OUTBOUND   -> show "Via Office or Direct"
+                                       (user is at a visit, ready to return)
+          - Last line is via_office FIRST leg (not yet Office->Home)
+                                    -> show "Office to Home"
+                                       (user is at office, needs to get home)
+          - Last line is DIRECT or OFFICE_TO_HOME
+                                    -> cycle complete; both return buttons hidden.
+                                       Add Additional Trip starts the next cycle,
+                                       which re-enables "Via Office or Direct"
+                                       because the new last line is outbound.
+
+        has_return_trip_lines stays a simple "any return line exists" flag,
+        driving the Return Home section's visibility.
         """
         for rec in self:
-            outbound_lines = rec.trip_line_ids.filtered(lambda l: not l.is_return_trip)
-            any_outbound_ended = (
-                bool(rec.source_trip_id and rec.source_trip_id.end_trip)
-                or any(l.trip_id and l.trip_id.end_trip for l in outbound_lines)
-            )
             return_lines = rec.trip_line_ids.filtered(lambda l: l.is_return_trip)
-            # First leg of via_office: return_leg_type='via_office' AND not office_to_home
-            has_via_office_first = any(
-                l.return_leg_type == 'via_office' and not l.is_office_to_home_leg
-                for l in return_lines
-            )
-            has_office_to_home = any(l.is_office_to_home_leg for l in return_lines)
-            has_direct = any(l.return_leg_type == 'direct' for l in return_lines)
-            rec.show_primary_return_button = (
-                any_outbound_ended
-                and not (has_via_office_first or has_office_to_home or has_direct)
-            )
-            rec.show_office_to_home_button = has_via_office_first and not has_office_to_home
+            sorted_lines = rec.trip_line_ids.sorted('sequence')
+            last_line = sorted_lines[-1] if sorted_lines else None
             rec.has_return_trip_lines = bool(return_lines)
+            if last_line is None:
+                rec.show_primary_return_button = False
+                rec.show_office_to_home_button = False
+                continue
+            if not last_line.is_return_trip:
+                rec.show_primary_return_button = True
+                rec.show_office_to_home_button = False
+            elif (last_line.return_leg_type == 'via_office'
+                  and not last_line.is_office_to_home_leg):
+                rec.show_primary_return_button = False
+                rec.show_office_to_home_button = True
+            else:
+                rec.show_primary_return_button = False
+                rec.show_office_to_home_button = False
+
+    @api.depends('check_out')
+    def _compute_is_checked_out(self):
+        for rec in self:
+            rec.is_checked_out = bool(rec.check_out)
+
+    @api.depends(
+        'source_trip_id.ref', 'source_visit_ids.name',
+        'trip_line_ids.trip_id.ref',
+        'trip_line_ids.visit_id.name',
+        'trip_line_ids.is_return_trip',
+        'trip_line_ids.return_leg_type',
+        'trip_line_ids.is_office_to_home_leg',
+    )
+    def _compute_all_trips_visits_display(self):
+        for rec in self:
+            trip_parts = []
+            if rec.source_trip_id:
+                trip_parts.append(rec.source_trip_id.ref or '')
+            for line in rec.trip_line_ids:
+                ref = line.trip_id.ref or ''
+                if line.is_return_trip:
+                    if line.is_office_to_home_leg:
+                        ref = '%s Office→Home' % ref if ref else 'Office→Home'
+                    elif line.return_leg_type == 'via_office':
+                        ref = '%s Visit→Office' % ref if ref else 'Visit→Office'
+                    elif line.return_leg_type == 'direct':
+                        ref = '%s Visit→Home' % ref if ref else 'Visit→Home'
+                if ref:
+                    trip_parts.append(ref)
+            rec.all_trips_display = ', '.join(trip_parts)
+
+            visit_parts = list(rec.source_visit_ids.mapped('name'))
+            visit_parts.extend(rec.trip_line_ids.mapped('visit_id.name'))
+            rec.all_visits_display = ', '.join(v for v in visit_parts if v)
 
     @api.depends('source_trip_id', 'source_trip_id.fuel_log_ids')
     def _compute_source_trip_fuel_log_summary(self):
@@ -428,25 +521,52 @@ class HrAttendance(models.Model):
             'context': {'create': False},
         }
 
+    def _last_trip_line(self, only_outbound=False, only_via_office_first=False):
+        """Return the most recently added trip line on this attendance.
+
+        Uses a compound (sequence, id) sort so ties on the default
+        sequence=10 (which every line shares unless explicitly bumped)
+        are broken deterministically by creation order — without this
+        tiebreaker, Python's stable sort on a flat sequence key returns
+        the FIRST-created line instead of the latest, which breaks the
+        "close previous trip" detection for return-trip legs.
+
+        Optional filters narrow the candidate set:
+          - only_outbound: exclude return-trip lines
+          - only_via_office_first: keep only via_office FIRST legs
+            (return_leg_type='via_office' AND not is_office_to_home_leg)
+
+        Returns an empty recordset when no lines match.
+        """
+        self.ensure_one()
+        lines = self.trip_line_ids
+        if only_outbound:
+            lines = lines.filtered(lambda l: not l.is_return_trip)
+        if only_via_office_first:
+            lines = lines.filtered(
+                lambda l: l.is_return_trip
+                          and l.return_leg_type == 'via_office'
+                          and not l.is_office_to_home_leg
+            )
+        if not lines:
+            return self.env['field.attendance.trip.line']
+        return lines.sorted(lambda l: (l.sequence, l.id))[-1:]
+
     def action_add_additional_trip(self):
         """Orchestrate the "add a new additional trip" workflow.
 
-        If a previous trip is still open (primary or last trip_line),
-        FIRST open that trip in a popup with a disclaimer banner so the
-        user enters End KM before closing it. After they save, they click
-        "Add Additional Trips" again — by then the previous trip is ended,
-        and this method falls through to opening the new trip-line
-        creation popup.
+        If a previous trip is still open (primary or latest trip_line —
+        outbound OR return), FIRST open that trip in a popup with a
+        disclaimer banner so the user enters End KM before closing it.
+        After they save, the chained flow lands them on the new
+        trip-line creation popup automatically.
 
         If there's no open previous trip, jump straight to the new
         trip-line creation popup.
         """
         self.ensure_one()
-        # Find the most recent trip on this attendance
-        if self.trip_line_ids:
-            last_trip = self.trip_line_ids.sorted('sequence', reverse=True)[:1].trip_id
-        else:
-            last_trip = self.source_trip_id
+        last_line = self._last_trip_line()
+        last_trip = last_line.trip_id if last_line else self.source_trip_id
         if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
             return {
                 'type': 'ir.actions.act_window',
@@ -473,12 +593,32 @@ class HrAttendance(models.Model):
         }
 
     def action_open_return_trip_popup(self):
-        """Opens the Setup Return Trip popup for the FIRST leg. The popup
-        looks like Setup Primary Trip + one extra field (Route radio:
-        Via Office / Direct) at the top. The user picks a draft trip and
-        Start KM; on save the trip auto-starts via the existing
-        _auto_start_trip_and_visit hook."""
+        """Opens the Setup Return Trip popup for the FIRST leg. If the
+        previous trip (primary or last outbound trip_line) is still open
+        (not ended and not cancelled), shows the close-previous-trip
+        dialog FIRST -- mirrors Add Additional Trip's behaviour. After
+        Save & Exit closes that trip, the action_save_and_end_trip /
+        action_custom_save override sees `redirect_to_return_trip_attendance_id`
+        in context and opens this return-trip popup automatically."""
         self.ensure_one()
+        # Find the last open OUTBOUND trip on this attendance (the one the
+        # user is returning from), else fall back to the primary trip.
+        last_line = self._last_trip_line(only_outbound=True)
+        last_trip = last_line.trip_id if last_line else self.source_trip_id
+        if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
+            return {
+                'type': 'ir.actions.act_window',
+                'name': _('Close Previous Trip — %s') % (last_trip.ref or ''),
+                'res_model': 'vehicle.tracking',
+                'res_id': last_trip.id,
+                'view_mode': 'form',
+                'target': 'new',
+                'context': {
+                    'show_end_disclaimer': True,
+                    'redirect_to_return_trip_attendance_id': self.id,
+                },
+            }
+        # Previous trip already closed -- go straight to the return-trip popup.
         return {
             'type': 'ir.actions.act_window',
             'name': _('Primary Trip (Via Office or Direct)'),
@@ -498,8 +638,34 @@ class HrAttendance(models.Model):
     def action_open_office_to_home_popup(self):
         """Opens the SECOND-leg popup (Office -> Home). Same form view as
         the first-leg popup but the Route radio is hidden -- the leg is
-        flagged as office_to_home via context default."""
+        flagged as office_to_home via context default.
+
+        If the previous via_office_leg1 trip is still open (not ended,
+        not cancelled), shows the close-previous-trip dialog FIRST.
+        After Save & Exit closes that trip, action_save_and_end_trip /
+        action_custom_save sees `redirect_to_office_to_home_attendance_id`
+        and opens this Office-to-Home popup automatically.
+        """
         self.ensure_one()
+        # Find the latest via_office FIRST leg (not yet office_to_home).
+        # If it's still open, show close-previous-trip dialog first.
+        first_leg = self._last_trip_line(only_via_office_first=True)
+        if first_leg:
+            last_trip = first_leg.trip_id
+            if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
+                return {
+                    'type': 'ir.actions.act_window',
+                    'name': _('Close Previous Trip — %s') % (last_trip.ref or ''),
+                    'res_model': 'vehicle.tracking',
+                    'res_id': last_trip.id,
+                    'view_mode': 'form',
+                    'target': 'new',
+                    'context': {
+                        'show_end_disclaimer': True,
+                        'redirect_to_office_to_home_attendance_id': self.id,
+                    },
+                }
+        # Previous leg already closed (or doesn't exist) -- straight to the popup.
         return {
             'type': 'ir.actions.act_window',
             'name': _('Primary Trip (Office to Home)'),

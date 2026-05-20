@@ -1,30 +1,55 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <!-- Inherit vehicle.tracking form view to add a disclaimer banner that
-         appears ONLY when the form is opened with context flag
-         show_end_disclaimer=True (set by hr.attendance.action_add_additional_trip
-         when the user is closing a previous trip before adding a new one). -->
+    <!-- Inherit vehicle.tracking form view to:
+           (a) add a disclaimer banner when opened in the close-previous flow
+           (b) HIDE the regular Save button (action_custom_save) in that flow
+           (c) INSERT a "Save & Exit" button in its place that explicitly
+               ends the trip and chains to the next-trip popup
+         All three only fire when show_end_disclaimer=True is in context
+         (set by hr.attendance.action_add_additional_trip). -->
     <record id="view_vehicle_tracking_form_inherit_disclaimer" model="ir.ui.view">
         <field name="name">vehicle.tracking.form.inherit.disclaimer</field>
         <field name="model">vehicle.tracking</field>
         <field name="inherit_id" ref="vehicle_tracking.view_vehicle_tracking_form"/>
         <field name="arch" type="xml">
+            <!-- (a) Disclaimer banner -->
             <xpath expr="//sheet" position="before">
                 <div class="alert alert-warning" role="alert"
                      invisible="not context.get('show_end_disclaimer')">
                     <strong>⚠ Closing previous trip</strong> &#8212; you're starting the next trip.
-                    Please enter the <strong>End KM</strong> below and click the big
-                    <strong>Save &amp; End Trip</strong> button.
+                    Enter the <strong>End KM</strong> below and click <strong>Save &amp; Exit</strong>.
+                    The trip will be ended automatically and the next trip's popup will open.
                 </div>
-                <div class="mb-2"
-                     invisible="not context.get('show_end_disclaimer')">
+            </xpath>
+            <!-- (b) Hide the regular header Save button when disclaimer is active -->
+            <xpath expr="//header/button[@name='action_custom_save']" position="attributes">
+                <attribute name="invisible">context.get('show_end_disclaimer')</attribute>
+            </xpath>
+            <!-- (c) Add an explicit <footer> at the bottom of the form so Odoo
+                 stops auto-rendering its default Save / Discard at the
+                 dialog bottom. Both Save variants are mutually exclusive
+                 via the show_end_disclaimer context flag:
+                   - Save & Exit shows ONLY during the close-previous flow
+                   - Regular Save shows in all OTHER contexts so normal
+                     trip editing keeps its bottom Save button. -->
+            <xpath expr="//form" position="inside">
+                <footer>
                     <button name="action_save_and_end_trip"
+                            string="Save &amp; Exit"
                             type="object"
-                            string="Save &amp; End Trip"
-                            class="btn btn-primary btn-lg"
-                            icon="fa-check"/>
-                </div>
+                            class="btn-primary"
+                            icon="fa-check"
+                            invisible="not context.get('show_end_disclaimer')"/>
+                    <button name="action_custom_save"
+                            string="Save"
+                            type="object"
+                            class="btn-primary"
+                            invisible="context.get('show_end_disclaimer')"/>
+                    <button special="cancel"
+                            string="Discard"
+                            class="btn-secondary"/>
+                </footer>
             </xpath>
         </field>
     </record>
@@ -100,34 +125,53 @@
                 <div class="alert alert-warning" role="alert"
                      invisible="attendance_source != 'field'">
                     <h5 class="alert-heading mb-2">👋 How to fill your Field Attendance for today</h5>
-                    <p class="mb-2">Just follow these steps in order — each step unlocks the next:</p>
+                    <p class="mb-2">Just follow these steps in order:</p>
                     <ol class="mb-0">
                         <li>
                             <strong>Were you late today?</strong>
-                            If yes, scroll down to <strong>Late Tracking</strong> and click the
-                            <strong>Enter Late Reason</strong> button. Type why you were late and save.
-                            If you arrived on time, skip this step.
+                            If yes, scroll down to <strong>Late Tracking</strong> and click
+                            <strong>Enter Late Reason</strong>. Type why and save.
+                            If you were on time, skip this.
                         </li>
                         <li>
-                            <strong>Add your first trip of the day.</strong>
-                            Click the <strong>Setup Primary Trip</strong> button in the
-                            Field Attendance section below.
-                            In the popup, pick the vehicle trip you used and add the customer visits you made on that trip.
-                            Click <strong>Save</strong> when done.
+                            <strong>Going from Home to Office?</strong>
+                            Click <strong>Setup Primary Trip (Home to Office)</strong> and fill in
+                            the trip you used. You stay in office mode after this — no return needed.
                         </li>
                         <li>
-                            <strong>Did you make more than one trip today?</strong>
-                            Click <strong>Add Additional Trips</strong>.
-                            A small window will appear asking you to close your previous trip first —
-                            just type the <strong>End KM</strong> reading and click Save.
-                            Then click <strong>Add Additional Trips</strong> again to add the next trip.
-                            Repeat for every extra trip.
+                            <strong>Going from Home directly to a customer visit?</strong>
+                            Click <strong>Setup Secondary Trip (Home to Visit)</strong> and fill in
+                            the trip and the customer you visited.
+                        </li>
+                        <li>
+                            <strong>Made more visits after the first one?</strong>
+                            Click <strong>Add Additional Trip</strong> each time. The system will
+                            ask you to close your previous trip first — just type the
+                            <strong>End KM</strong> and save. Then pick the next trip and visit.
+                        </li>
+                        <li>
+                            <strong>Time to head back from your last visit?</strong>
+                            Click <strong>Primary Trip (Via Office or Direct)</strong>:
+                            <ul class="mb-0">
+                                <li><strong>Via Office</strong> — you go to office first, then home.
+                                    After saving the Visit → Office leg, click
+                                    <strong>Primary Trip (Office to Home)</strong> to log the
+                                    second half.</li>
+                                <li><strong>Direct</strong> — you go straight from the visit to home.
+                                    One save and you're done with the return.</li>
+                            </ul>
+                        </li>
+                        <li>
+                            <strong>Need to do another visit before going home?</strong>
+                            After any return leg, click <strong>Add Additional Trip</strong> at the
+                            bottom to start a new visit. The Via Office / Direct choice comes back
+                            when you're ready to return again. This loops as many times as needed.
                         </li>
                         <li>
                             <strong>Done for the day?</strong>
-                            Click <strong>Check Out Now</strong> at the top.
-                            Your last trip will close automatically and all your visits will be marked as Done.
-                            After check-out the record is locked — you cannot edit it anymore.
+                            Click <strong>Check Out Now</strong> at the top. Your last open trip
+                            closes automatically, every visit is marked as Done, and the whole page
+                            locks — buttons go away and nothing on it can be edited anymore.
                         </li>
                     </ol>
                 </div>
@@ -139,13 +183,19 @@
                     <field name="show_primary_return_button" invisible="1"/>
                     <field name="show_office_to_home_button" invisible="1"/>
                     <field name="has_return_trip_lines" invisible="1"/>
+                    <field name="is_checked_out" invisible="1"/>
+                    <div class="alert alert-info" role="alert" colspan="2"
+                         invisible="not is_checked_out">
+                        <strong>This attendance has been checked out and is now read-only.</strong>
+                        You can view your trips and visits below but no further edits are allowed.
+                    </div>
                     <!-- Empty state: Setup Primary + Setup Secondary side-by-side.
                          Both gated on `id` so they appear only after the record is saved.
                          Bracketed labels are one-time onboarding hints — populated-state
                          buttons stay terse. Setup Secondary shows a confirm popup so users
                          don't accidentally pick the wrong path on a Home → Office commute. -->
-                    <div colspan="2" class="text-center my-3"
-                         invisible="source_trip_id">
+                    <div colspan="2" class="text-center my-1"
+                         invisible="source_trip_id or is_checked_out">
                         <button name="action_edit_primary_trip"
                                 type="object"
                                 string="Setup Primary Trip (Home to Office)"
@@ -186,7 +236,7 @@
                                     string="Edit Primary Trip"
                                     class="btn-primary me-2"
                                     icon="fa-pencil"
-                                    invisible="source_trip_ended"/>
+                                    invisible="source_trip_ended or is_checked_out"/>
                             <button name="action_open_source_trip"
                                     type="object"
                                     string="Open Source Trip"
@@ -203,7 +253,7 @@
                                     string="Add Fuel"
                                     class="btn-primary me-2"
                                     icon="fa-tint"
-                                    invisible="source_trip_ended"/>
+                                    invisible="source_trip_ended or is_checked_out"/>
                             <span class="text-muted ms-1"
                                   invisible="not source_trip_fuel_log_summary">
                                 <field name="source_trip_fuel_log_summary" nolabel="1" readonly="1"/>
@@ -211,30 +261,32 @@
                         </div>
                     </div>
                     <group colspan="2"
-                           invisible="not source_trip_id and not trip_line_ids">
+                           invisible="not source_trip_id and not trip_line_ids"
+                           style="margin-top: 0; margin-bottom: 0;">
                         <field name="trip_line_count" invisible="1"/>
                         <!-- 1 line = "Secondary Trip"; 2+ lines = "Additional Trips";
                              0 lines = the wider group is hidden (handled above) -->
                         <separator string="Secondary Trip" colspan="2"
-                                   invisible="trip_line_count != 1"/>
+                                   invisible="trip_line_count != 1"
+                                   style="margin-top: 4px; margin-bottom: 4px;"/>
                         <separator string="Additional Trips" colspan="2"
-                                   invisible="trip_line_count &lt;= 1"/>
+                                   invisible="trip_line_count &lt;= 1"
+                                   style="margin-top: 4px; margin-bottom: 4px;"/>
                         <!-- Force each trip-line kanban card to span the FULL container
                              width (one card per row). Without this override the default
                              Odoo kanban grid would render cards at ~50% width which makes
                              the long visit-address text wrap awkwardly. -->
                         <style>
-                            .o_field_widget[name='trip_line_ids'] .o_kanban_renderer .o_kanban_record {
+                            .o_field_widget[name='outbound_trip_line_ids'] .o_kanban_renderer .o_kanban_record {
                                 width: 100% !important;
                                 max-width: 100% !important;
                                 flex: 0 0 100% !important;
-                                margin: 0 0 10px 0 !important;
+                                margin: 0 0 4px 0 !important;
                             }
                         </style>
-                        <field name="trip_line_ids" nolabel="1"
+                        <field name="outbound_trip_line_ids" nolabel="1"
                                invisible="trip_line_count == 0"
-                               colspan="2"
-                               domain="[('is_return_trip', '=', False)]">
+                               colspan="2">
                             <kanban create="0" delete="0" records_draggable="false">
                                 <field name="trip_id"/>
                                 <field name="gps_latitude"/>
@@ -251,6 +303,7 @@
                                 <field name="visit_longitude"/>
                                 <field name="trip_fuel_log_summary"/>
                                 <field name="trip_ended"/>
+                                <field name="attendance_checked_out"/>
                                 <templates>
                                     <t t-name="card">
                                         <div class="oe_kanban_card oe_kanban_global_click"
@@ -305,7 +358,7 @@
                                                 <button name="action_add_trip_fuel" type="object"
                                                         class="btn btn-primary btn-sm me-2"
                                                         icon="fa-tint"
-                                                        invisible="trip_ended">
+                                                        invisible="trip_ended or attendance_checked_out">
                                                     Add Fuel
                                                 </button>
                                                 <span class="text-muted ms-1"
@@ -328,6 +381,7 @@
                                     <group>
                                         <group>
                                             <field name="trip_id"
+                                                   required="1"
                                                    readonly="trip_ended"
                                                    domain="[('trip_status', '=', 'draft'), ('id', 'in', parent.available_trip_ids)]"
                                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
@@ -336,6 +390,7 @@
                                             <field name="destination_location" readonly="1"
                                                    invisible="not trip_id"/>
                                             <field name="start_km"
+                                                   required="trip_id"
                                                    invisible="not trip_id"
                                                    readonly="trip_ended"/>
                                             <field name="gps_location_name"
@@ -361,6 +416,7 @@
                                     <group invisible="not trip_id">
                                         <group>
                                             <field name="visit_id"
+                                                   required="trip_id"
                                                    readonly="trip_ended"
                                                    domain="[('state', '=', 'draft')]"
                                                    context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
@@ -388,49 +444,42 @@
                                 </footer>
                             </form>
                         </field>
-                        <div colspan="2" class="text-center my-3">
+                        <!-- Outbound-section buttons only. The Add Additional
+                             Trip button (when populated) lives ONLY at the
+                             bottom of the Return Home section now, so it
+                             doesn't appear twice on the page. -->
+                        <div colspan="2" class="text-center my-1">
                             <button name="action_add_additional_trip"
                                     type="object"
                                     string="Secondary Trip"
                                     class="btn-primary me-2"
                                     icon="fa-plus"
-                                    invisible="trip_line_ids"/>
-                            <button name="action_add_additional_trip"
-                                    type="object"
-                                    string="Add Additional Trip"
-                                    class="btn-primary me-2"
-                                    icon="fa-plus"
-                                    invisible="not trip_line_ids"/>
+                                    invisible="trip_line_ids or is_checked_out"/>
                             <button name="action_open_return_trip_popup"
                                     type="object"
                                     string="Primary Trip (Via Office or Direct)"
                                     class="btn-primary me-2"
                                     icon="fa-home"
-                                    invisible="not show_primary_return_button"/>
-                            <button name="action_open_office_to_home_popup"
-                                    type="object"
-                                    string="Primary Trip (Office to Home)"
-                                    class="btn-primary"
-                                    icon="fa-home"
-                                    invisible="not show_office_to_home_button"/>
+                                    invisible="not show_primary_return_button or is_checked_out"/>
                         </div>
                     </group>
                     <!-- RETURN HOME section: dedicated kanban for return-trip legs.
                          Same card design as Additional Trips (full-width, two-column
                          Trip/Visit layout) but filtered to is_return_trip=True. -->
-                    <group colspan="2" invisible="not has_return_trip_lines">
-                        <separator string="Return Home" colspan="2"/>
+                    <group colspan="2" invisible="not has_return_trip_lines"
+                           style="margin-top: 0;">
+                        <separator string="Return Home" colspan="2"
+                                   style="margin-top: 4px; margin-bottom: 4px;"/>
                         <style>
-                            .o_field_widget[name='return_trip_kanban'] .o_kanban_renderer .o_kanban_record {
+                            .o_field_widget[name='return_trip_line_ids'] .o_kanban_renderer .o_kanban_record {
                                 width: 100% !important;
                                 max-width: 100% !important;
                                 flex: 0 0 100% !important;
-                                margin: 0 0 10px 0 !important;
+                                margin: 0 0 4px 0 !important;
                             }
                         </style>
-                        <field name="trip_line_ids"
+                        <field name="return_trip_line_ids"
                                nolabel="1" colspan="2"
-                               domain="[('is_return_trip', '=', True)]"
                                context="{'default_is_return_trip': True}">
                             <kanban create="0" delete="0" records_draggable="false">
                                 <field name="trip_id"/>
@@ -444,6 +493,7 @@
                                 <field name="is_office_to_home_leg"/>
                                 <field name="trip_fuel_log_summary"/>
                                 <field name="trip_ended"/>
+                                <field name="attendance_checked_out"/>
                                 <templates>
                                     <t t-name="card">
                                         <div class="oe_kanban_card oe_kanban_global_click"
@@ -475,7 +525,7 @@
                                                 <button name="action_add_trip_fuel" type="object"
                                                         class="btn btn-primary btn-sm me-2"
                                                         icon="fa-tint"
-                                                        invisible="trip_ended">Add Fuel</button>
+                                                        invisible="trip_ended or attendance_checked_out">Add Fuel</button>
                                                 <span class="text-muted ms-1"
                                                       invisible="not trip_fuel_log_summary">
                                                     <field name="trip_fuel_log_summary"/>
@@ -500,7 +550,7 @@
                                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
                                             <field name="source_location" readonly="1" invisible="not trip_id"/>
                                             <field name="destination_location" readonly="1" invisible="not trip_id"/>
-                                            <field name="start_km" invisible="not trip_id" readonly="trip_ended"/>
+                                            <field name="start_km" required="trip_id" invisible="not trip_id" readonly="trip_ended"/>
                                             <field name="gps_location_name" invisible="not trip_id" readonly="trip_ended"/>
                                         </group>
                                         <group>
@@ -524,6 +574,27 @@
                                 </footer>
                             </form>
                         </field>
+                        <!-- Bottom-of-section buttons. Office to Home shows
+                             only when the last return leg is a via_office
+                             FIRST leg awaiting its Office to Home half.
+                             Add Additional Trip is always available so the
+                             user can start a NEW cycle (new outbound visit
+                             from wherever they are) once a return is done.
+                             Both vanish once Check Out Now is clicked. -->
+                        <div colspan="2" class="text-center my-1"
+                             invisible="not has_return_trip_lines or is_checked_out">
+                            <button name="action_open_office_to_home_popup"
+                                    type="object"
+                                    string="Primary Trip (Office to Home)"
+                                    class="btn-primary me-2"
+                                    icon="fa-home"
+                                    invisible="not show_office_to_home_button"/>
+                            <button name="action_add_additional_trip"
+                                    type="object"
+                                    string="Add Additional Trip"
+                                    class="btn-primary"
+                                    icon="fa-plus"/>
+                        </div>
                     </group>
                     <group string="Trip Totals" colspan="2"
                            invisible="not source_trip_id">
@@ -560,6 +631,7 @@
                     <group>
                         <group>
                             <field name="trip_id"
+                                   required="1"
                                    readonly="trip_ended"
                                    domain="[('trip_status', '=', 'draft')]"
                                    context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
@@ -568,6 +640,7 @@
                             <field name="destination_location" readonly="1"
                                    invisible="not trip_id"/>
                             <field name="start_km"
+                                   required="trip_id"
                                    invisible="not trip_id"
                                    readonly="trip_ended"/>
                             <field name="gps_location_name"
@@ -593,6 +666,7 @@
                     <group invisible="not trip_id">
                         <group>
                             <field name="visit_id"
+                                   required="trip_id"
                                    readonly="trip_ended"
                                    domain="[('state', '=', 'draft')]"
                                    context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
@@ -666,6 +740,7 @@
                             <field name="destination_location" readonly="1"
                                    invisible="not trip_id"/>
                             <field name="start_km"
+                                   required="trip_id"
                                    invisible="not trip_id"
                                    readonly="trip_ended"/>
                             <field name="gps_location_name"
