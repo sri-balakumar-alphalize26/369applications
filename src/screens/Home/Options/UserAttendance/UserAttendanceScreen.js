@@ -32,11 +32,11 @@ import {
 } from '@api/services/generalApi';
 import HistoryListItem from '@screens/Home/Options/UserAttendance/FieldAttendance/components/HistoryListItem';
 import HistoryFiltersSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/HistoryFiltersSheet';
-import PrimaryTripCard from '@screens/Home/Options/UserAttendance/FieldAttendance/components/PrimaryTripCard';
-import TripLineCard from '@screens/Home/Options/UserAttendance/FieldAttendance/components/TripLineCard';
-import TripTotalsSection from '@screens/Home/Options/UserAttendance/FieldAttendance/components/TripTotalsSection';
-import EditPrimaryTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/EditPrimaryTripSheet';
-import AddTripLineSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/AddTripLineSheet';
+// NEW: shared field-attendance section that mirrors the hr_field_attendance
+// Odoo module's flow (Setup Primary / Secondary, Add Additional Trip,
+// Primary Trip Via Office or Direct, Office to Home, cycle, freeze on
+// checkout). Same component is also used by FieldAttendanceDetailScreen.
+import FieldAttendanceSection from '@screens/Home/Options/UserAttendance/FieldAttendance/components/FieldAttendanceSection';
 import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
@@ -3363,78 +3363,18 @@ const UserAttendanceScreen = ({ navigation, route }) => {
               </View>
             ) : null}
 
-            {/* Section: Primary Trip */}
-            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>Primary Trip</Text>
-            <PrimaryTripCard
-              attendance={fieldDetail}
-              tripLines={fieldLines}
-              busy={fieldBusy}
-              onSetup={() => {
-                console.log('[FieldAttendance] tap Setup Primary Trip — opening sheet, fieldDetail?', !!fieldDetail);
-                setEditPrimaryOpen(true);
-              }}
-              onEdit={() => {
-                console.log('[FieldAttendance] tap Edit Primary Trip — opening sheet');
-                setEditPrimaryOpen(true);
-              }}
-              onOpenTrip={() => handleFieldOpenTrip(fieldDetail?.source_trip_id)}
-              onViewVisits={() => handleFieldViewVisits(fieldDetail?.source_visit_ids)}
-            />
-
-            {/* Section: Additional Trips — only after primary trip is set */}
-            {Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0] ? (
-              <>
-                {(() => {
-                  // Show every line — including ended ones — so per-trip
-                  // details stay visible after the auto-end cascade fires on
-                  // add-additional. TripLineCard renders an "Ended" pill on
-                  // each ended row so the state is still clear.
-                  const lines = fieldLines || [];
-                  return (
-                    <>
-                      <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(14), marginBottom: scale(2) }}>
-                        Additional Trips ({lines.length})
-                      </Text>
-                      {lines.length === 0 ? (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), backgroundColor: '#FAFAFA', borderRadius: scale(10), padding: scale(12), marginTop: scale(6), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
-                          <MaterialIcons name="add-road" size={scale(20)} color="#BDBDBD" />
-                          <Text style={{ flex: 1, fontSize: scale(12), color: '#888', fontFamily: FONT_FAMILY.urbanistMedium }}>
-                            No additional trips. Add another trip if you took multiple trips today.
-                          </Text>
-                        </View>
-                      ) : (
-                        lines.map((line, idx) => (
-                          <TripLineCard
-                            key={line.id}
-                            line={line}
-                            index={idx}
-                            busy={fieldBusy}
-                            attendanceCheckedOut={!!fieldData?.check_out}
-                            onOpenTrip={() => handleFieldOpenTrip(line.trip_id)}
-                            onViewVisits={() => handleFieldViewVisits(line.visit_ids)}
-                            onDelete={() => handleFieldDeleteLine(line)}
-                          />
-                        ))
-                      )}
-                    </>
-                  );
-                })()}
-
-                {fieldStatus === 'checked_in_open' ? (
-                  <TouchableOpacity
-                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), backgroundColor: FIELD_COLOR, borderRadius: scale(12), padding: scale(12), marginTop: scale(10) }}
-                    disabled={fieldBusy}
-                    activeOpacity={0.85}
-                    onPress={handleFieldAddAdditionalTrip}
-                  >
-                    <MaterialIcons name="add" size={scale(18)} color="#fff" />
-                    <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>Add Additional Trip</Text>
-                  </TouchableOpacity>
-                ) : null}
-
-                {/* Section: Trip Totals */}
-                <TripTotalsSection attendance={fieldDetail} />
-              </>
+            {/* NEW Field Attendance flow — shared section drives the full
+                hr_field_attendance state machine: Setup Primary Trip /
+                Setup Secondary Trip on entry, Add Additional Trip loop,
+                Primary Trip (Via Office or Direct), Office to Home,
+                close-previous-trip with End KM, freeze-on-checkout, etc.
+                The screen-level Check Out button below still handles the
+                physical checkout for non-field flows; for field attendance
+                the section's own internal state listens to the resulting
+                refresh and renders the read-only banner once check_out
+                is set on the server. */}
+            {fieldDetail?.id ? (
+              <FieldAttendanceSection attendanceId={fieldDetail.id} embedded />
             ) : null}
 
             {/* Action footer */}
@@ -3926,48 +3866,10 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* Field Attendance bottom sheets — mounted at screen root so they
-          overlay correctly regardless of which tab the user is on. Their
-          visibility is driven by their `visible` prop. */}
-      <EditPrimaryTripSheet
-        visible={editPrimaryOpen}
-        attendance={fieldDetail}
-        loadAvailableTrips={fieldLoadAvailableTripsPrimary}
-        loadDraftVisits={fieldLoadDraftVisitsPrimary}
-        loadVisitsByIds={fieldLoadVisitsByIds}
-        onSave={handleFieldSavePrimary}
-        onClose={() => { setEditPrimaryOpen(false); setFieldNewTripIdToHighlight(null); setFieldNewVisitIdToHighlight(null); }}
-        saving={editPrimarySaving}
-        onCreateNewTrip={() => handleCreateNewTrip('edit')}
-        autoOpenPicker={autoOpenPickerEdit}
-        onAutoOpenConsumed={() => setAutoOpenPickerEdit(false)}
-        newTripIdToHighlight={fieldNewTripIdToHighlight}
-        newVisitIdToHighlight={fieldNewVisitIdToHighlight}
-        onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
-        onViewVisits={(visitIds) => handleFieldViewVisits(visitIds)}
-        onCreateNewVisit={() => handleCreateNewVisit('edit')}
-        autoOpenVisitPicker={autoOpenVisitPickerEdit}
-        onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerEdit(false)}
-        onOpenVisitDetail={(v) => handleFieldOpenVisitDetail(v)}
-      />
-      <AddTripLineSheet
-        visible={addLineOpen}
-        loadAvailableTrips={fieldLoadAvailableTripsAdditional}
-        loadDraftVisits={fieldLoadDraftVisitsAdditional}
-        loadVisitsByIds={fieldLoadVisitsByIds}
-        onSave={handleFieldSaveTripLine}
-        onClose={() => { setAddLineOpen(false); setFieldNewTripIdToHighlight(null); setFieldNewVisitIdToHighlight(null); }}
-        saving={addLineSaving}
-        onCreateNewTrip={() => handleCreateNewTrip('add')}
-        autoOpenPicker={autoOpenPickerAdd}
-        onAutoOpenConsumed={() => setAutoOpenPickerAdd(false)}
-        newTripIdToHighlight={fieldNewTripIdToHighlight}
-        newVisitIdToHighlight={fieldNewVisitIdToHighlight}
-        onCreateNewVisit={() => handleCreateNewVisit('add')}
-        autoOpenVisitPicker={autoOpenVisitPickerAdd}
-        onAutoOpenVisitPickerConsumed={() => setAutoOpenVisitPickerAdd(false)}
-        onOpenSourceTrip={(tripId) => handleFieldOpenTrip(tripId)}
-      />
+      {/* Field-attendance bottom sheets used to live here (EditPrimaryTripSheet
+          + AddTripLineSheet). They were removed when the inline flow was
+          migrated to <FieldAttendanceSection/>. That component mounts its
+          own sheets internally, driven by the new server state machine. */}
       <TripDetailSheet
         visible={tripSheetOpen}
         trip={tripSheetTrip}

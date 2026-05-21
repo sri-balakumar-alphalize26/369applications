@@ -964,6 +964,152 @@ export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime, endKm) =
   return true;
 };
 
+// =========================================================================
+// NEW Field Attendance Flow RPCs (mobile-app-facing)
+// =========================================================================
+// Thin wrappers around the dedicated hr.attendance RPCs added in the
+// `hr_field_attendance` module (manifest >= 19.0.1.15.0). The mobile app
+// drives the entire field-attendance state machine off these six calls:
+//   - read       :  getFieldAttendanceStateOdoo
+//   - mutations  :  closePreviousTripOdoo, setupPrimaryTripOdoo,
+//                   createAdditionalTripOdoo, createReturnTripOdoo,
+//                   checkOutFieldAttendanceOdoo
+// Every mutation returns {success: true, ...} on OK or {error: 'code'} on
+// validation failure — the UI shows a contextual message for each error.
+
+// [FA] tag = "Field Attendance flow" — grep for this prefix in console to
+// trace the new mobile flow end-to-end from RPC entry to server response.
+const FA_TAG = '[FA-RPC]';
+
+export const getFieldAttendanceStateOdoo = async (attendanceId) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  console.log(FA_TAG, '→ getFieldAttendanceState', { attendanceId });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'get_field_attendance_state',
+    args: [Number(attendanceId)],
+  });
+  console.log(FA_TAG, '← getFieldAttendanceState', {
+    attendanceId,
+    hasSourceTrip: !!result?.source_trip,
+    tripLines: (result?.trip_lines || []).length,
+    returnLines: (result?.return_lines || []).length,
+    isCheckedOut: !!result?.attendance?.is_checked_out,
+    showPrimaryReturn: !!result?.show_primary_return_button,
+    showOfficeToHome: !!result?.show_office_to_home_button,
+    prevDestId: result?.previous_trip_destination_id,
+    availableTrips: (result?.available_trip_ids || []).length,
+    availableVisits: (result?.available_visit_ids || []).length,
+    error: result?.error,
+  });
+  return result || {};
+};
+
+export const closePreviousTripOdoo = async (attendanceId, endKm) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  console.log(FA_TAG, '→ closePreviousTrip', { attendanceId, endKm });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'field_action_close_previous_trip',
+    args: [Number(attendanceId), Number(endKm) || 0],
+  });
+  console.log(FA_TAG, '← closePreviousTrip', result);
+  return result || {};
+};
+
+export const setupPrimaryTripOdoo = async (
+  attendanceId, { tripId, startKm, gpsLat = 0, gpsLng = 0, gpsLocationName = '' } = {}
+) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  if (!tripId) throw new Error('tripId is required');
+  console.log(FA_TAG, '→ setupPrimaryTrip', { attendanceId, tripId, startKm, gpsLat, gpsLng, gpsLocationName });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'field_action_setup_primary_trip',
+    args: [Number(attendanceId), Number(tripId), Number(startKm) || 0,
+           Number(gpsLat) || 0, Number(gpsLng) || 0, String(gpsLocationName || '')],
+  });
+  console.log(FA_TAG, '← setupPrimaryTrip', result);
+  return result || {};
+};
+
+export const createAdditionalTripOdoo = async (
+  attendanceId, { tripId, visitId, startKm, gpsLat = 0, gpsLng = 0, gpsLocationName = '' } = {}
+) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  if (!tripId) throw new Error('tripId is required');
+  console.log(FA_TAG, '→ createAdditionalTrip', { attendanceId, tripId, visitId, startKm, gpsLat, gpsLng, gpsLocationName });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'field_action_create_additional_trip',
+    args: [Number(attendanceId), Number(tripId), visitId ? Number(visitId) : false,
+           Number(startKm) || 0, Number(gpsLat) || 0, Number(gpsLng) || 0,
+           String(gpsLocationName || '')],
+  });
+  console.log(FA_TAG, '← createAdditionalTrip', result);
+  return result || {};
+};
+
+export const createReturnTripOdoo = async (
+  attendanceId,
+  { tripId, startKm, returnLegType, isOfficeToHome = false,
+    gpsLat = 0, gpsLng = 0, gpsLocationName = '' } = {}
+) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  if (!tripId) throw new Error('tripId is required');
+  if (!returnLegType) throw new Error('returnLegType is required');
+  console.log(FA_TAG, '→ createReturnTrip', { attendanceId, tripId, startKm, returnLegType, isOfficeToHome });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'field_action_create_return_trip',
+    args: [Number(attendanceId), Number(tripId), Number(startKm) || 0,
+           String(returnLegType), Boolean(isOfficeToHome),
+           Number(gpsLat) || 0, Number(gpsLng) || 0, String(gpsLocationName || '')],
+  });
+  console.log(FA_TAG, '← createReturnTrip', result);
+  return result || {};
+};
+
+// Attach an already-created (and possibly already-started) vehicle.tracking
+// record to an attendance as its source_trip_id. Used by the "Create New Trip"
+// return handshake — when the user creates + starts a trip from the Setup
+// Primary Trip picker, the trip is now started so the picker won't show it
+// (filtered to draft). Instead we auto-attach via this RPC on return.
+// Wraps the EXISTING `hr.attendance.attach_primary_trip(vehicle_tracking_id)`
+// instance method.
+export const attachPrimaryTripOdoo = async (attendanceId, tripId) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  if (!tripId) throw new Error('tripId is required');
+  console.log(FA_TAG, '→ attachPrimaryTrip', { attendanceId, tripId });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'attach_primary_trip',
+    args: [[Number(attendanceId)], Number(tripId)],
+  });
+  console.log(FA_TAG, '← attachPrimaryTrip', result);
+  return result || {};
+};
+
+// NEW action-based checkout (uses the dedicated server RPC). Distinct from
+// the legacy `checkOutFieldAttendanceOdoo` above (which uses a raw write of
+// check_out). Both work; the new flow uses this one because the server-side
+// validation returns {error: 'code'} objects we can show as toasts.
+export const fieldActionCheckOutOdoo = async (attendanceId) => {
+  if (!attendanceId) throw new Error('attendanceId is required');
+  console.log(FA_TAG, '→ fieldActionCheckOut', { attendanceId });
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'field_action_check_out',
+    args: [Number(attendanceId)],
+  });
+  console.log(FA_TAG, '← fieldActionCheckOut', result);
+  return result || {};
+};
+
+// =========================================================================
+// END new Field Attendance Flow RPCs
+// =========================================================================
+
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 // Create vehicle tracking trip in Odoo (test-vehicle DB) using JSON-RPC
 export const createVehicleTrackingTripOdoo = async ({ payload, username = DEFAULT_VEHICLE_TRACKING_USERNAME, password = DEFAULT_VEHICLE_TRACKING_PASSWORD, db = DEFAULT_VEHICLE_TRACKING_DB } = {}) => {

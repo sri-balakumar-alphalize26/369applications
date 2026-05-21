@@ -1,0 +1,891 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
+  RefreshControl, StyleSheet, Platform,
+} from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { StyledAlertModal } from '@components/Modal';
+import { showToastMessage } from '@components/Toast';
+import { FONT_FAMILY } from '@constants/theme';
+import {
+  getFieldAttendanceStateOdoo,
+  closePreviousTripOdoo,
+  setupPrimaryTripOdoo,
+  createAdditionalTripOdoo,
+  createReturnTripOdoo,
+  fieldActionCheckOutOdoo,
+  attachPrimaryTripOdoo,
+  readVehicleTrackingForTripIdsOdoo,
+} from '@api/services/generalApi';
+import { consumePendingNewTrip } from '@utils/newTripChannel';
+import { consumePendingNewVisit } from '@utils/newVisitChannel';
+import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
+import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
+import WorkflowBanner from '@screens/Home/Options/UserAttendance/FieldAttendance/components/WorkflowBanner';
+import ClosePreviousTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/ClosePreviousTripSheet';
+import TripFormSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripFormSheet';
+
+const FIELD_COLOR = '#1976D2';
+
+// Grep "[FA-SECTION]" in Metro / device log to follow the section's lifecycle
+// regardless of which parent screen (UserAttendanceScreen or
+// FieldAttendanceDetailScreen) is hosting it.
+const TAG = '[FA-SECTION]';
+
+const ERROR_MESSAGES = {
+  start_km_required: 'Start KM is required and must be greater than 0.',
+  start_km_invalid: 'Start KM must be a valid number.',
+  end_km_too_low: 'End KM must be greater than the trip\'s Start KM.',
+  end_km_invalid: 'End KM must be a valid number.',
+  trip_not_found: 'Trip not found.',
+  no_previous_trip: 'No previous trip to close.',
+  already_closed: 'The previous trip is already closed.',
+  already_checked_out: 'Attendance is already checked out.',
+  checked_out: 'Cannot edit a checked-out attendance.',
+  invalid_leg_type: 'Please choose Via Office or Direct.',
+  not_found: 'Attendance record not found.',
+};
+const errMsg = (code, fallback = 'Operation failed') => ERROR_MESSAGES[code] || fallback;
+
+/**
+ * Reusable Field-Attendance flow section. Owns its own state + RPC traffic
+ * but renders inline so the parent screen (e.g. UserAttendanceScreen) keeps
+ * control of the SafeAreaView / NavigationHeader / check-in widgets.
+ *
+ * Props:
+ *   - attendanceId       : number (required) — the hr.attendance to drive.
+ *   - embedded           : bool   — when true, omit the internal ScrollView so
+ *                                   the parent's ScrollView handles scrolling.
+ *                                   Also omits the "Check Out Now" button (parent
+ *                                   typically renders its own).
+ *   - showCheckOutButton : bool   — when true (and not embedded), render the
+ *                                   built-in Check Out Now button. Default false.
+ *   - onCheckedOut       : fn     — called after a successful check-out.
+ */
+const FieldAttendanceSection = ({
+  attendanceId,
+  embedded = false,
+  showCheckOutButton = false,
+  onCheckedOut,
+}) => {
+  const navigation = useNavigation();
+  const [state, setState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Remembers which "Setup ..." sheet was open when the user tapped "Create
+  // New Trip / Visit" inside the picker. On focus return from
+  // VehicleTrackingForm / VisitForm, we use this to:
+  //   - auto-attach the new trip if primary
+  //   - re-open the same sheet otherwise (user picks normally)
+  // See the useFocusEffect below.
+  const lastActiveSheetRef = useRef(null);
+
+  // Sheets driven by per-card button taps (Open Trip / View Visits).
+  const [tripDetailOpen, setTripDetailOpen] = useState(false);
+  const [tripDetailLoading, setTripDetailLoading] = useState(false);
+  const [tripDetailTrip, setTripDetailTrip] = useState(null);
+  const [visitsListOpen, setVisitsListOpen] = useState(false);
+  const [visitsListRows, setVisitsListRows] = useState([]);
+
+  const handleOpenTrip = async (tripId) => {
+    if (!tripId) return;
+    console.log(TAG, 'handleOpenTrip', { tripId });
+    setTripDetailOpen(true);
+    setTripDetailLoading(true);
+    setTripDetailTrip(null);
+    try {
+      const rows = await readVehicleTrackingForTripIdsOdoo([Number(tripId)]);
+      setTripDetailTrip(rows?.[0] || null);
+    } catch (e) {
+      console.error(TAG, 'handleOpenTrip threw:', e?.message);
+      showToastMessage('Failed to load trip');
+    } finally {
+      setTripDetailLoading(false);
+    }
+  };
+
+  const handleViewVisits = (visits) => {
+    const rows = Array.isArray(visits) ? visits.filter(Boolean) : (visits ? [visits] : []);
+    console.log(TAG, 'handleViewVisits', { count: rows.length });
+    if (rows.length === 0) {
+      showToastMessage('No visits attached');
+      return;
+    }
+    setVisitsListRows(rows);
+    setVisitsListOpen(true);
+  };
+
+  // Sheet visibility
+  const [closePrevOpen, setClosePrevOpen] = useState(false);
+  const [closePrevMeta, setClosePrevMeta] = useState({ ref: '', startKm: 0 });
+  const [pendingNextAction, setPendingNextAction] = useState(null);
+  const [primaryOpen, setPrimaryOpen] = useState(false);
+  const [outboundOpen, setOutboundOpen] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [officeHomeOpen, setOfficeHomeOpen] = useState(false);
+
+  const [alertModal, setAlertModal] = useState({
+    visible: false, message: '', confirmText: 'OK', cancelText: '',
+    destructive: false, onConfirm: null,
+  });
+  const hideAlert = useCallback(() => setAlertModal((s) => ({ ...s, visible: false })), []);
+  const showAlert = useCallback((opts) => {
+    setAlertModal({
+      visible: true,
+      message: opts?.message || '',
+      confirmText: opts?.confirmText || 'OK',
+      cancelText: opts?.cancelText || '',
+      destructive: !!opts?.destructive,
+      onConfirm: opts?.onConfirm || null,
+    });
+  }, []);
+
+  // ---------- State load ----------
+  const refresh = useCallback(async ({ silent = false } = {}) => {
+    if (!attendanceId) {
+      console.log(TAG, 'refresh: no attendanceId, skipping');
+      return;
+    }
+    console.log(TAG, 'refresh', { attendanceId, silent });
+    if (!silent) setLoading(true);
+    try {
+      const data = await getFieldAttendanceStateOdoo(attendanceId);
+      if (data?.error) {
+        console.warn(TAG, 'refresh server error:', data.error);
+        showToastMessage(errMsg(data.error, 'Failed to load attendance'));
+        setState(null);
+      } else {
+        setState(data);
+        console.log(TAG, 'refresh OK — state updated');
+      }
+    } catch (e) {
+      console.error(TAG, 'refresh threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to load attendance');
+      setState(null);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [attendanceId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // On focus return — refresh, then handle the "I just created a new trip
+  // or visit" handshake from VehicleTrackingForm / VisitForm. The OLD flow
+  // used the same channel pattern; we adapted it for the new state machine.
+  useFocusEffect(useCallback(() => {
+    if (!attendanceId) return;
+    let cancelled = false;
+    (async () => {
+      await refresh({ silent: true });
+      if (cancelled) return;
+      const pendingTripId = consumePendingNewTrip();
+      const pendingVisitId = consumePendingNewVisit?.() || null;
+      const sheet = lastActiveSheetRef.current;
+      lastActiveSheetRef.current = null;
+
+      if (!sheet) return;
+
+      // Primary trip + new trip → auto-attach (server-side attach_primary_trip).
+      if (pendingTripId && sheet === 'primary') {
+        console.log(TAG, 'pending new trip detected — auto-attach as primary', { pendingTripId });
+        try {
+          const res = await attachPrimaryTripOdoo(attendanceId, pendingTripId);
+          if (res?.success) {
+            showToastMessage('Primary trip attached');
+            await refresh({ silent: true });
+          } else {
+            console.warn(TAG, 'attach_primary_trip returned non-success:', res);
+            showToastMessage(res?.message || 'Could not attach trip — pick it manually');
+            openNextSheet(sheet);
+          }
+        } catch (e) {
+          console.error(TAG, 'attach_primary_trip threw:', e?.message);
+          openNextSheet(sheet);
+        }
+        return;
+      }
+
+      // Any other create-new return → just re-open the sheet so the user
+      // can pick the new record from the now-refreshed pickers.
+      if (pendingTripId || pendingVisitId) {
+        console.log(TAG, 'pending new record detected — re-opening', sheet,
+          { pendingTripId, pendingVisitId });
+        openNextSheet(sheet);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendanceId, refresh]));
+
+  const onPullRefresh = async () => {
+    setRefreshing(true);
+    await refresh({ silent: true });
+    setRefreshing(false);
+  };
+
+  // ---------- Helpers ----------
+  const isCheckedOut = !!state?.attendance?.is_checked_out;
+
+  const lastOpenTripInfo = () => {
+    if (!state) return null;
+    const all = [
+      ...(state.trip_lines || []).map((l) => l.trip),
+      ...(state.return_lines || []).map((l) => l.trip),
+    ].filter(Boolean);
+    const lastFromLines = all.length ? all[all.length - 1] : null;
+    const t = lastFromLines || state.source_trip;
+    if (!t) return null;
+    const ended = t.trip_status === 'ended' || t.end_time;
+    return { ref: t.ref || `#${t.id}`, startKm: t.start_km || 0, isOpen: !ended };
+  };
+
+  const startNextTripFlow = (nextAction) => {
+    console.log(TAG, 'startNextTripFlow', { nextAction, isCheckedOut });
+    if (isCheckedOut) {
+      console.log(TAG, '  blocked: attendance is checked out');
+      return;
+    }
+    const prev = lastOpenTripInfo();
+    console.log(TAG, '  previous trip info:', prev);
+    if (prev?.isOpen) {
+      console.log(TAG, '  → opening Close Previous Trip sheet first');
+      setClosePrevMeta({ ref: prev.ref, startKm: prev.startKm });
+      setPendingNextAction(nextAction);
+      setClosePrevOpen(true);
+      return;
+    }
+    openNextSheet(nextAction);
+  };
+
+  const openNextSheet = (action) => {
+    console.log(TAG, 'openNextSheet:', action);
+    if (action === 'primary') setPrimaryOpen(true);
+    else if (action === 'outbound') setOutboundOpen(true);
+    else if (action === 'return') setReturnOpen(true);
+    else if (action === 'office_to_home') setOfficeHomeOpen(true);
+  };
+
+  // "Create New Trip / Visit" — invoked by the picker's green top row.
+  // Close any open sheet first (otherwise the create form opens on top
+  // and the user has two stacked modals to dismiss), then navigate to
+  // the existing creation screen. `useFocusEffect` re-runs `refresh` on
+  // return so the new record appears in `available_trip_ids` /
+  // `available_visit_ids` next time the picker opens.
+  const closeAllSheets = () => {
+    setPrimaryOpen(false);
+    setOutboundOpen(false);
+    setReturnOpen(false);
+    setOfficeHomeOpen(false);
+  };
+
+  const handleCreateNewTrip = () => {
+    // Snapshot which sheet was open so we can re-open / auto-attach on return.
+    lastActiveSheetRef.current =
+      primaryOpen ? 'primary' :
+      outboundOpen ? 'outbound' :
+      returnOpen ? 'return' :
+      officeHomeOpen ? 'office_to_home' :
+      null;
+    console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current, 'navigate → VehicleTrackingForm');
+    closeAllSheets();
+    navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance' });
+  };
+
+  const handleCreateNewVisit = () => {
+    // Visit picker is only reachable from outbound mode.
+    lastActiveSheetRef.current = 'outbound';
+    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound, navigate → VisitForm');
+    closeAllSheets();
+    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance' });
+  };
+
+  // ---------- Mutations ----------
+  const handleClosePreviousTrip = async (endKm) => {
+    console.log(TAG, 'handleClosePreviousTrip start', { endKm });
+    setBusy(true);
+    try {
+      const res = await closePreviousTripOdoo(attendanceId, endKm);
+      if (res?.error) {
+        console.warn(TAG, 'closePreviousTrip error:', res.error);
+        showToastMessage(errMsg(res.error, 'Failed to close previous trip')
+          + (res.start_km ? ` (Start KM was ${res.start_km})` : ''));
+        return;
+      }
+      console.log(TAG, 'closePreviousTrip OK');
+      setClosePrevOpen(false);
+      await refresh({ silent: true });
+      if (pendingNextAction) {
+        const action = pendingNextAction;
+        console.log(TAG, '  chaining to queued next sheet:', action);
+        setPendingNextAction(null);
+        openNextSheet(action);
+      }
+    } catch (e) {
+      console.error(TAG, 'handleClosePreviousTrip threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to close previous trip');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSavePrimary = async ({ tripId, startKm }) => {
+    console.log(TAG, 'handleSavePrimary start', { tripId, startKm });
+    setBusy(true);
+    try {
+      const res = await setupPrimaryTripOdoo(attendanceId, { tripId, startKm });
+      if (res?.error) {
+        console.warn(TAG, 'setupPrimaryTrip error:', res.error);
+        showToastMessage(errMsg(res.error));
+        return;
+      }
+      console.log(TAG, 'setupPrimaryTrip OK');
+      showToastMessage('Primary trip saved');
+      setPrimaryOpen(false);
+      await refresh({ silent: true });
+    } catch (e) {
+      console.error(TAG, 'handleSavePrimary threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to save');
+    } finally { setBusy(false); }
+  };
+
+  const handleSaveOutbound = async ({ tripId, visitId, startKm }) => {
+    console.log(TAG, 'handleSaveOutbound start', { tripId, visitId, startKm });
+    setBusy(true);
+    try {
+      const res = await createAdditionalTripOdoo(attendanceId, { tripId, visitId, startKm });
+      if (res?.error) {
+        console.warn(TAG, 'createAdditionalTrip error:', res.error);
+        showToastMessage(errMsg(res.error));
+        return;
+      }
+      console.log(TAG, 'createAdditionalTrip OK');
+      showToastMessage('Trip added');
+      setOutboundOpen(false);
+      await refresh({ silent: true });
+    } catch (e) {
+      console.error(TAG, 'handleSaveOutbound threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to add trip');
+    } finally { setBusy(false); }
+  };
+
+  const handleSaveReturn = async ({ tripId, startKm, returnLegType }) => {
+    console.log(TAG, 'handleSaveReturn start', { tripId, startKm, returnLegType });
+    setBusy(true);
+    try {
+      const res = await createReturnTripOdoo(attendanceId, {
+        tripId, startKm, returnLegType, isOfficeToHome: false,
+      });
+      if (res?.error) {
+        console.warn(TAG, 'createReturnTrip error:', res.error);
+        showToastMessage(errMsg(res.error));
+        return;
+      }
+      console.log(TAG, 'createReturnTrip OK');
+      showToastMessage('Return trip added');
+      setReturnOpen(false);
+      await refresh({ silent: true });
+    } catch (e) {
+      console.error(TAG, 'handleSaveReturn threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to add return trip');
+    } finally { setBusy(false); }
+  };
+
+  const handleSaveOfficeToHome = async ({ tripId, startKm }) => {
+    console.log(TAG, 'handleSaveOfficeToHome start', { tripId, startKm });
+    setBusy(true);
+    try {
+      const res = await createReturnTripOdoo(attendanceId, {
+        tripId, startKm, returnLegType: 'via_office', isOfficeToHome: true,
+      });
+      if (res?.error) {
+        console.warn(TAG, 'createReturnTrip (office→home) error:', res.error);
+        showToastMessage(errMsg(res.error));
+        return;
+      }
+      console.log(TAG, 'createReturnTrip (office→home) OK');
+      showToastMessage('Office → Home leg added');
+      setOfficeHomeOpen(false);
+      await refresh({ silent: true });
+    } catch (e) {
+      console.error(TAG, 'handleSaveOfficeToHome threw:', e?.message);
+      showToastMessage(e?.message || 'Failed to add Office to Home leg');
+    } finally { setBusy(false); }
+  };
+
+  const handleCheckOut = () => {
+    console.log(TAG, 'handleCheckOut clicked');
+    showAlert({
+      message: 'Check out now? Your last open trip will be closed, every visit marked as Done, and the whole page locks.',
+      confirmText: 'Check Out',
+      cancelText: 'Cancel',
+      destructive: true,
+      onConfirm: async () => {
+        console.log(TAG, 'checkOut confirmed');
+        hideAlert();
+        setBusy(true);
+        try {
+          const res = await fieldActionCheckOutOdoo(attendanceId);
+          if (res?.error) {
+            console.warn(TAG, 'checkOut error:', res.error);
+            showToastMessage(errMsg(res.error, 'Check out failed'));
+            return;
+          }
+          console.log(TAG, 'checkOut OK');
+          showToastMessage('Checked out successfully');
+          await refresh({ silent: true });
+          if (typeof onCheckedOut === 'function') onCheckedOut();
+        } catch (e) {
+          console.error(TAG, 'handleCheckOut threw:', e?.message);
+          showToastMessage(e?.message || 'Check out failed');
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  };
+
+  // ---------- Render ----------
+  if (loading) {
+    return (
+      <View style={styles.loadingFull}>
+        <ActivityIndicator color={FIELD_COLOR} size="large" />
+        <Text style={styles.loadingText}>Loading…</Text>
+      </View>
+    );
+  }
+  if (!state) {
+    return (
+      <View style={styles.loadingFull}>
+        <MaterialIcons name="error-outline" size={32} color="#888" />
+        <Text style={styles.loadingText}>Attendance not found.</Text>
+      </View>
+    );
+  }
+
+  // Button-row visibility — mirrors the backend (hr_attendance_views.xml)
+  // exactly:
+  //   - Setup Primary Trip       : !source_trip               (initial empty)
+  //   - Setup Secondary Trip     : !trip_line_ids             (no outbound yet,
+  //                                                            irrespective of source_trip)
+  //   - Add Additional Trip      : trip_line_ids && show_primary_return_button
+  //   - Primary Trip (Via .../Direct) : show_primary_return_button
+  //   - Office to Home           : show_office_to_home_button
+  //   - Add Additional (bottom)  : has_return_trip_lines      (after return cycle starts)
+  // All gated by !is_checked_out.
+  const hasTripLines = (state.trip_lines || []).length > 0;
+  const showPrimaryTripBtn = !state.source_trip && !isCheckedOut;
+  const showSecondaryBtn = !hasTripLines && !isCheckedOut;
+  const showAddAdditionalOutboundBtn = hasTripLines && state.show_primary_return_button && !isCheckedOut;
+  const showViaOfficeOrDirectBtn = state.show_primary_return_button && !isCheckedOut;
+  const showAddAdditionalBottomBtn = state.has_return_trip_lines && !isCheckedOut;
+  const showOfficeToHomeBtn = state.show_office_to_home_button && !isCheckedOut;
+  const att = state.attendance;
+
+  const inner = (
+    <View style={{ padding: embedded ? 0 : 14, paddingBottom: embedded ? 0 : 40 }}>
+      {/* Read-only banner */}
+      {isCheckedOut ? (
+        <View style={styles.readOnlyBanner}>
+          <MaterialIcons name="lock" size={16} color="#1565C0" />
+          <Text style={styles.readOnlyText}>
+            This attendance has been checked out and is now read-only.
+          </Text>
+        </View>
+      ) : (
+        <WorkflowBanner />
+      )}
+
+      {/* PRIMARY TRIP */}
+      <Text style={styles.sectionTitle}>Primary Trip</Text>
+      {state.source_trip ? (
+        <TripCard
+          label="Source Trip"
+          trip={state.source_trip}
+          visits={state.source_visits}
+          readOnly={isCheckedOut}
+          onOpenTrip={() => handleOpenTrip(state.source_trip.id)}
+          onViewVisits={() => handleViewVisits(state.source_visits)}
+        />
+      ) : (
+        <View style={styles.emptyCard}>
+          <MaterialIcons name="route" size={22} color="#BDBDBD" />
+          <Text style={styles.emptyText}>No primary trip set up yet.</Text>
+        </View>
+      )}
+
+      {/* INITIAL BUTTONS (no trips yet) */}
+      {(showPrimaryTripBtn || showSecondaryBtn) ? (
+        <View style={styles.btnRow}>
+          {showPrimaryTripBtn && (
+            <ActionBtn icon="add" label="Setup Primary Trip (Home → Office)"
+              onPress={() => startNextTripFlow('primary')} disabled={busy} variant="primary" />
+          )}
+          {showSecondaryBtn && (
+            <ActionBtn icon="add" label="Setup Secondary Trip (Home → Visit)"
+              onPress={() => startNextTripFlow('outbound')} disabled={busy} variant="primary" />
+          )}
+        </View>
+      ) : null}
+
+      {/* SECONDARY / ADDITIONAL TRIPS */}
+      {hasTripLines ? (
+        <>
+          <Text style={styles.sectionTitle}>
+            {state.trip_lines.length === 1 ? 'Secondary Trip' : 'Additional Trips'}
+          </Text>
+          {state.trip_lines.map((line, idx) => (
+            <TripLineRow
+              key={line.id}
+              line={line}
+              index={idx}
+              readOnly={isCheckedOut}
+              onOpenTrip={() => handleOpenTrip(line.trip?.id)}
+              onViewVisits={line.visit ? () => handleViewVisits(line.visit) : null}
+            />
+          ))}
+        </>
+      ) : null}
+
+      {/* MIDDLE BUTTONS — Add Additional / Via Office or Direct */}
+      {(showAddAdditionalOutboundBtn || showViaOfficeOrDirectBtn) ? (
+        <View style={styles.btnRow}>
+          {showAddAdditionalOutboundBtn && (
+            <ActionBtn icon="add" label="Add Additional Trip"
+              onPress={() => startNextTripFlow('outbound')} disabled={busy} variant="primary" />
+          )}
+          {showViaOfficeOrDirectBtn && (
+            <ActionBtn icon="home" label="Primary Trip (Via Office or Direct)"
+              onPress={() => startNextTripFlow('return')} disabled={busy} variant="return" />
+          )}
+        </View>
+      ) : null}
+
+      {/* RETURN HOME */}
+      {state.has_return_trip_lines ? (
+        <>
+          <Text style={styles.sectionTitle}>Return Home</Text>
+          {state.return_lines.map((line, idx) => (
+            <TripLineRow
+              key={line.id}
+              line={line}
+              index={idx}
+              isReturn
+              readOnly={isCheckedOut}
+              onOpenTrip={() => handleOpenTrip(line.trip?.id)}
+            />
+          ))}
+        </>
+      ) : null}
+
+      {/* BOTTOM BUTTONS — Office to Home / Add Additional */}
+      {(showOfficeToHomeBtn || showAddAdditionalBottomBtn) ? (
+        <View style={styles.btnRow}>
+          {showOfficeToHomeBtn && (
+            <ActionBtn icon="home" label="Primary Trip (Office to Home)"
+              onPress={() => startNextTripFlow('office_to_home')} disabled={busy} variant="home" />
+          )}
+          {showAddAdditionalBottomBtn && (
+            <ActionBtn icon="add" label="Add Additional Trip"
+              onPress={() => startNextTripFlow('outbound')} disabled={busy} variant="primary" />
+          )}
+        </View>
+      ) : null}
+
+      {/* TRIP TOTALS */}
+      {state.source_trip ? (
+        <View style={styles.totalsCard}>
+          <Text style={styles.totalsTitle}>Trip Totals</Text>
+          <View style={styles.totalsRow}>
+            <TotalCell label="Total KM" value={String(att.trip_total_km || 0)} />
+            <TotalCell label="Duration (Hrs)" value={String(att.trip_total_duration || 0)} />
+          </View>
+          <View style={styles.totalsRow}>
+            <TotalCell label="Total Fuel (L)" value={String(att.trip_total_fuel_litres || 0)} />
+            <TotalCell label="Total Fuel Amt" value={String(att.trip_total_fuel_amount || 0)} />
+          </View>
+        </View>
+      ) : null}
+
+      {/* Built-in Check Out (only when not embedded and host asks for it) */}
+      {showCheckOutButton && !isCheckedOut ? (
+        <TouchableOpacity style={styles.checkoutBtn} onPress={handleCheckOut} disabled={busy}>
+          <MaterialIcons name="logout" size={16} color="#fff" />
+          <Text style={styles.checkoutBtnText}>Check Out Now</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+
+  return (
+    <>
+      {embedded ? (
+        inner
+      ) : (
+        <ScrollView
+          style={{ flex: 1, backgroundColor: '#F8F9FA' }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onPullRefresh}
+            colors={[FIELD_COLOR]} tintColor={FIELD_COLOR} />}
+        >
+          {inner}
+        </ScrollView>
+      )}
+
+      {/* Sheets — always mounted, visibility driven by state */}
+      <ClosePreviousTripSheet
+        visible={closePrevOpen}
+        previousTripRef={closePrevMeta.ref}
+        previousStartKm={closePrevMeta.startKm}
+        saving={busy}
+        onSave={handleClosePreviousTrip}
+        onClose={() => { setClosePrevOpen(false); setPendingNextAction(null); }}
+      />
+      <TripFormSheet
+        visible={primaryOpen}
+        mode="primary"
+        title="Setup Primary Trip (Home → Office)"
+        availableTripIds={state.available_trip_ids}
+        availableVisitIds={[]}
+        previousDestinationId={state.previous_trip_destination_id}
+        saving={busy}
+        onSave={handleSavePrimary}
+        onClose={() => setPrimaryOpen(false)}
+        onCreateNewTrip={handleCreateNewTrip}
+      />
+      <TripFormSheet
+        visible={outboundOpen}
+        mode="outbound"
+        title={hasTripLines ? 'Add Additional Trip' : 'Setup Secondary Trip (Home → Visit)'}
+        availableTripIds={state.available_trip_ids}
+        availableVisitIds={state.available_visit_ids}
+        previousDestinationId={state.previous_trip_destination_id}
+        saving={busy}
+        onSave={handleSaveOutbound}
+        onClose={() => setOutboundOpen(false)}
+        onCreateNewTrip={handleCreateNewTrip}
+        onCreateNewVisit={handleCreateNewVisit}
+      />
+      <TripFormSheet
+        visible={returnOpen}
+        mode="return"
+        title="Primary Trip (Via Office or Direct)"
+        availableTripIds={state.available_trip_ids}
+        availableVisitIds={[]}
+        previousDestinationId={state.previous_trip_destination_id}
+        saving={busy}
+        onSave={handleSaveReturn}
+        onClose={() => setReturnOpen(false)}
+        onCreateNewTrip={handleCreateNewTrip}
+      />
+      <TripFormSheet
+        visible={officeHomeOpen}
+        mode="office_to_home"
+        title="Primary Trip (Office to Home)"
+        availableTripIds={state.available_trip_ids}
+        availableVisitIds={[]}
+        previousDestinationId={state.previous_trip_destination_id}
+        saving={busy}
+        onSave={handleSaveOfficeToHome}
+        onClose={() => setOfficeHomeOpen(false)}
+        onCreateNewTrip={handleCreateNewTrip}
+      />
+
+      {/* Per-card inspection sheets — Open Trip + View Visits. */}
+      <TripDetailSheet
+        visible={tripDetailOpen}
+        trip={tripDetailTrip}
+        loading={tripDetailLoading}
+        onClose={() => setTripDetailOpen(false)}
+      />
+      <VisitsListSheet
+        visible={visitsListOpen}
+        visits={visitsListRows}
+        loading={false}
+        onClose={() => setVisitsListOpen(false)}
+      />
+
+      <StyledAlertModal
+        isVisible={alertModal.visible}
+        message={alertModal.message}
+        confirmText={alertModal.confirmText}
+        cancelText={alertModal.cancelText}
+        destructive={alertModal.destructive}
+        onConfirm={() => { const cb = alertModal.onConfirm; if (cb) cb(); else hideAlert(); }}
+        onCancel={hideAlert}
+      />
+    </>
+  );
+};
+
+// ============================================================================
+// Sub-components
+// ============================================================================
+const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits }) => {
+  const hasVisits = Array.isArray(visits) && visits.length > 0;
+  return (
+    <View style={styles.tripCard}>
+      <Row k={`${label}:`} v={trip.ref || `#${trip.id}`} />
+      <Row k="From:" v={trip.source || ''} />
+      <Row k="To:" v={trip.destination || ''} />
+      <Row k="Status:" v={trip.trip_status || 'draft'} />
+      <ActionRow
+        readOnly={readOnly}
+        onOpenTrip={onOpenTrip}
+        onViewVisits={hasVisits ? onViewVisits : null}
+      />
+    </View>
+  );
+};
+
+const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits }) => {
+  let badge = null;
+  if (isReturn) {
+    if (line.is_office_to_home_leg) badge = 'Office → Home';
+    else if (line.return_leg_type === 'via_office') badge = 'Visit → Office';
+    else if (line.return_leg_type === 'direct') badge = 'Visit → Home';
+  }
+  const trip = line.trip;
+  const visit = line.visit;
+  return (
+    <View style={[styles.tripCard, isReturn && styles.tripCardReturn]}>
+      {badge ? <Text style={styles.legBadge}>{badge}</Text> : null}
+      <Row k="Trip:" v={`${trip?.ref || `#${trip?.id}`} (${trip?.trip_status || 'draft'})`} />
+      <Row k="Route:" v={`${trip?.source || ''} → ${trip?.destination || ''}`} />
+      {visit ? <Row k="Visit:" v={`${visit.name} — ${visit.customer || ''}`} /> : null}
+      <Row k="KM:" v={String(line.km_travelled || 0)} />
+      <ActionRow
+        readOnly={readOnly}
+        onOpenTrip={onOpenTrip}
+        onViewVisits={visit && onViewVisits ? onViewVisits : null}
+      />
+    </View>
+  );
+};
+
+// Row of small chip-style action buttons rendered at the bottom of every
+// trip card. Hidden once the attendance is checked out.
+const ActionRow = ({ readOnly, onOpenTrip, onViewVisits }) => {
+  if (readOnly) return null;
+  if (!onOpenTrip && !onViewVisits) return null;
+  return (
+    <View style={styles.cardActionsRow}>
+      {onOpenTrip ? (
+        <CardBtn icon="open-in-new" label="Open Trip" onPress={onOpenTrip} />
+      ) : null}
+      {onViewVisits ? (
+        <CardBtn icon="place" label="View Visits" onPress={onViewVisits} />
+      ) : null}
+    </View>
+  );
+};
+
+const CardBtn = ({ icon, label, onPress }) => (
+  <TouchableOpacity onPress={onPress} style={styles.cardBtn} activeOpacity={0.85}>
+    <MaterialIcons name={icon} size={14} color={FIELD_COLOR} />
+    <Text style={styles.cardBtnText}>{label}</Text>
+  </TouchableOpacity>
+);
+
+const Row = ({ k, v }) => (
+  <View style={styles.tripCardRow}>
+    <Text style={styles.tripCardLabel}>{k}</Text>
+    <Text style={styles.tripCardValue}>{v}</Text>
+  </View>
+);
+
+const ActionBtn = ({ icon, label, onPress, disabled, variant = 'primary' }) => (
+  <TouchableOpacity
+    style={[styles.actionBtn, styles[`actionBtn_${variant}`], disabled && { opacity: 0.55 }]}
+    onPress={onPress}
+    disabled={disabled}
+    activeOpacity={0.85}
+  >
+    <MaterialIcons name={icon} size={18} color="#fff" />
+    <Text style={styles.actionBtnText}>{label}</Text>
+  </TouchableOpacity>
+);
+
+const TotalCell = ({ label, value }) => (
+  <View style={styles.totalCell}>
+    <Text style={styles.totalLabel}>{label}</Text>
+    <Text style={styles.totalValue}>{value}</Text>
+  </View>
+);
+
+const styles = StyleSheet.create({
+  loadingFull: { padding: 30, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  loadingText: { fontSize: 13, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
+  readOnlyBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#E3F2FD', borderLeftWidth: 3, borderLeftColor: '#1565C0',
+    padding: 12, borderRadius: 8, marginTop: 10,
+  },
+  readOnlyText: { flex: 1, fontSize: 12, color: '#1565C0', fontFamily: FONT_FAMILY.urbanistBold },
+  sectionTitle: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: 14, marginBottom: 4 },
+  tripCard: {
+    backgroundColor: '#fff', borderRadius: 12, padding: 12, marginTop: 8,
+    borderWidth: 1, borderColor: '#EEE',
+    borderLeftWidth: 3, borderLeftColor: FIELD_COLOR,
+    ...Platform.select({
+      android: { elevation: 1 },
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 2 },
+    }),
+  },
+  tripCardReturn: { borderLeftColor: '#009688' },
+  tripCardRow: { flexDirection: 'row', gap: 6, marginBottom: 3 },
+  tripCardLabel: { fontSize: 11.5, color: '#777', fontFamily: FONT_FAMILY.urbanistMedium, width: 65 },
+  tripCardValue: { flex: 1, fontSize: 12.5, color: '#222', fontFamily: FONT_FAMILY.urbanistBold },
+  legBadge: {
+    alignSelf: 'flex-start', fontSize: 11, fontFamily: FONT_FAMILY.urbanistBold, color: '#00695C',
+    backgroundColor: '#E0F2F1', paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 6, marginBottom: 6, overflow: 'hidden',
+  },
+  emptyCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FAFAFA', borderRadius: 12, padding: 12, marginTop: 6,
+    borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed',
+  },
+  emptyText: { flex: 1, fontSize: 12, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium },
+  btnRow: { gap: 10, marginTop: 14, marginBottom: 4 },
+  actionBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    borderRadius: 14, paddingVertical: 13,
+    ...Platform.select({
+      android: { elevation: 2 },
+      ios: { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 4 },
+    }),
+  },
+  actionBtn_primary: { backgroundColor: FIELD_COLOR },
+  actionBtn_return:  { backgroundColor: '#009688' },
+  actionBtn_home:    { backgroundColor: '#E65100' },
+  actionBtnText: { color: '#fff', fontSize: 13.5, fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.2 },
+  cardActionsRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 8,
+    marginTop: 10, paddingTop: 8,
+    borderTopWidth: 1, borderTopColor: '#F0F0F0',
+  },
+  cardBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    backgroundColor: '#E3F2FD', borderRadius: 8,
+  },
+  cardBtnText: { fontSize: 12, color: FIELD_COLOR, fontFamily: FONT_FAMILY.urbanistBold },
+  totalsCard: {
+    backgroundColor: '#fff', borderRadius: 10, padding: 12, marginTop: 14,
+    borderWidth: 1, borderColor: '#EEE',
+  },
+  totalsTitle: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginBottom: 6 },
+  totalsRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  totalCell: { flex: 1, backgroundColor: '#F8F9FA', borderRadius: 8, padding: 8 },
+  totalLabel: { fontSize: 11, color: '#777', fontFamily: FONT_FAMILY.urbanistMedium },
+  totalValue: { fontSize: 14, color: '#222', fontFamily: FONT_FAMILY.urbanistBold, marginTop: 2 },
+  checkoutBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#E65100', borderRadius: 10, paddingVertical: 12, marginTop: 16,
+  },
+  checkoutBtnText: { color: '#fff', fontSize: 14, fontFamily: FONT_FAMILY.urbanistBold },
+});
+
+export default FieldAttendanceSection;
