@@ -38,6 +38,7 @@ const TripPickerSheet = ({
   loading,
   selectedId,
   newTripId,
+  previousDestinationId,
   onSelect,
   onClose,
   onCreateNew,
@@ -183,13 +184,23 @@ const TripPickerSheet = ({
               <Text style={styles.loadingText}>Loading available trips…</Text>
             </View>
           ) : rows.length === 0 ? (
-            <View style={styles.emptyBox}>
-              <MaterialIcons name="inbox" size={36} color="#BDBDBD" />
-              <Text style={styles.emptyTitle}>No trips available</Text>
-              <Text style={styles.emptySub}>
-                {search ? 'Try a different search term.' : (onCreateNew ? 'Tap "Create New Trip" above to log one.' : 'Create a trip in Vehicle Tracking first.')}
-              </Text>
-            </View>
+            <>
+              {previousDestinationId ? (
+                <View style={styles.moduleHintBox}>
+                  <MaterialIcons name="info-outline" size={16} color="#1565C0" />
+                  <Text style={styles.moduleHintText}>
+                    No draft trip starts at the previous destination. Pre-register the next trip in Vehicle Tracking with its Source set to your current location, then come back here.
+                  </Text>
+                </View>
+              ) : null}
+              <View style={styles.emptyBox}>
+                <MaterialIcons name="inbox" size={36} color="#BDBDBD" />
+                <Text style={styles.emptyTitle}>No trips available</Text>
+                <Text style={styles.emptySub}>
+                  {search ? 'Try a different search term.' : (onCreateNew ? 'Tap "Create New Trip" above to log one.' : 'Create a trip in Vehicle Tracking first.')}
+                </Text>
+              </View>
+            </>
           ) : (
             <FlatList
               ref={flatListRef}
@@ -282,6 +293,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1,
   },
   statusPillText: { fontSize: 9, fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.4 },
+  moduleHintBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    backgroundColor: '#E3F2FD', borderLeftWidth: 3, borderLeftColor: '#1565C0',
+    paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8,
+    marginHorizontal: 16, marginBottom: 8,
+  },
+  moduleHintText: {
+    flex: 1, fontSize: 11.5, color: '#1565C0',
+    fontFamily: FONT_FAMILY.urbanistMedium, lineHeight: 16,
+  },
   loadingBox: { paddingVertical: 30, alignItems: 'center', gap: 8 },
   loadingText: { fontSize: 12, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
   emptyBox: { paddingVertical: 30, alignItems: 'center' },

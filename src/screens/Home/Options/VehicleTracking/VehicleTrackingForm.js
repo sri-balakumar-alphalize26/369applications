@@ -511,6 +511,27 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     loadPurposes();
   }, [loadVehicles, loadSources, loadDestinations, loadPurposes]);
 
+  // Pre-fill the Source dropdown when navigating in from FieldAttendance's
+  // "Create New Trip" CTA — the caller passes `prefillSourceId` (the previous
+  // trip's destination_id). Resolves the id → name via sourceLocations and
+  // also seeds start lat/lng if the source row carries coordinates.
+  useEffect(() => {
+    const prefillId = route?.params?.prefillSourceId;
+    if (!prefillId || isEditMode) return;
+    const list = dropdowns?.sourceLocations || [];
+    if (!list.length) return;
+    const match = list.find((s) => Number(s._id) === Number(prefillId));
+    if (!match) return;
+    console.log('[VehicleTrackingForm] prefill source from previous destination:', match.name);
+    setFormData((prev) => ({
+      ...prev,
+      source: match.name,
+      source_id: match._id,
+      start_latitude: prev.start_latitude || (match.latitude != null ? String(match.latitude) : ''),
+      start_longitude: prev.start_longitude || (match.longitude != null ? String(match.longitude) : ''),
+    }));
+  }, [dropdowns.sourceLocations, route?.params?.prefillSourceId, isEditMode]);
+
   // Edit-mode: once vehicles are loaded, try to auto-match the current trip's
   // vehicle_id and populate the form fields. Re-runs whenever `dropdowns.vehicles`
   // changes (so it kicks in after the async fetch lands, not just on mount).

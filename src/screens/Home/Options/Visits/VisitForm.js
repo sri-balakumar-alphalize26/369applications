@@ -1,4 +1,4 @@
-import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image, Modal, PanResponder } from 'react-native'
+import { Keyboard, View, Text, StyleSheet, TouchableOpacity, Image, Modal, PanResponder, Alert, Linking, Platform } from 'react-native'
 import { Camera } from 'expo-camera'
 import React, { useState, useEffect, useRef } from 'react'
 import { NavigationHeader } from '@components/Header'
@@ -85,6 +85,9 @@ const VisitForm = ({ navigation, route }) => {
   })
 
   const [dropdowns, setDropdowns] = useState({ customers: [], employees: [], visitPurpose: [] })
+  // Set when device location services are off (or GPS read fails). Drives the
+  // inline red banner with "Turn On Location" retry button.
+  const [locationError, setLocationError] = useState('')
 
   const customerHasLocation = () => {
     if (!formData.customer?.id || !customersList.length) return false;
@@ -139,8 +142,45 @@ const VisitForm = ({ navigation, route }) => {
     if (visitPlanId) loadVisitPlan();
   }, [visitPlanId])
 
+  // Verifies device location services are ON. On Android this surfaces the
+  // exact "To continue, turn on device location" system dialog Google Maps
+  // uses (via `enableNetworkProviderAsync`). iOS has no in-app equivalent —
+  // we fall back to an Alert with an Open Settings shortcut.
+  const ensureLocationServices = async () => {
+    const enabled = await Location.hasServicesEnabledAsync();
+    if (enabled) return true;
+
+    if (Platform.OS === 'android') {
+      try {
+        await Location.enableNetworkProviderAsync();
+        const recheck = await Location.hasServicesEnabledAsync();
+        if (recheck) return true;
+      } catch (e) {
+        console.log('[VisitForm] enableNetworkProviderAsync declined:', e?.message);
+      }
+    }
+
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Location is turned off',
+        'Turn on Location to capture this customer visit accurately.',
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Open Settings', onPress: async () => { try { await Linking.openSettings(); } catch (_) {} resolve(false); } },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) }
+      );
+    });
+  };
+
   const fetchLocation = async () => {
     try {
+      const servicesOk = await ensureLocationServices();
+      if (!servicesOk) {
+        setLocationError('Location is off — turn it on and tap Turn On Location to capture this visit.');
+        return;
+      }
+      setLocationError('');
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         showToast({ type: 'error', title: 'Permission Denied', message: 'Location permission is required' });
@@ -171,6 +211,7 @@ const VisitForm = ({ navigation, route }) => {
       }));
     } catch (error) {
       console.error('Error fetching location:', error);
+      setLocationError('Could not read your location. Tap Turn On Location to retry.');
     }
   };
 
@@ -771,6 +812,20 @@ const VisitForm = ({ navigation, route }) => {
           </TouchableOpacity>
         </View>
 
+        {/* Services-off banner — rendered when ensureLocationServices() returned
+            false (user declined the Google-Maps-style enable prompt) or when a
+            GPS read threw. Tapping the CTA re-runs fetchLocation, which re-
+            prompts on Android or re-opens iOS Settings as needed. */}
+        {locationError ? (
+          <View style={styles.locOffBox}>
+            <MaterialIcons name="location-off" size={18} color="#D32F2F" />
+            <Text style={styles.locOffText}>{locationError}</Text>
+            <TouchableOpacity style={styles.locOffBtn} onPress={fetchLocation}>
+              <Text style={styles.locOffBtnText}>Turn On Location</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {/* Auto-captured GPS coordinates + reverse-geocoded address (read-only) */}
         <FormInput
           label="Location"
@@ -1090,6 +1145,15 @@ const styles = StyleSheet.create({
   proximityText: { flex: 1, fontSize: 14, fontWeight: 'bold', marginRight: 10 },
   refreshButton: { backgroundColor: '#1B8A2A', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 6 },
   refreshButtonText: { color: '#fff', fontSize: 13, fontWeight: 'bold' },
+  // Inline "Location services are off" banner — Google-Maps-decline fallback.
+  locOffBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FFEBEE', borderLeftWidth: 3, borderLeftColor: '#D32F2F',
+    padding: 10, borderRadius: 8, marginTop: 4, marginBottom: 12,
+  },
+  locOffText: { flex: 1, fontSize: 12, color: '#B71C1C', fontFamily: FONT_FAMILY.urbanistMedium },
+  locOffBtn: { backgroundColor: '#D32F2F', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
+  locOffBtnText: { color: '#fff', fontSize: 11.5, fontFamily: FONT_FAMILY.urbanistBold },
   minCharsText: { fontSize: 12, color: '#999', marginTop: -5, marginBottom: 10, textAlign: 'right' },
   fieldLabel: { marginVertical: 5, fontSize: 16, color: '#2e2a4f', fontFamily: FONT_FAMILY.urbanistSemiBold },
   // Generic attachment-card styling — used by both Photos and Voice Note sections

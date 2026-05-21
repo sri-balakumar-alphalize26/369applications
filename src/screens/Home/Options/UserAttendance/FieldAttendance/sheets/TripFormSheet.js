@@ -33,6 +33,11 @@ const TripFormSheet = ({
   // (FieldAttendanceSection) handles the navigation.
   onCreateNewTrip,
   onCreateNewVisit,
+  // Pre-select a trip/visit id when the sheet re-opens after the user has
+  // just created the record via the Create-New flow. The parent threads
+  // the freshly-created id back via the pending-channel handshake.
+  initialSelectedTripId,
+  initialSelectedVisitId,
 }) => {
   const [trips, setTrips] = useState([]);
   const [visits, setVisits] = useState([]);
@@ -57,12 +62,16 @@ const TripFormSheet = ({
   // lines per single sheet open.
   useEffect(() => {
     if (visible) {
-      console.log(TAG, 'open', { mode, title, availableTrips: (availableTripIds || []).length, availableVisits: (availableVisitIds || []).length, prevDestId: previousDestinationId });
-      setSelectedTripId(null);
-      setSelectedVisitId(null);
+      console.log(TAG, 'open', { mode, title, availableTrips: (availableTripIds || []).length, availableVisits: (availableVisitIds || []).length, prevDestId: previousDestinationId, initialSelectedTripId, initialSelectedVisitId });
+      setSelectedTripId(initialSelectedTripId || null);
+      setSelectedVisitId(initialSelectedVisitId || null);
       setStartKm('');
       setReturnLegType('via_office');
       setErrorText('');
+      // Pre-load picker rows so the selected-trip detail line ("source → dest")
+      // can render immediately when we auto-select after Create-New.
+      if (initialSelectedTripId) loadTrips();
+      if (initialSelectedVisitId) loadVisits();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
@@ -72,30 +81,60 @@ const TripFormSheet = ({
   const loadTrips = useCallback(async () => {
     setLoadingPicker(true);
     try {
-      const ids = (availableTripIds || []).map(Number).filter(Boolean);
+      // Always include the just-created `initialSelectedTripId` even when the
+      // server's `available_trip_ids` doesn't list it yet (e.g. the user tapped
+      // Start Trip in VehicleTrackingForm, so it dropped out of the draft pool).
+      const idSet = new Set((availableTripIds || []).map(Number).filter(Boolean));
+      if (initialSelectedTripId) idSet.add(Number(initialSelectedTripId));
+      const ids = [...idSet];
       if (!ids.length) { setTrips([]); return; }
       const rows = await readVehicleTrackingForTripIdsOdoo(ids);
-      setTrips(rows || []);
+      // Source-location filter mirrors the web view's domain: when we know the
+      // previous trip's destination, only show trips that start there. Always
+      // exempt the just-created id from the filter — otherwise the user lands
+      // on the CTA instead of seeing their newly-created trip.
+      let filtered = rows || [];
+      if (previousDestinationId) {
+        const prevId = Number(previousDestinationId);
+        const keepId = initialSelectedTripId ? Number(initialSelectedTripId) : null;
+        filtered = filtered.filter((t) => {
+          const src = Array.isArray(t.source_id) ? t.source_id[0] : t.source_id;
+          return Number(src) === prevId || (keepId !== null && Number(t.id) === keepId);
+        });
+      }
+      console.log(TAG, 'loadTrips', {
+        raw: rows?.length || 0,
+        afterSourceFilter: filtered.length,
+        previousDestinationId,
+        initialSelectedTripId,
+      });
+      setTrips(filtered);
     } catch (e) {
       setTrips([]);
     } finally {
       setLoadingPicker(false);
     }
-  }, [availableTripIds]);
+  }, [availableTripIds, previousDestinationId, initialSelectedTripId]);
 
   const loadVisits = useCallback(async () => {
     setLoadingPicker(true);
     try {
-      const ids = (availableVisitIds || []).map(Number).filter(Boolean);
+      // Mirror loadTrips: always include the freshly-created visit id, so the
+      // sheet can auto-select it even if the server hasn't refreshed
+      // `available_visit_ids` yet.
+      const idSet = new Set((availableVisitIds || []).map(Number).filter(Boolean));
+      if (initialSelectedVisitId) idSet.add(Number(initialSelectedVisitId));
+      const ids = [...idSet];
       if (!ids.length) { setVisits([]); return; }
       const rows = await readCustomerVisitsByIdsOdoo(ids);
+      console.log(TAG, 'loadVisits', { raw: rows?.length || 0, initialSelectedVisitId });
       setVisits(rows || []);
     } catch (e) {
       setVisits([]);
     } finally {
       setLoadingPicker(false);
     }
-  }, [availableVisitIds]);
+  }, [availableVisitIds, initialSelectedVisitId]);
 
   const selectedTrip = useMemo(
     () => trips.find((t) => Number(t.id) === Number(selectedTripId)) || null,
@@ -106,13 +145,22 @@ const TripFormSheet = ({
     [visits, selectedVisitId]
   );
 
+  // When the selected trip already carries a non-zero `start_km` from
+  // VehicleTrackingForm, surface it as a caption + skip the manual input.
+  // Null means "fall back to the editable Start KM field".
+  const tripStartKm = useMemo(() => {
+    const v = selectedTrip?.start_km;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [selectedTrip]);
+
   const handleSave = () => {
-    console.log(TAG, 'Save clicked', { mode, selectedTripId, selectedVisitId, startKm, returnLegType });
+    console.log(TAG, 'Save clicked', { mode, selectedTripId, selectedVisitId, startKm, returnLegType, tripStartKm });
     if (!selectedTripId) {
       console.warn(TAG, '  validation failed: no trip picked');
       setErrorText('Please pick a trip.'); return;
     }
-    const km = Number(startKm);
+    const km = tripStartKm != null ? tripStartKm : Number(startKm);
     if (!Number.isFinite(km) || km <= 0) {
       console.warn(TAG, '  validation failed: start_km <= 0');
       setErrorText('Start KM is required and must be greater than 0.');
@@ -179,54 +227,133 @@ const TripFormSheet = ({
                 </>
               ) : null}
 
-              {/* Trip picker */}
+              {/* Trip picker — when outbound mode + we have a previous destination
+                  AND nothing is selected yet, hide the picker and surface a
+                  direct "Create New Trip" CTA. The picker re-appears as soon as
+                  a trip is selected (either by Create-New return-handshake or
+                  by the existing picker path elsewhere). */}
               <Text style={styles.label}>Source Trip *</Text>
-              <TouchableOpacity
-                style={styles.fieldBtn}
-                onPress={() => { setTripPickerOpen(true); loadTrips(); }}
-                disabled={saving}
-              >
-                <Text style={[styles.fieldVal, !selectedTrip && styles.placeholder]} numberOfLines={1}>
-                  {selectedTrip ? `${selectedTrip.ref || `Trip #${selectedTrip.id}`}` : 'Tap to select a trip…'}
-                </Text>
-                <MaterialIcons name="chevron-right" size={20} color="#888" />
-              </TouchableOpacity>
               {selectedTrip ? (
-                <Text style={styles.detail}>
-                  {(selectedTrip.source_id?.[1] || selectedTrip.source || '')} → {(selectedTrip.destination_id?.[1] || selectedTrip.destination || '')}
-                </Text>
+                <>
+                  {/* Locked display once a trip is assigned. The X clears the
+                      selection so the Create CTA returns — same UX the Odoo
+                      module gives via its "remove" badge on a Many2one. */}
+                  <View style={styles.lockedField}>
+                    <Text style={styles.fieldVal} numberOfLines={1}>
+                      {selectedTrip.ref || `Trip #${selectedTrip.id}`}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => { setSelectedTripId(null); setErrorText(''); }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      disabled={saving}
+                    >
+                      <MaterialIcons name="close" size={18} color="#888" />
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.detail}>
+                    {(selectedTrip.source_id?.[1] || selectedTrip.source || '')} → {(selectedTrip.destination_id?.[1] || selectedTrip.destination || '')}
+                    {tripStartKm != null ? `  ·  Start KM: ${tripStartKm}` : ''}
+                  </Text>
+                </>
+              ) : (mode === 'outbound' && previousDestinationId && onCreateNewTrip) ? (
+                <TouchableOpacity
+                  style={styles.createCta}
+                  onPress={onCreateNewTrip}
+                  disabled={saving}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.createCtaIcon}>
+                    <MaterialIcons name="add" size={18} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.createCtaTitle}>Create New Trip</Text>
+                    <Text style={styles.createCtaSub}>Open Vehicle Tracking — source pre-filled to your last destination</Text>
+                  </View>
+                  <MaterialIcons name="chevron-right" size={22} color={FIELD_COLOR} />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.fieldBtn}
+                  onPress={() => { setTripPickerOpen(true); loadTrips(); }}
+                  disabled={saving}
+                >
+                  <Text style={[styles.fieldVal, styles.placeholder]} numberOfLines={1}>
+                    Tap to select a trip…
+                  </Text>
+                  <MaterialIcons name="chevron-right" size={20} color="#888" />
+                </TouchableOpacity>
+              )}
+
+              {/* Start KM — shown only as a fallback. When the selected trip
+                  already carries a non-zero start_km, the value is rendered
+                  inside the source→destination caption above; the editable
+                  input is suppressed to avoid two competing values. */}
+              {tripStartKm == null ? (
+                <>
+                  <Text style={styles.label}>Start KM *</Text>
+                  <View style={styles.kmRow}>
+                    <TextInput
+                      style={styles.input}
+                      keyboardType="numeric"
+                      placeholder="Enter odometer reading"
+                      value={startKm}
+                      onChangeText={(t) => { setStartKm(t.replace(/[^0-9]/g, '')); setErrorText(''); }}
+                      editable={!saving}
+                    />
+                    <Text style={styles.unit}>km</Text>
+                  </View>
+                </>
               ) : null}
 
-              {/* Start KM */}
-              <Text style={styles.label}>Start KM *</Text>
-              <View style={styles.kmRow}>
-                <TextInput
-                  style={styles.input}
-                  keyboardType="numeric"
-                  placeholder="Enter odometer reading"
-                  value={startKm}
-                  onChangeText={(t) => { setStartKm(t.replace(/[^0-9]/g, '')); setErrorText(''); }}
-                  editable={!saving}
-                />
-                <Text style={styles.unit}>km</Text>
-              </View>
-
-              {/* Visit picker (outbound only) */}
+              {/* Visit picker (outbound only) — same Create-CTA shortcut as the
+                  trip block above: when nothing is selected and we can navigate
+                  to VisitForm, lead with the green "Create New Visit" CTA. */}
               {needsVisit ? (
                 <>
                   <Text style={styles.label}>Customer Visit *</Text>
-                  <TouchableOpacity
-                    style={styles.fieldBtn}
-                    onPress={() => { setVisitPickerOpen(true); loadVisits(); }}
-                    disabled={saving}
-                  >
-                    <Text style={[styles.fieldVal, !selectedVisit && styles.placeholder]} numberOfLines={1}>
-                      {selectedVisit
-                        ? `${selectedVisit.name || `Visit #${selectedVisit.id}`} — ${(selectedVisit.partner_id?.[1] || selectedVisit.customer || '')}`
-                        : 'Tap to select a visit…'}
-                    </Text>
-                    <MaterialIcons name="chevron-right" size={20} color="#888" />
-                  </TouchableOpacity>
+                  {selectedVisit ? (
+                    /* Locked display with X to clear — same pattern as the
+                        trip field above. */
+                    <View style={styles.lockedField}>
+                      <Text style={styles.fieldVal} numberOfLines={1}>
+                        {`${selectedVisit.name || `Visit #${selectedVisit.id}`} — ${(selectedVisit.partner_id?.[1] || selectedVisit.customer || '')}`}
+                      </Text>
+                      <TouchableOpacity
+                        onPress={() => { setSelectedVisitId(null); setErrorText(''); }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        disabled={saving}
+                      >
+                        <MaterialIcons name="close" size={18} color="#888" />
+                      </TouchableOpacity>
+                    </View>
+                  ) : onCreateNewVisit ? (
+                    <TouchableOpacity
+                      style={styles.createCta}
+                      onPress={onCreateNewVisit}
+                      disabled={saving}
+                      activeOpacity={0.85}
+                    >
+                      <View style={styles.createCtaIcon}>
+                        <MaterialIcons name="add" size={18} color="#fff" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.createCtaTitle}>Create New Visit</Text>
+                        <Text style={styles.createCtaSub}>Open Customer Visit form to log a new visit</Text>
+                      </View>
+                      <MaterialIcons name="chevron-right" size={22} color={FIELD_COLOR} />
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.fieldBtn}
+                      onPress={() => { setVisitPickerOpen(true); loadVisits(); }}
+                      disabled={saving}
+                    >
+                      <Text style={[styles.fieldVal, styles.placeholder]} numberOfLines={1}>
+                        Tap to select a visit…
+                      </Text>
+                      <MaterialIcons name="chevron-right" size={20} color="#888" />
+                    </TouchableOpacity>
+                  )}
                 </>
               ) : null}
 
@@ -252,6 +379,7 @@ const TripFormSheet = ({
         trips={trips}
         loading={loadingPicker}
         selectedId={selectedTripId}
+        previousDestinationId={previousDestinationId}
         onClose={() => setTripPickerOpen(false)}
         onSelect={(t) => { setSelectedTripId(t?.id); setTripPickerOpen(false); }}
         onCreateNew={onCreateNewTrip ? () => { setTripPickerOpen(false); onCreateNewTrip(); } : undefined}
@@ -305,9 +433,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12,
   },
+  // Read-only display once the trip/visit is assigned. Hosts the value text
+  // and a trailing X button that clears the selection.
+  lockedField: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#F0F4F8', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12,
+    borderLeftWidth: 3, borderLeftColor: FIELD_COLOR,
+  },
   fieldVal: { flex: 1, fontSize: 13, color: '#222', fontFamily: FONT_FAMILY.urbanistMedium },
   placeholder: { color: '#999' },
   detail: { fontSize: 11, color: '#777', fontFamily: FONT_FAMILY.urbanistMedium, marginTop: 4 },
+  createCta: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#F5F9FF', borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: FIELD_COLOR, borderStyle: 'dashed',
+  },
+  createCtaIcon: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: FIELD_COLOR,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  createCtaTitle: { fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR },
+  createCtaSub: { fontSize: 11, fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: 2 },
   kmRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   input: {
     flex: 1, backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10,

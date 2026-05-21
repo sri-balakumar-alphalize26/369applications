@@ -83,6 +83,14 @@ const FieldAttendanceSection = ({
   // See the useFocusEffect below.
   const lastActiveSheetRef = useRef(null);
 
+  // Stashes the freshly-created trip/visit id captured in `useFocusEffect`
+  // (from `consumePendingNewTrip` / `consumePendingNewVisit`) so the
+  // re-opened TripFormSheet can auto-select it via `initialSelected*` props.
+  // Cleared via setter after one render so a subsequent manual open doesn't
+  // stick a stale selection.
+  const [pendingTripId, setPendingTripId] = useState(null);
+  const [pendingVisitId, setPendingVisitId] = useState(null);
+
   // Sheets driven by per-card button taps (Open Trip / View Visits).
   const [tripDetailOpen, setTripDetailOpen] = useState(false);
   const [tripDetailLoading, setTripDetailLoading] = useState(false);
@@ -208,11 +216,13 @@ const FieldAttendanceSection = ({
         return;
       }
 
-      // Any other create-new return → just re-open the sheet so the user
-      // can pick the new record from the now-refreshed pickers.
+      // Any other create-new return → stash the new id so the re-opened
+      // sheet can auto-select it, then re-open the sheet.
       if (pendingTripId || pendingVisitId) {
         console.log(TAG, 'pending new record detected — re-opening', sheet,
           { pendingTripId, pendingVisitId });
+        if (pendingTripId) setPendingTripId(Number(pendingTripId));
+        if (pendingVisitId) setPendingVisitId(Number(pendingVisitId));
         openNextSheet(sheet);
       }
     })();
@@ -314,9 +324,10 @@ const FieldAttendanceSection = ({
       returnOpen ? 'return' :
       officeHomeOpen ? 'office_to_home' :
       null;
-    console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current, 'navigate → VehicleTrackingForm');
+    const prefillSourceId = state?.previous_trip_destination_id || null;
+    console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current, 'prefillSourceId:', prefillSourceId, 'navigate → VehicleTrackingForm');
     closeAllSheets();
-    navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance' });
+    navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance', prefillSourceId });
   };
 
   const handleCreateNewVisit = () => {
@@ -398,6 +409,8 @@ const FieldAttendanceSection = ({
       console.log(TAG, 'createAdditionalTrip OK');
       showToastMessage('Trip added');
       setOutboundOpen(false);
+      setPendingTripId(null);
+      setPendingVisitId(null);
       await refresh({ silent: true });
     } catch (e) {
       console.error(TAG, 'handleSaveOutbound threw:', e?.message);
@@ -558,8 +571,17 @@ const FieldAttendanceSection = ({
               onPress={() => startNextTripFlow('primary')} disabled={busy} variant="primary" />
           )}
           {showSecondaryBtn && (
-            <ActionBtn icon="add" label="Setup Secondary Trip (Home → Visit)"
-              onPress={() => startNextTripFlow('outbound')} disabled={busy} variant="primary" />
+            // Label mirrors the backend's two-state behaviour:
+            //   - No primary trip yet   → "Setup Secondary Trip (Home → Visit)"
+            //   - Primary trip is set   → just "Secondary Trip" (user is at the
+            //                            office, not at home — old label was wrong)
+            <ActionBtn
+              icon="add"
+              label={state.source_trip ? 'Secondary Trip' : 'Setup Secondary Trip (Home → Visit)'}
+              onPress={() => startNextTripFlow('outbound')}
+              disabled={busy}
+              variant="primary"
+            />
           )}
         </View>
       ) : null}
@@ -691,13 +713,15 @@ const FieldAttendanceSection = ({
       <TripFormSheet
         visible={outboundOpen}
         mode="outbound"
-        title={hasTripLines ? 'Add Additional Trip' : 'Setup Secondary Trip (Home → Visit)'}
+        title="Add Additional Trip"
         availableTripIds={state.available_trip_ids}
         availableVisitIds={state.available_visit_ids}
         previousDestinationId={state.previous_trip_destination_id}
+        initialSelectedTripId={pendingTripId}
+        initialSelectedVisitId={pendingVisitId}
         saving={busy}
         onSave={handleSaveOutbound}
-        onClose={() => setOutboundOpen(false)}
+        onClose={() => { setOutboundOpen(false); setPendingTripId(null); setPendingVisitId(null); }}
         onCreateNewTrip={handleCreateNewTrip}
         onCreateNewVisit={handleCreateNewVisit}
       />
