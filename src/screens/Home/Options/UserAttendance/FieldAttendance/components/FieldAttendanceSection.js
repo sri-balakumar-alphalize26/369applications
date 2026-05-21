@@ -242,7 +242,7 @@ const FieldAttendanceSection = ({
     return { ref: t.ref || `#${t.id}`, startKm: t.start_km || 0, isOpen: !ended };
   };
 
-  const startNextTripFlow = (nextAction) => {
+  const startNextTripFlow = async (nextAction) => {
     console.log(TAG, 'startNextTripFlow', { nextAction, isCheckedOut });
     if (isCheckedOut) {
       console.log(TAG, '  blocked: attendance is checked out');
@@ -251,8 +251,28 @@ const FieldAttendanceSection = ({
     const prev = lastOpenTripInfo();
     console.log(TAG, '  previous trip info:', prev);
     if (prev?.isOpen) {
+      // Hydrate the trip's ACTUAL start_km from the vehicle.tracking record.
+      // `_serialize_trip` historically didn't include start_km, so the
+      // state's trip object reports 0. Pulling the full record guarantees the
+      // popup shows the real value even before the backend serialiser change
+      // is loaded.
+      let actualStartKm = prev.startKm;
+      try {
+        const tripId = prev.tripId;
+        if (tripId) {
+          console.log(TAG, '  hydrating prev trip start_km from server', { tripId });
+          const rows = await readVehicleTrackingForTripIdsOdoo([Number(tripId)]);
+          const full = rows?.[0];
+          if (full && typeof full.start_km === 'number') {
+            actualStartKm = full.start_km;
+            console.log(TAG, '  hydrated start_km:', actualStartKm);
+          }
+        }
+      } catch (e) {
+        console.warn(TAG, '  hydrate start_km failed, using state value:', e?.message);
+      }
       console.log(TAG, '  → opening Close Previous Trip sheet first');
-      setClosePrevMeta({ ref: prev.ref, startKm: prev.startKm });
+      setClosePrevMeta({ ref: prev.ref, startKm: actualStartKm });
       setPendingNextAction(nextAction);
       setClosePrevOpen(true);
       return;
