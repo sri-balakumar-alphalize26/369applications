@@ -239,7 +239,12 @@ const FieldAttendanceSection = ({
     const t = lastFromLines || state.source_trip;
     if (!t) return null;
     const ended = t.trip_status === 'ended' || t.end_time;
-    return { ref: t.ref || `#${t.id}`, startKm: t.start_km || 0, isOpen: !ended };
+    return {
+      tripId: t.id,
+      ref: t.ref || `#${t.id}`,
+      startKm: t.start_km || 0,
+      isOpen: !ended,
+    };
   };
 
   const startNextTripFlow = async (nextAction) => {
@@ -330,6 +335,15 @@ const FieldAttendanceSection = ({
       const res = await closePreviousTripOdoo(attendanceId, endKm);
       if (res?.error) {
         console.warn(TAG, 'closePreviousTrip error:', res.error);
+        // Belt-and-braces: when the server tells us the real start_km in the
+        // error payload, update the popup's metadata so the helper text and
+        // client-side validation match reality on the next attempt — even if
+        // the initial hydration RPC failed or the backend serialiser hasn't
+        // been reloaded yet.
+        if (res.error === 'end_km_too_low' && typeof res.start_km === 'number') {
+          console.log(TAG, '  patching closePrevMeta.startKm from server error:', res.start_km);
+          setClosePrevMeta((m) => ({ ...m, startKm: res.start_km }));
+        }
         showToastMessage(errMsg(res.error, 'Failed to close previous trip')
           + (res.start_km ? ` (Start KM was ${res.start_km})` : ''));
         return;

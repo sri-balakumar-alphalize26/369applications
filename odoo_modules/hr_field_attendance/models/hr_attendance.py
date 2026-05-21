@@ -991,6 +991,11 @@ class HrAttendance(models.Model):
         return {
             'id': trip.id,
             'ref': trip.ref or '',
+            # start_km / end_km are needed by the mobile Close-Previous-Trip
+            # popup so it can display "Start KM was X. End KM must be higher."
+            # and run the same client-side validation the server enforces.
+            'start_km': trip.start_km if trip.start_km is not None else 0,
+            'end_km':   trip.end_km   if trip.end_km   is not None else 0,
             'start_time': str(trip.start_time) if trip.start_time else None,
             'end_time': str(trip.end_time) if trip.end_time else None,
             'start_latitude': trip.start_latitude or '',
@@ -1222,6 +1227,235 @@ class HrAttendance(models.Model):
             ('id', '!=', self.id),
         ])
         return prior_count == 0
+
+    # =========================================================================
+    # NEW Field Attendance Flow RPCs (mobile-app-facing)
+    # =========================================================================
+    # Single state RPC + one action RPC per user action. The mobile app reads
+    # `get_field_attendance_state` once per screen render and renders buttons
+    # / cards based on the returned flags. Each user tap fires one of the
+    # `field_action_*` RPCs and then re-reads the state.
+
+    def _serialize_trip_line(self, line):
+        """Serialise a field.attendance.trip.line for the mobile state RPC."""
+        return {
+            'id': line.id,
+            'sequence': line.sequence,
+            'trip': self._serialize_trip(line.trip_id) if line.trip_id else None,
+            'visit': self._serialize_visit(line.visit_id) if line.visit_id else None,
+            'is_return_trip': line.is_return_trip,
+            'return_leg_type': line.return_leg_type,
+            'is_office_to_home_leg': line.is_office_to_home_leg,
+            'km_travelled': line.km_travelled,
+            'duration': line.duration,
+            'trip_fuel_log_summary': line.trip_fuel_log_summary or '',
+            'gps_latitude': line.gps_latitude or '',
+            'gps_longitude': line.gps_longitude or '',
+        }
+
+    @api.model
+    def get_field_attendance_state(self, attendance_id):
+        """Single source of truth for the mobile Field Attendance screen.
+
+        Returns every flag the web button-row visibility logic uses, plus
+        serialised primary trip / trip lines / return lines so the mobile
+        app can render the full UI off one call.
+        """
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        outbound = att.trip_line_ids.filtered(lambda l: not l.is_return_trip).sorted(
+            lambda l: (l.sequence, l.id)
+        )
+        returns = att.trip_line_ids.filtered(lambda l: l.is_return_trip).sorted(
+            lambda l: (l.sequence, l.id)
+        )
+        return {
+            'attendance': {
+                'id': att.id,
+                'check_in': str(att.check_in) if att.check_in else None,
+                'check_out': str(att.check_out) if att.check_out else None,
+                'is_checked_out': bool(att.check_out),
+                'employee_id': att.employee_id.id,
+                'employee_name': att.employee_id.name or '',
+                'attendance_source': att.attendance_source,
+                'gps_latitude': att.gps_latitude or 0.0,
+                'gps_longitude': att.gps_longitude or 0.0,
+                'gps_location_name': att.gps_location_name or '',
+                'trip_total_km': att.trip_total_km,
+                'trip_total_duration': att.trip_total_duration,
+                'trip_total_fuel_litres': att.trip_total_fuel_litres,
+                'trip_total_fuel_amount': att.trip_total_fuel_amount,
+            },
+            'source_trip': self._serialize_trip(att.source_trip_id) if att.source_trip_id else None,
+            'source_visits': [self._serialize_visit(v) for v in att.source_visit_ids],
+            'trip_lines': [att._serialize_trip_line(l) for l in outbound],
+            'return_lines': [att._serialize_trip_line(l) for l in returns],
+            'show_primary_return_button': att.show_primary_return_button,
+            'show_office_to_home_button': att.show_office_to_home_button,
+            'has_return_trip_lines': att.has_return_trip_lines,
+            'previous_trip_destination_id': att._previous_trip_destination_id(),
+            'available_trip_ids': att.available_trip_ids.ids,
+            'available_visit_ids': att.available_visit_ids.ids,
+        }
+
+    @api.model
+    def field_action_close_previous_trip(self, attendance_id, end_km):
+        """Close the latest open trip on this attendance. End KM must be
+        > Start KM. Mirrors the web close-previous-trip dialog."""
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        last_line = att._last_trip_line()
+        trip = last_line.trip_id if last_line else att.source_trip_id
+        if not trip:
+            return {'error': 'no_previous_trip'}
+        if trip.end_trip or trip.trip_cancel:
+            return {'error': 'already_closed'}
+        try:
+            end_km_int = int(end_km or 0)
+        except (TypeError, ValueError):
+            return {'error': 'end_km_invalid'}
+        if end_km_int <= (trip.start_km or 0):
+            return {'error': 'end_km_too_low', 'start_km': trip.start_km or 0}
+        trip.with_context(skip_auto_end_trip=True).write({
+            'end_km': end_km_int,
+            'end_trip': True,
+            'end_time': trip.end_time or fields.Datetime.now(),
+        })
+        try:
+            trip._mark_linked_visits_done()
+        except Exception:
+            _logger.exception("[field-attendance] _mark_linked_visits_done failed in RPC close-prev")
+        return {'success': True}
+
+    @api.model
+    def field_action_setup_primary_trip(self, attendance_id, trip_id, start_km,
+                                        gps_latitude=0.0, gps_longitude=0.0,
+                                        gps_location_name=''):
+        """Set source_trip_id + Start KM + GPS on the attendance. Mirrors the
+        web 'Setup Primary Trip (Home → Office)' popup save."""
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        if bool(att.check_out):
+            return {'error': 'checked_out'}
+        trip = self.env['vehicle.tracking'].browse(trip_id)
+        if not trip.exists():
+            return {'error': 'trip_not_found'}
+        try:
+            start_km_int = int(start_km or 0)
+        except (TypeError, ValueError):
+            return {'error': 'start_km_invalid'}
+        if start_km_int <= 0:
+            return {'error': 'start_km_required'}
+        trip.write({'start_km': start_km_int})
+        att.write({
+            'source_trip_id': trip.id,
+            'gps_latitude': gps_latitude or 0.0,
+            'gps_longitude': gps_longitude or 0.0,
+            'gps_location_name': gps_location_name or '',
+        })
+        try:
+            att._auto_start_source_trip()
+        except Exception:
+            _logger.exception("[field-attendance] _auto_start_source_trip failed in RPC")
+        return {'success': True, 'attendance_id': att.id, 'trip_id': trip.id}
+
+    @api.model
+    def field_action_create_additional_trip(self, attendance_id, trip_id, visit_id,
+                                            start_km, gps_latitude=0.0,
+                                            gps_longitude=0.0, gps_location_name=''):
+        """Create an OUTBOUND trip line. Used by both Setup Secondary Trip
+        (first trip after primary, or first trip ever when going home →
+        visit) and Add Additional Trip."""
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        if bool(att.check_out):
+            return {'error': 'checked_out'}
+        trip = self.env['vehicle.tracking'].browse(trip_id)
+        if not trip.exists():
+            return {'error': 'trip_not_found'}
+        try:
+            start_km_int = int(start_km or 0)
+        except (TypeError, ValueError):
+            return {'error': 'start_km_invalid'}
+        if start_km_int <= 0:
+            return {'error': 'start_km_required'}
+        trip.write({'start_km': start_km_int})
+        line_vals = {
+            'attendance_id': att.id,
+            'trip_id': trip.id,
+            'is_return_trip': False,
+        }
+        if visit_id:
+            visit = self.env['customer.visit'].browse(visit_id)
+            if visit.exists():
+                line_vals['visit_id'] = visit.id
+        if gps_location_name:
+            line_vals['gps_location_name'] = gps_location_name
+        line = self.env['field.attendance.trip.line'].create(line_vals)
+        return {'success': True, 'trip_line_id': line.id, 'trip_id': trip.id}
+
+    @api.model
+    def field_action_create_return_trip(self, attendance_id, trip_id, start_km,
+                                        return_leg_type, is_office_to_home=False,
+                                        gps_latitude=0.0, gps_longitude=0.0,
+                                        gps_location_name=''):
+        """Create a RETURN trip line. `return_leg_type` is 'via_office' or
+        'direct'. `is_office_to_home=True` flags the second leg of a
+        via_office return."""
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        if bool(att.check_out):
+            return {'error': 'checked_out'}
+        if return_leg_type not in ('via_office', 'direct'):
+            return {'error': 'invalid_leg_type'}
+        trip = self.env['vehicle.tracking'].browse(trip_id)
+        if not trip.exists():
+            return {'error': 'trip_not_found'}
+        try:
+            start_km_int = int(start_km or 0)
+        except (TypeError, ValueError):
+            return {'error': 'start_km_invalid'}
+        if start_km_int <= 0:
+            return {'error': 'start_km_required'}
+        trip.write({'start_km': start_km_int})
+        line_vals = {
+            'attendance_id': att.id,
+            'trip_id': trip.id,
+            'is_return_trip': True,
+            'return_leg_type': return_leg_type,
+            'is_office_to_home_leg': bool(is_office_to_home),
+        }
+        if gps_location_name:
+            line_vals['gps_location_name'] = gps_location_name
+        line = self.env['field.attendance.trip.line'].create(line_vals)
+        return {'success': True, 'trip_line_id': line.id, 'trip_id': trip.id}
+
+    @api.model
+    def field_action_check_out(self, attendance_id):
+        """Finalise the attendance: ends any open trip + marks visits Done +
+        sets check_out timestamp. Wraps _on_checkout_finalize_trips_and_visits."""
+        att = self.browse(attendance_id)
+        if not att.exists():
+            return {'error': 'not_found'}
+        self._check_field_attendance_access(att.employee_id)
+        if att.check_out:
+            return {'error': 'already_checked_out'}
+        att.write({'check_out': fields.Datetime.now()})
+        return {'success': True, 'check_out': str(att.check_out)}
+
+    # =========================================================================
+    # END new Field Attendance Flow RPCs
+    # =========================================================================
 
     def attach_primary_trip(self, vehicle_tracking_id):
         """Attach a vehicle.tracking record to this attendance as
