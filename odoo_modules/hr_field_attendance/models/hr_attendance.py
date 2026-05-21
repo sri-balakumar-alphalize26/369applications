@@ -1006,6 +1006,11 @@ class HrAttendance(models.Model):
             'destination': trip.destination_id.name if trip.destination_id else '',
             'purpose': trip.purpose_of_visit_id.name if trip.purpose_of_visit_id else '',
             'trip_status': trip.trip_status,
+            # vehicle_id (+ display name) lets the mobile "Create New Trip" CTA
+            # pre-select the same vehicle on the new trip so the odometer chain
+            # stays continuous. Sent as an Odoo M2O tuple shape so the client's
+            # existing Array.isArray helpers keep working.
+            'vehicle_id': [trip.vehicle_id.id, trip.vehicle_id.name] if trip.vehicle_id else False,
         }
 
     def _serialize_visit(self, visit):

@@ -1,6 +1,6 @@
 {
     'name': 'HR Field Attendance',
-    'version': '19.0.1.15.2',
+    'version': '19.0.1.15.3',
     'category': 'Human Resources/Attendance',
     'summary': 'Field-based attendance from vehicle trips and customer visits.',
     'description': """

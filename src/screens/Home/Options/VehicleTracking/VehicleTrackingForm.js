@@ -97,17 +97,20 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           return;
         }
 
-        // Fast path: cached fix first (returns in ~10ms), then refine in background.
+        // Step 1 — instant: any-age cached fix. Device almost always has
+        // SOMETHING from a recent app session. Display this immediately so
+        // "Started Location" doesn't sit on "Fetching location..." for 3 s.
         let coords = null;
         try {
-          const last = await Location.getLastKnownPositionAsync({ maxAge: 120_000 });
-          if (last?.coords) {
-            coords = last.coords;
-            console.log('[VehicleTrackingForm] CACHED start GPS:', coords.latitude, coords.longitude);
+          const anyLast = await Location.getLastKnownPositionAsync({});
+          if (anyLast?.coords) {
+            coords = anyLast.coords;
+            console.log('[VehicleTrackingForm] INSTANT any-age start GPS:', coords.latitude, coords.longitude);
           }
         } catch (_) { /* fall through */ }
 
-        // If no cache, do a quick Balanced fetch with a 3s timeout.
+        // Step 2 — only if even the cache is empty (first-ever launch /
+        // emulator), do a Balanced live fetch with a 3 s timeout.
         if (!coords) {
           try {
             const live = await Promise.race([
@@ -121,17 +124,6 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           } catch (err) {
             console.log('[VehicleTrackingForm] live BALANCED fetch failed:', err?.message);
           }
-        }
-
-        // Last resort: any-age cache.
-        if (!coords) {
-          try {
-            const anyLast = await Location.getLastKnownPositionAsync({});
-            if (anyLast?.coords) {
-              coords = anyLast.coords;
-              console.log('[VehicleTrackingForm] STALE start GPS:', coords.latitude, coords.longitude);
-            }
-          } catch (_) { /* ignore */ }
         }
 
         if (!coords) {
@@ -517,11 +509,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   // also seeds start lat/lng if the source row carries coordinates.
   useEffect(() => {
     const prefillId = route?.params?.prefillSourceId;
-    if (!prefillId || isEditMode) return;
+    if (!prefillId) { console.log('[VehicleTrackingForm] source-prefill skipped: no prefillSourceId'); return; }
+    if (isEditMode) { console.log('[VehicleTrackingForm] source-prefill skipped: edit mode'); return; }
     const list = dropdowns?.sourceLocations || [];
-    if (!list.length) return;
+    if (!list.length) { console.log('[VehicleTrackingForm] source-prefill waiting: sourceLocations not loaded yet'); return; }
     const match = list.find((s) => Number(s._id) === Number(prefillId));
-    if (!match) return;
+    if (!match) { console.log('[VehicleTrackingForm] source-prefill skipped: id', prefillId, 'not found in', list.length, 'sources'); return; }
     console.log('[VehicleTrackingForm] prefill source from previous destination:', match.name);
     setFormData((prev) => ({
       ...prev,
@@ -531,6 +524,51 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       start_longitude: prev.start_longitude || (match.longitude != null ? String(match.longitude) : ''),
     }));
   }, [dropdowns.sourceLocations, route?.params?.prefillSourceId, isEditMode]);
+
+  // Same pattern for the vehicle — when FieldAttendance hands us a
+  // `prefillVehicleId` (previous trip's vehicle), resolve id → name and seed
+  // the Vehicle field. Stays editable so the driver can swap vehicles if they
+  // really need to.
+  useEffect(() => {
+    const prefillId = route?.params?.prefillVehicleId;
+    if (!prefillId) { console.log('[VehicleTrackingForm] vehicle-prefill skipped: no prefillVehicleId'); return; }
+    if (isEditMode) { console.log('[VehicleTrackingForm] vehicle-prefill skipped: edit mode'); return; }
+    const list = dropdowns?.vehicles || [];
+    if (!list.length) { console.log('[VehicleTrackingForm] vehicle-prefill waiting: vehicles not loaded yet'); return; }
+    const match = list.find((v) => Number(v._id) === Number(prefillId));
+    if (!match) { console.log('[VehicleTrackingForm] vehicle-prefill skipped: id', prefillId, 'not found in', list.length, 'vehicles'); return; }
+    console.log('[VehicleTrackingForm] prefill vehicle from previous trip:', match.name);
+    setFormData((prev) => ({
+      ...prev,
+      vehicle: match.name,
+      number_plate: prev.number_plate || match.number_plate || match.plate || '',
+    }));
+  }, [dropdowns.vehicles, route?.params?.prefillVehicleId, isEditMode]);
+
+  // Seed start_km from the previous trip's end_km so the odometer chain
+  // stays continuous. Editable so the driver can correct it if the real
+  // reading differs.
+  useEffect(() => {
+    const prefillKm = route?.params?.prefillStartKm;
+    if (prefillKm == null) { console.log('[VehicleTrackingForm] startKm-prefill skipped: no prefillStartKm'); return; }
+    if (isEditMode) { console.log('[VehicleTrackingForm] startKm-prefill skipped: edit mode'); return; }
+    const n = Number(prefillKm);
+    if (!Number.isFinite(n) || n <= 0) { console.log('[VehicleTrackingForm] startKm-prefill skipped: invalid value', prefillKm); return; }
+    console.log('[VehicleTrackingForm] prefill start_km from previous trip end_km:', n);
+    setFormData((prev) => {
+      if (prev.startKM) {
+        console.log('[VehicleTrackingForm] startKm already set (', prev.startKM, '), not overwriting');
+        return prev;
+      }
+      return { ...prev, startKM: String(n) };
+    });
+  }, [route?.params?.prefillStartKm, isEditMode]);
+
+  // True when the form is opened from FieldAttendance's "Create New Trip"
+  // CTA — the source must equal the previous trip's destination, so the
+  // dropdown is gated off. Any other entry path leaves this false and the
+  // source picker behaves normally.
+  const sourceLocked = !!route?.params?.prefillSourceId && !isEditMode;
 
   // Edit-mode: once vehicles are loaded, try to auto-match the current trip's
   // vehicle_id and populate the form fields. Re-runs whenever `dropdowns.vehicles`
@@ -625,7 +663,10 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     const tripProgressFields = ['endTrip'];
     
     if (tripStatus === 'completed' || tripStatus === 'cancelled') {
-      return ['remarks'].includes(fieldName); // Only remarks editable after completion
+      // Once finalised the form is fully read-only — matches the user's ask
+      // for a frozen "trip completed page" with everything view-only. No
+      // field (not even remarks) can be edited from this screen.
+      return false;
     }
     
     if (isTripStarted) {
@@ -2051,28 +2092,38 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <Text style={styles.sectionTitle}>Vehicle Information</Text>
         </View>
         <View style={styles.sectionGroup}>
-          {/* Date */}
+          {/* Date — locked once trip is completed/cancelled (and during
+              in-progress, per isFieldDisabled('date') rules). */}
           <FormInput
             label="Date :"
             value={formatDate(formData.date)}
-            onPress={() => setIsDatePickerVisible(true)}
+            onPress={isFieldDisabled('date') ? null : () => setIsDatePickerVisible(true)}
             error={errors.date}
             required
             editable={false}
-            dropIcon="calendar"
+            dropIcon={isFieldDisabled('date') ? 'lock' : 'calendar'}
+            style={getFieldStyle('date')}
           />
 
-        {/* Vehicle */}
+        {/* Vehicle — selectbox is non-interactive once isFieldDisabled('vehicle')
+            is true (trip started / completed / cancelled). Replaces the
+            chevron with a lock icon and tints the background so the user
+            can see it's locked. */}
         <View style={[styles.sectionCard, styles.vehicleSection]}>
           <Text style={styles.fieldLabel}>Vehicle <Text style={{ color: 'red' }}>*</Text></Text>
           <Pressable
-            style={[styles.selectBox, errors.vehicle ? styles.selectBoxError : null]}
-            onPress={() => openDropdown('vehicle')}
+            style={[
+              styles.selectBox,
+              errors.vehicle ? styles.selectBoxError : null,
+              isFieldDisabled('vehicle') && { backgroundColor: '#F0F4F8', opacity: 0.85 },
+            ]}
+            onPress={isFieldDisabled('vehicle') ? null : () => openDropdown('vehicle')}
+            disabled={isFieldDisabled('vehicle')}
           >
             <Text style={[styles.selectBoxText, { color: formData.vehicle ? COLORS.black : COLORS.gray }]}>
               {formData.vehicle || 'Select vehicle'}
             </Text>
-            <Text style={styles.selectBoxChevron}>▼</Text>
+            <Text style={styles.selectBoxChevron}>{isFieldDisabled('vehicle') ? '🔒' : '▼'}</Text>
           </Pressable>
           {errors.vehicle && (
             <Text style={styles.errorText}>{errors.vehicle}</Text>
@@ -2142,16 +2193,19 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           </View>
         ) : null}
 
-        {/* Add Fuel button — opens a modal popup with the fuel-entry form. */}
-        <View style={{ marginVertical: 8 }}>
-          <Pressable
-            onPress={handleToggleAddFuel}
-            style={[styles.fuelToggle, styles.fuelToggleInactive]}
-          >
-            <MaterialCommunityIcons name="gas-station" size={18} color="#198754" />
-            <Text style={[styles.fuelToggleText, styles.fuelToggleTextInactive]}>  Add Fuel</Text>
-          </Pressable>
-        </View>
+        {/* Add Fuel button — opens a modal popup with the fuel-entry form.
+            Hidden once the trip is completed/cancelled (read-only mode). */}
+        {!isTripLocked ? (
+          <View style={{ marginVertical: 8 }}>
+            <Pressable
+              onPress={handleToggleAddFuel}
+              style={[styles.fuelToggle, styles.fuelToggleInactive]}
+            >
+              <MaterialCommunityIcons name="gas-station" size={18} color="#198754" />
+              <Text style={[styles.fuelToggleText, styles.fuelToggleTextInactive]}>  Add Fuel</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
 
 
@@ -2170,16 +2224,19 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             style={{ backgroundColor: '#f5f5f5' }}
           />
 
-          {/* Source */}
+          {/* Source — locked when entered via FieldAttendance's Create-New CTA
+              so it can't drift from the previous trip's destination. Normal
+              dropdown when opened from anywhere else (incl. primary-trip mode,
+              where prefillSourceId is null). */}
           <FormInput
             label="Source:"
             value={formData.source}
-            onPress={isFieldDisabled('source') ? null : () => openDropdown('source')}
+            onPress={(isFieldDisabled('source') || sourceLocked) ? null : () => openDropdown('source')}
             error={errors.source}
-            dropIcon="chevron-down"
+            dropIcon={sourceLocked ? 'lock' : 'chevron-down'}
             required
             editable={false}
-            style={getFieldStyle('source')}
+            style={[getFieldStyle('source'), sourceLocked && { backgroundColor: '#EEF2F7' }]}
           />
           {/* Source Match Indicator */}
           {initialTripState === 'not_started' && (
@@ -2330,11 +2387,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                 value={formData.invoiceNumbers}
                 onChangeText={(value) => handleInputChange('invoiceNumbers', value)}
                 placeholder="Invoice numbers"
+                editable={!isTripLocked}
+                style={isTripLocked ? styles.disabledInput : undefined}
               />
             </View>
             <Pressable
-              style={styles.qrIconButton}
-              onPress={() => {
+              style={[styles.qrIconButton, isTripLocked && { opacity: 0.4 }]}
+              disabled={isTripLocked}
+              onPress={isTripLocked ? null : () => {
                 navigation.navigate('InvoiceScannerScreen', {
                   onScan: async (scannedData) => {
                     try {
@@ -2476,36 +2536,45 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             </View>
           </View>
 
-          {/* Trip Image — tap on the image opens a full-screen preview.
-              Replace = picker (camera/gallery), Remove = clear. */}
+          {/* Trip Image — tap to preview. Replace/Remove overlay is hidden
+              when the trip is locked (completed/cancelled). If no image and
+              trip is locked, show a "No trip photo" placeholder instead of
+              the "Add a Trip Photo" CTA. */}
           {formData.imageUri ? (
             <View style={styles.imageCardFilled}>
               <Pressable onPress={() => setPreviewImageUri(formData.imageUri)} style={styles.imagePreviewWrap}>
                 <Image source={{ uri: formData.imageUri }} style={styles.imagePreview} resizeMode="cover" />
-                <View style={styles.imageOverlay}>
-                  <Pressable
-                    style={[styles.imageActionBtn, styles.imageActionBtnReplace]}
-                    onPress={handleImagePicker}
-                  >
-                    <MaterialCommunityIcons name="image-edit" size={16} color="#fff" />
-                    <Text style={styles.imageActionText}>Replace</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.imageActionBtn, styles.imageActionBtnDanger]}
-                    onPress={() => handleInputChange('imageUri', '')}
-                  >
-                    <MaterialCommunityIcons name="trash-can-outline" size={16} color="#fff" />
-                    <Text style={styles.imageActionText}>Remove</Text>
-                  </Pressable>
-                </View>
+                {!isTripLocked ? (
+                  <View style={styles.imageOverlay}>
+                    <Pressable
+                      style={[styles.imageActionBtn, styles.imageActionBtnReplace]}
+                      onPress={handleImagePicker}
+                    >
+                      <MaterialCommunityIcons name="image-edit" size={16} color="#fff" />
+                      <Text style={styles.imageActionText}>Replace</Text>
+                    </Pressable>
+                    <Pressable
+                      style={[styles.imageActionBtn, styles.imageActionBtnDanger]}
+                      onPress={() => handleInputChange('imageUri', '')}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color="#fff" />
+                      <Text style={styles.imageActionText}>Remove</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
               </Pressable>
             </View>
-          ) : (
+          ) : !isTripLocked ? (
             <Pressable onPress={handleImagePicker} style={styles.imageCardEmpty}>
               <MaterialCommunityIcons name="camera-plus-outline" size={36} color={COLORS.primaryThemeColor} />
               <Text style={styles.imageCardEmptyTitle}>Add a Trip Photo</Text>
               <Text style={styles.imageCardEmptySubtitle}>Tap to use Camera or Gallery</Text>
             </Pressable>
+          ) : (
+            <View style={[styles.imageCardEmpty, { opacity: 0.6 }]}>
+              <MaterialCommunityIcons name="camera-off-outline" size={36} color="#888" />
+              <Text style={styles.imageCardEmptyTitle}>No trip photo</Text>
+            </View>
           )}
         </View>
 
@@ -2946,7 +3015,11 @@ const VehicleTrackingForm = ({ navigation, route }) => {
 
               <View style={styles.rowSpace}>
                 <View style={styles.imageColumn}>
-                  <Pressable style={styles.smallButton} onPress={handleOdometerPicker}>
+                  <Pressable
+                    style={[styles.smallButton, isTripLocked && { opacity: 0.5 }]}
+                    onPress={isTripLocked ? null : handleOdometerPicker}
+                    disabled={isTripLocked}
+                  >
                     <Text style={styles.smallButtonText}>Odometer Image</Text>
                   </Pressable>
                   {formData.odometerImageUri ? (
@@ -2958,7 +3031,11 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                   )}
                 </View>
                 <View style={styles.imageColumn}>
-                  <Pressable style={styles.smallButton} onPress={handleFuelInvoicePicker}>
+                  <Pressable
+                    style={[styles.smallButton, isTripLocked && { opacity: 0.5 }]}
+                    onPress={isTripLocked ? null : handleFuelInvoicePicker}
+                    disabled={isTripLocked}
+                  >
                     <Text style={styles.smallButtonText}>Fuel Invoice</Text>
                   </Pressable>
                   {formData.fuelInvoiceUri ? (

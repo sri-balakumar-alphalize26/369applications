@@ -82,6 +82,14 @@ const FieldAttendanceSection = ({
   //   - re-open the same sheet otherwise (user picks normally)
   // See the useFocusEffect below.
   const lastActiveSheetRef = useRef(null);
+  // Trip id captured before navigating from TripDetailSheet to
+  // VehicleTrackingForm, so the detail popup can be re-fetched and
+  // re-opened on back-navigation return.
+  const lastDetailTripIdRef = useRef(null);
+  // Set when the user taps the edit pencil inside a trip picker so that on
+  // back-navigation return, the restored TripFormSheet also re-opens its
+  // internal Pick-a-Trip picker (the layer the user was actually viewing).
+  const [autoOpenPickerOnRestore, setAutoOpenPickerOnRestore] = useState(false);
 
   // Stashes the freshly-created trip/visit id captured in `useFocusEffect`
   // (from `consumePendingNewTrip` / `consumePendingNewVisit`) so the
@@ -224,6 +232,22 @@ const FieldAttendanceSection = ({
         if (pendingTripId) setPendingTripId(Number(pendingTripId));
         if (pendingVisitId) setPendingVisitId(Number(pendingVisitId));
         openNextSheet(sheet);
+        return;
+      }
+
+      // Plain back from VehicleTrackingForm (no save) — restore whichever
+      // popup the user had open before navigating. TripDetail re-fetches
+      // and re-displays via handleOpenTrip; main sheets just toggle visible.
+      if (sheet === 'trip_detail' && lastDetailTripIdRef.current) {
+        console.log(TAG, 'restoring TripDetailSheet on back', { tripId: lastDetailTripIdRef.current });
+        const tid = lastDetailTripIdRef.current;
+        lastDetailTripIdRef.current = null;
+        handleOpenTrip(tid);
+        return;
+      }
+      if (sheet) {
+        console.log(TAG, 'restoring sheet on back', sheet);
+        openNextSheet(sheet);
       }
     })();
     return () => { cancelled = true; };
@@ -253,6 +277,9 @@ const FieldAttendanceSection = ({
       tripId: t.id,
       ref: t.ref || `#${t.id}`,
       startKm: t.start_km || 0,
+      endKm: t.end_km || 0,
+      // Trip records can carry vehicle_id as a flat int OR an Odoo M2O tuple.
+      vehicleId: Array.isArray(t.vehicle_id) ? t.vehicle_id[0] : t.vehicle_id,
       isOpen: !ended,
     };
   };
@@ -325,9 +352,48 @@ const FieldAttendanceSection = ({
       officeHomeOpen ? 'office_to_home' :
       null;
     const prefillSourceId = state?.previous_trip_destination_id || null;
-    console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current, 'prefillSourceId:', prefillSourceId, 'navigate → VehicleTrackingForm');
+    // Pull vehicle + end_km from the last attendance trip so the new trip
+    // starts on the same vehicle and continues the odometer. Both stay
+    // editable in VehicleTrackingForm — the user can override if needed.
+    const prev = lastOpenTripInfo();
+    const prefillVehicleId = prev?.vehicleId || null;
+    const prefillStartKm = prev?.endKm || null;
+    console.log(TAG, 'handleCreateNewTrip — previous trip snapshot:', prev);
+    console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current,
+      'prefillSourceId:', prefillSourceId,
+      'prefillVehicleId:', prefillVehicleId,
+      'prefillStartKm:', prefillStartKm,
+      'navigate → VehicleTrackingForm');
     closeAllSheets();
-    navigation.navigate('VehicleTrackingForm', { returnTo: 'fieldAttendance', prefillSourceId });
+    navigation.navigate('VehicleTrackingForm', {
+      returnTo: 'fieldAttendance',
+      prefillSourceId,
+      prefillVehicleId,
+      prefillStartKm,
+    });
+  };
+
+  // Tapping the edit pencil on a draft row inside the trip picker → close
+  // the popup chain and forward to VehicleTrackingForm in edit mode.
+  // React Navigation's stack preserves the FA screen below, so the device
+  // back-button returns the user here.
+  const handleEditTripFromPicker = (trip) => {
+    console.log(TAG, 'edit trip from picker', { tripId: trip?.id, ref: trip?.ref });
+    // Remember which main popup was open under the picker so back from
+    // VehicleTrackingForm restores it. The trip picker is always opened
+    // from one of the four main outbound/return/etc. popups.
+    lastActiveSheetRef.current =
+      primaryOpen ? 'primary' :
+      outboundOpen ? 'outbound' :
+      returnOpen ? 'return' :
+      officeHomeOpen ? 'office_to_home' :
+      null;
+    // The user was looking at the trip picker (one level above the form),
+    // so signal the restored TripFormSheet to also re-open its internal
+    // picker on visibility.
+    setAutoOpenPickerOnRestore(true);
+    closeAllSheets();
+    navigation.navigate('VehicleTrackingForm', { tripData: trip });
   };
 
   const handleCreateNewVisit = () => {
@@ -709,6 +775,9 @@ const FieldAttendanceSection = ({
         onSave={handleSavePrimary}
         onClose={() => setPrimaryOpen(false)}
         onCreateNewTrip={handleCreateNewTrip}
+        onEditTrip={handleEditTripFromPicker}
+        autoOpenPicker={autoOpenPickerOnRestore}
+        onAutoOpenPickerHandled={() => setAutoOpenPickerOnRestore(false)}
       />
       <TripFormSheet
         visible={outboundOpen}
@@ -724,6 +793,9 @@ const FieldAttendanceSection = ({
         onClose={() => { setOutboundOpen(false); setPendingTripId(null); setPendingVisitId(null); }}
         onCreateNewTrip={handleCreateNewTrip}
         onCreateNewVisit={handleCreateNewVisit}
+        onEditTrip={handleEditTripFromPicker}
+        autoOpenPicker={autoOpenPickerOnRestore}
+        onAutoOpenPickerHandled={() => setAutoOpenPickerOnRestore(false)}
       />
       <TripFormSheet
         visible={returnOpen}
@@ -736,6 +808,9 @@ const FieldAttendanceSection = ({
         onSave={handleSaveReturn}
         onClose={() => setReturnOpen(false)}
         onCreateNewTrip={handleCreateNewTrip}
+        onEditTrip={handleEditTripFromPicker}
+        autoOpenPicker={autoOpenPickerOnRestore}
+        onAutoOpenPickerHandled={() => setAutoOpenPickerOnRestore(false)}
       />
       <TripFormSheet
         visible={officeHomeOpen}
@@ -748,6 +823,9 @@ const FieldAttendanceSection = ({
         onSave={handleSaveOfficeToHome}
         onClose={() => setOfficeHomeOpen(false)}
         onCreateNewTrip={handleCreateNewTrip}
+        onEditTrip={handleEditTripFromPicker}
+        autoOpenPicker={autoOpenPickerOnRestore}
+        onAutoOpenPickerHandled={() => setAutoOpenPickerOnRestore(false)}
       />
 
       {/* Per-card inspection sheets — Open Trip + View Visits. */}
@@ -756,6 +834,16 @@ const FieldAttendanceSection = ({
         trip={tripDetailTrip}
         loading={tripDetailLoading}
         onClose={() => setTripDetailOpen(false)}
+        onOpenInVehicleTracking={(trip) => {
+          // Close the popup and forward to VehicleTrackingForm in edit mode.
+          // Stash the detail trip id so the focus-effect can re-open the
+          // popup when the user backs out of VehicleTrackingForm.
+          console.log(TAG, 'TripDetail → open in Vehicle Tracking', { tripId: trip?.id });
+          lastActiveSheetRef.current = 'trip_detail';
+          lastDetailTripIdRef.current = trip?.id || null;
+          setTripDetailOpen(false);
+          navigation.navigate('VehicleTrackingForm', { tripData: trip });
+        }}
       />
       <VisitsListSheet
         visible={visitsListOpen}

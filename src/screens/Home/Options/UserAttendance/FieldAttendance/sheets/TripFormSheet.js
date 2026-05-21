@@ -38,6 +38,15 @@ const TripFormSheet = ({
   // the freshly-created id back via the pending-channel handshake.
   initialSelectedTripId,
   initialSelectedVisitId,
+  // Tap the pencil icon next to any draft row in the trip picker → parent
+  // closes everything and navigates to VehicleTrackingForm in edit mode.
+  onEditTrip,
+  // When the parent re-opens this sheet after a back-nav from
+  // VehicleTrackingForm (edit-pencil path), also re-open the trip picker so
+  // the user lands on the layer they were viewing. Reset via
+  // onAutoOpenPickerHandled once consumed.
+  autoOpenPicker,
+  onAutoOpenPickerHandled,
 }) => {
   const [trips, setTrips] = useState([]);
   const [visits, setVisits] = useState([]);
@@ -62,7 +71,7 @@ const TripFormSheet = ({
   // lines per single sheet open.
   useEffect(() => {
     if (visible) {
-      console.log(TAG, 'open', { mode, title, availableTrips: (availableTripIds || []).length, availableVisits: (availableVisitIds || []).length, prevDestId: previousDestinationId, initialSelectedTripId, initialSelectedVisitId });
+      console.log(TAG, 'open', { mode, title, availableTrips: (availableTripIds || []).length, availableVisits: (availableVisitIds || []).length, prevDestId: previousDestinationId, initialSelectedTripId, initialSelectedVisitId, autoOpenPicker: !!autoOpenPicker });
       setSelectedTripId(initialSelectedTripId || null);
       setSelectedVisitId(initialSelectedVisitId || null);
       setStartKm('');
@@ -72,6 +81,14 @@ const TripFormSheet = ({
       // can render immediately when we auto-select after Create-New.
       if (initialSelectedTripId) loadTrips();
       if (initialSelectedVisitId) loadVisits();
+      // Back-nav restore: parent asked us to also open the trip picker, so
+      // the user lands on the same layer they came from.
+      if (autoOpenPicker) {
+        console.log(TAG, 'auto-opening trip picker on visible (back-nav restore)');
+        setTripPickerOpen(true);
+        loadTrips();
+        onAutoOpenPickerHandled?.();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
@@ -383,6 +400,7 @@ const TripFormSheet = ({
         onClose={() => setTripPickerOpen(false)}
         onSelect={(t) => { setSelectedTripId(t?.id); setTripPickerOpen(false); }}
         onCreateNew={onCreateNewTrip ? () => { setTripPickerOpen(false); onCreateNewTrip(); } : undefined}
+        onEditTrip={onEditTrip ? (t) => { setTripPickerOpen(false); onEditTrip(t); } : undefined}
       />
       <VisitPickerSheet
         visible={visitPickerOpen}

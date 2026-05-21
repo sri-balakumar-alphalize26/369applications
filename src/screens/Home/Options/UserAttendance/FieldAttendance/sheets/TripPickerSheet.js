@@ -42,6 +42,7 @@ const TripPickerSheet = ({
   onSelect,
   onClose,
   onCreateNew,
+  onEditTrip,
   title = 'Pick a Trip',
 }) => {
   const [search, setSearch] = useState('');
@@ -124,6 +125,18 @@ const TripPickerSheet = ({
             {item.km_travelled != null ? ` · ${item.km_travelled} km` : ''}
           </Text>
         </View>
+        {/* Edit pencil — only for drafts. Wrapped in its own Touchable with
+            stopPropagation so it doesn't bubble to the row's onSelect. */}
+        {item.trip_status === 'draft' && onEditTrip ? (
+          <TouchableOpacity
+            style={styles.editBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={(e) => { e?.stopPropagation && e.stopPropagation(); onEditTrip(item); }}
+            accessibilityLabel="Edit this draft trip"
+          >
+            <MaterialIcons name="edit" size={18} color={FIELD_COLOR} />
+          </TouchableOpacity>
+        ) : null}
         {isNew ? (
           <MaterialIcons name="auto-awesome" size={22} color={NEW_GREEN} />
         ) : isSelected ? (
@@ -293,6 +306,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1,
   },
   statusPillText: { fontSize: 9, fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.4 },
+  // Trailing edit-pencil for draft rows — circular blue chip.
+  editBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#E3F2FD',
+  },
   moduleHintBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 6,
     backgroundColor: '#E3F2FD', borderLeftWidth: 3, borderLeftColor: '#1565C0',
