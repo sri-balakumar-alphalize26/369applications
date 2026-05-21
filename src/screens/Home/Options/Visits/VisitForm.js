@@ -186,7 +186,87 @@ const VisitForm = ({ navigation, route }) => {
         showToast({ type: 'error', title: 'Permission Denied', message: 'Location permission is required' });
         return;
       }
-      let location = await Location.getCurrentPositionAsync({});
+      // Fallback ladder mirroring VehicleTrackingForm's getCurrentLocation:
+      //   1. Recent cached fix (≤ 5 min) — instant, no GPS work.
+      //   2. Live LOW-accuracy fetch (network/wifi, 4 s timeout).
+      //   3. Live BALANCED fetch (GPS + network, 8 s timeout).
+      //   4. Any-age stale cache.
+      // We deliberately do NOT request High accuracy — High forces GPS-only
+      // and fails with "Current location is unavailable" when no satellite
+      // lock is available (indoors, cold start, emulator). The `mayShowUserSettingsDialog`
+      // flag still surfaces the Google-Maps system dialog if the user's
+      // Location Mode is too low for Balanced.
+      try {
+        const prov = await Location.getProviderStatusAsync();
+        console.log('[VisitForm] provider status:', JSON.stringify(prov));
+      } catch (_) { /* status-probe is best-effort */ }
+
+      const positionWithTimeout = (opts, timeoutMs) => Promise.race([
+        Location.getCurrentPositionAsync(opts),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout')), timeoutMs)),
+      ]);
+
+      let location = null;
+
+      // (1) cached fix ≤ 5 min
+      try {
+        location = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
+        if (location) console.log('[VisitForm] using cached last-known fix');
+      } catch (e) { console.log('[VisitForm] last-known cache failed:', e?.message); }
+
+      // (2) live LOW
+      if (!location) {
+        try {
+          location = await positionWithTimeout({
+            accuracy: Location.Accuracy.Low,
+            mayShowUserSettingsDialog: true,
+          }, 4000);
+          if (location) console.log('[VisitForm] got Low-accuracy fix');
+        } catch (e) { console.log('[VisitForm] Low fetch failed:', e?.message); }
+      }
+
+      // (3) live BALANCED
+      if (!location) {
+        try {
+          location = await positionWithTimeout({
+            accuracy: Location.Accuracy.Balanced,
+            mayShowUserSettingsDialog: true,
+          }, 8000);
+          if (location) console.log('[VisitForm] got Balanced-accuracy fix');
+        } catch (e) { console.log('[VisitForm] Balanced fetch failed:', e?.message); }
+      }
+
+      // (4) any-age stale cache
+      if (!location) {
+        try {
+          location = await Location.getLastKnownPositionAsync();
+          if (location) console.log('[VisitForm] using stale last-known fix');
+        } catch (e) { console.log('[VisitForm] stale last-known failed:', e?.message); }
+      }
+
+      // If services flipped off during the ladder (rare race), re-prompt.
+      if (!location) {
+        const stillOn = await Location.hasServicesEnabledAsync();
+        if (!stillOn) {
+          const reTry = await ensureLocationServices();
+          if (reTry) {
+            try {
+              location = await positionWithTimeout({
+                accuracy: Location.Accuracy.Balanced,
+                mayShowUserSettingsDialog: true,
+              }, 8000);
+            } catch (e) { console.log('[VisitForm] post-prompt Balanced failed:', e?.message); }
+          } else {
+            setLocationError('Location is off — turn it on and tap Turn On Location to capture this visit.');
+            return;
+          }
+        }
+      }
+
+      if (!location) {
+        setLocationError('Could not get a GPS fix yet. Move to an open area or near a window and tap Turn On Location.');
+        return;
+      }
       const lat = location.coords.latitude;
       const lng = location.coords.longitude;
 
@@ -200,7 +280,7 @@ const VisitForm = ({ navigation, route }) => {
           locationName = parts.join(', ');
         }
       } catch (geoError) {
-        console.error('Reverse geocode error:', geoError);
+        console.error('[VisitForm] reverse geocode error:', geoError);
       }
 
       setFormData(prev => ({
@@ -210,7 +290,7 @@ const VisitForm = ({ navigation, route }) => {
         locationName,
       }));
     } catch (error) {
-      console.error('Error fetching location:', error);
+      console.error('[VisitForm] Error fetching location:', error);
       setLocationError('Could not read your location. Tap Turn On Location to retry.');
     }
   };
