@@ -206,6 +206,18 @@ class FieldAttendanceTripLine(models.Model):
     attendance_checked_out = fields.Boolean(
         related='attendance_id.is_checked_out', readonly=True,
     )
+    # Mirror of the parent's available trips list so STANDALONE trip-line
+    # popups (target='new', no parent.* lookup available) can scope their
+    # trip_id domain through the attendance's context-aware compute.
+    attendance_available_trip_ids = fields.Many2many(
+        'vehicle.tracking',
+        related='attendance_id.available_trip_ids', readonly=True,
+    )
+    # Same idea for the visit picker.
+    attendance_available_visit_ids = fields.Many2many(
+        'customer.visit',
+        related='attendance_id.available_visit_ids', readonly=True,
+    )
 
     # Boolean shadow of visit_ids for the popup view's `invisible` modifiers
     # (Odoo 19's M2M-truthiness in modifiers can be flaky; computed bool is

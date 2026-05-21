@@ -147,6 +147,14 @@ class HrAttendance(models.Model):
         string='Checked Out',
         compute='_compute_is_checked_out',
     )
+    # Mirror of `available_trip_ids` on the visit side: excludes any
+    # customer.visit already attached to this OR any other attendance for
+    # the same employee so a visit can never be picked twice.
+    available_visit_ids = fields.Many2many(
+        'customer.visit',
+        string='Available Visits',
+        compute='_compute_available_visit_ids',
+    )
     # Aggregate display strings used by the field-attendance kanban view's
     # expandable details panel. They concatenate every trip / visit attached
     # to the day so HR sees the full picture without opening the form.
@@ -374,14 +382,47 @@ class HrAttendance(models.Model):
                              others.mapped('trip_line_ids.trip_id')
             self_used = rec.source_trip_id | rec.trip_line_ids.mapped('trip_id')
             used_total = used_by_others | self_used
-            # Only draft trips are pickable — once started or ended, a trip
-            # is already owned by whoever started it and shouldn't appear in
-            # another attendance's picker.
-            available = Tracking.search([
+            # Only draft trips, never already-used. The previous-destination
+            # source filter is applied at the FORM DOMAIN layer (so it
+            # re-evaluates per popup context) — not here, because non-stored
+            # computes are cached per record and would otherwise return the
+            # first-evaluated (unfiltered) list to every later context.
+            rec.available_trip_ids = Tracking.search([
                 ('id', 'not in', used_total.ids),
                 ('trip_status', '=', 'draft'),
             ])
-            rec.available_trip_ids = available
+
+    @api.depends('employee_id', 'source_visit_ids',
+                 'trip_line_ids.visit_id', 'trip_line_ids.visit_ids')
+    def _compute_available_visit_ids(self):
+        """Visits that are still UNUSED across this employee's attendances.
+        Excludes visits already attached to this OR any other attendance
+        via source_visit_ids OR via trip_line_ids.visit_id / visit_ids.
+        Mirrors `_compute_available_trip_ids` on the trip side."""
+        Visit = self.env['customer.visit'].sudo()
+        for rec in self:
+            if not rec.employee_id:
+                rec.available_visit_ids = Visit
+                continue
+            others = self.sudo().search([
+                ('employee_id', '=', rec.employee_id.id),
+                ('id', '!=', rec.id if isinstance(rec.id, int) else 0),
+            ])
+            used_by_others = (
+                others.mapped('source_visit_ids')
+                | others.mapped('trip_line_ids.visit_id')
+                | others.mapped('trip_line_ids.visit_ids')
+            )
+            self_used = (
+                rec.source_visit_ids
+                | rec.trip_line_ids.mapped('visit_id')
+                | rec.trip_line_ids.mapped('visit_ids')
+            )
+            used_total = used_by_others | self_used
+            rec.available_visit_ids = Visit.search([
+                ('id', 'not in', used_total.ids),
+                ('state', '=', 'draft'),
+            ])
 
     @api.depends(
         'source_trip_id', 'trip_line_ids', 'trip_line_ids.trip_id',
@@ -521,6 +562,27 @@ class HrAttendance(models.Model):
             'context': {'create': False},
         }
 
+    def _previous_trip_destination_id(self, only_outbound=False, only_via_office_first=False):
+        """Resolve the destination_id of the trip the user is currently AT
+        (i.e., the trip they just finished). Used to filter the next-trip
+        picker so it only offers trips that START at the same location.
+
+        Falls back from the most recent matching trip-line to the primary
+        trip's destination, returning False when neither exists (fresh
+        attendance) — in which case the caller's filter is skipped and
+        the picker behaves as today.
+        """
+        self.ensure_one()
+        last_line = self._last_trip_line(
+            only_outbound=only_outbound,
+            only_via_office_first=only_via_office_first,
+        )
+        if last_line and last_line.trip_id and last_line.trip_id.destination_id:
+            return last_line.trip_id.destination_id.id
+        if self.source_trip_id and self.source_trip_id.destination_id:
+            return self.source_trip_id.destination_id.id
+        return False
+
     def _last_trip_line(self, only_outbound=False, only_via_office_first=False):
         """Return the most recently added trip line on this attendance.
 
@@ -567,6 +629,7 @@ class HrAttendance(models.Model):
         self.ensure_one()
         last_line = self._last_trip_line()
         last_trip = last_line.trip_id if last_line else self.source_trip_id
+        prev_dest_id = self._previous_trip_destination_id()
         if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
             return {
                 'type': 'ir.actions.act_window',
@@ -578,6 +641,7 @@ class HrAttendance(models.Model):
                 'context': {
                     'show_end_disclaimer': True,
                     'redirect_to_attendance_id': self.id,
+                    'previous_trip_destination_id': prev_dest_id,
                 },
             }
         return {
@@ -589,7 +653,10 @@ class HrAttendance(models.Model):
                 'hr_field_attendance.view_field_attendance_trip_line_form'
             ).id,
             'target': 'new',
-            'context': {'default_attendance_id': self.id},
+            'context': {
+                'default_attendance_id': self.id,
+                'previous_trip_destination_id': prev_dest_id,
+            },
         }
 
     def action_open_return_trip_popup(self):
@@ -605,6 +672,7 @@ class HrAttendance(models.Model):
         # user is returning from), else fall back to the primary trip.
         last_line = self._last_trip_line(only_outbound=True)
         last_trip = last_line.trip_id if last_line else self.source_trip_id
+        prev_dest_id = self._previous_trip_destination_id(only_outbound=True)
         if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
             return {
                 'type': 'ir.actions.act_window',
@@ -616,6 +684,7 @@ class HrAttendance(models.Model):
                 'context': {
                     'show_end_disclaimer': True,
                     'redirect_to_return_trip_attendance_id': self.id,
+                    'previous_trip_destination_id': prev_dest_id,
                 },
             }
         # Previous trip already closed -- go straight to the return-trip popup.
@@ -632,6 +701,7 @@ class HrAttendance(models.Model):
                 'default_attendance_id': self.id,
                 'default_is_return_trip': True,
                 'show_return_route_field': True,
+                'previous_trip_destination_id': prev_dest_id,
             },
         }
 
@@ -650,6 +720,7 @@ class HrAttendance(models.Model):
         # Find the latest via_office FIRST leg (not yet office_to_home).
         # If it's still open, show close-previous-trip dialog first.
         first_leg = self._last_trip_line(only_via_office_first=True)
+        prev_dest_id = self._previous_trip_destination_id(only_via_office_first=True)
         if first_leg:
             last_trip = first_leg.trip_id
             if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
@@ -663,6 +734,7 @@ class HrAttendance(models.Model):
                     'context': {
                         'show_end_disclaimer': True,
                         'redirect_to_office_to_home_attendance_id': self.id,
+                        'previous_trip_destination_id': prev_dest_id,
                     },
                 }
         # Previous leg already closed (or doesn't exist) -- straight to the popup.
@@ -681,6 +753,7 @@ class HrAttendance(models.Model):
                 'default_return_leg_type': 'via_office',
                 'default_is_office_to_home_leg': True,
                 'show_return_route_field': False,
+                'previous_trip_destination_id': prev_dest_id,
             },
         }
 

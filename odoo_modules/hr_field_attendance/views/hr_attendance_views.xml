@@ -21,18 +21,37 @@
                     Enter the <strong>End KM</strong> below and click <strong>Save &amp; Exit</strong>.
                     The trip will be ended automatically and the next trip's popup will open.
                 </div>
+                <!-- "Created from field attendance" banner: shown when the
+                     vehicle.tracking form is opened as a Many2one create
+                     popup from inside the field-attendance trip picker. -->
+                <div class="alert alert-warning" role="alert"
+                     invisible="not context.get('from_trip_picker')">
+                    <strong>📍 Creating a trip from Field Attendance</strong> &#8212;
+                    please <strong>double-check</strong> the details before saving.
+                    Once saved, the trip is attached to your attendance and you'll
+                    be returned to it automatically. If you created it by mistake
+                    you can delete it later from the <strong>Vehicle Tracking</strong>
+                    module.
+                </div>
             </xpath>
             <!-- (b) Hide the regular header Save button when disclaimer is active -->
             <xpath expr="//header/button[@name='action_custom_save']" position="attributes">
-                <attribute name="invisible">context.get('show_end_disclaimer')</attribute>
+                <attribute name="invisible">context.get('show_end_disclaimer') or context.get('from_trip_picker')</attribute>
             </xpath>
-            <!-- (c) Add an explicit <footer> at the bottom of the form so Odoo
+            <!-- (c) Force Start KM to be mandatory while the trip is still
+                 in Draft. Drops the "saved with start_km=0" trap that
+                 currently leaves _auto_start_trip_and_visit unable to fire. -->
+            <xpath expr="//field[@name='start_km']" position="attributes">
+                <attribute name="required">not start_trip</attribute>
+            </xpath>
+            <!-- (d) Add an explicit <footer> at the bottom of the form so Odoo
                  stops auto-rendering its default Save / Discard at the
-                 dialog bottom. Both Save variants are mutually exclusive
-                 via the show_end_disclaimer context flag:
-                   - Save & Exit shows ONLY during the close-previous flow
-                   - Regular Save shows in all OTHER contexts so normal
-                     trip editing keeps its bottom Save button. -->
+                 dialog bottom. Three mutually-exclusive Save variants:
+                   - Save & Exit  : close-previous flow only.
+                   - action_custom_save : normal vehicle.tracking editing.
+                   - special="save"     : when popup opened from the field-
+                     attendance trip picker — native dialog save/close so
+                     the calling Many2one auto-fills with the new record. -->
             <xpath expr="//form" position="inside">
                 <footer>
                     <button name="action_save_and_end_trip"
@@ -45,11 +64,46 @@
                             string="Save"
                             type="object"
                             class="btn-primary"
-                            invisible="context.get('show_end_disclaimer')"/>
+                            invisible="context.get('show_end_disclaimer') or context.get('from_trip_picker')"/>
+                    <button special="save"
+                            string="Save"
+                            class="btn-primary"
+                            invisible="not context.get('from_trip_picker')"/>
                     <button special="cancel"
                             string="Discard"
                             class="btn-secondary"/>
                 </footer>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Inherit customer.visit's form view to:
+           (a) surface the "Created from Field Attendance" yellow banner
+               whenever the visit-create popup is opened via the
+               field-attendance flow's visit picker.
+           (b) force the Visit Purpose field to be required in that same
+               flow so a visit can't be saved without it. -->
+    <record id="view_customer_visit_form_inherit_picker_banner" model="ir.ui.view">
+        <field name="name">customer.visit.form.inherit.picker.banner</field>
+        <field name="model">customer.visit</field>
+        <field name="inherit_id" ref="customer_visit.view_customer_visit_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <div class="alert alert-warning" role="alert"
+                     invisible="not context.get('from_visit_picker')">
+                    <strong>📍 Creating a visit from Field Attendance</strong> &#8212;
+                    please <strong>double-check</strong> the details before saving.
+                    Once saved, the visit is attached to your attendance and you'll
+                    be returned to it automatically. If you created it by mistake
+                    you can delete it later from the <strong>Customer Visit</strong>
+                    module.
+                </div>
+            </xpath>
+            <xpath expr="//field[@name='purpose_id']" position="attributes">
+                <attribute name="required">context.get('from_visit_picker')</attribute>
+            </xpath>
+            <xpath expr="//field[@name='employee_id']" position="attributes">
+                <attribute name="required">context.get('from_visit_picker')</attribute>
             </xpath>
         </field>
     </record>
@@ -117,11 +171,39 @@
         <field name="model">hr.attendance</field>
         <field name="inherit_id" ref="hr_attendance.hr_attendance_view_form"/>
         <field name="arch" type="xml">
+            <!-- Lock the base hr.attendance header fields once the day is
+                 checked out. is_checked_out is registered at form-root level
+                 (see <field name="is_checked_out" invisible="1"/> below) so
+                 the modifier evaluates even for non-field attendances.
+
+                 The base form ships THREE <field name="employee_id"> blocks
+                 (one per group: no_officer / no_manager / manager) — we
+                 target each by id so we don't clobber the no_officer one
+                 that's already readonly="1" for non-officers.
+
+                 check_in / check_out already have readonly="not is_manager"
+                 to lock them for non-managers — we EXTEND that condition
+                 with "or is_checked_out" rather than replace, so the
+                 manager-only-edit rule is preserved AND checked-out
+                 attendances become read-only for everyone. -->
+            <xpath expr="//field[@id='employee_no_manager']" position="attributes">
+                <attribute name="readonly">is_checked_out</attribute>
+            </xpath>
+            <xpath expr="//field[@id='employee_manager']" position="attributes">
+                <attribute name="readonly">is_checked_out</attribute>
+            </xpath>
+            <xpath expr="//field[@name='check_in']" position="attributes">
+                <attribute name="readonly">not is_manager or is_checked_out</attribute>
+            </xpath>
+            <xpath expr="//field[@name='check_out']" position="attributes">
+                <attribute name="readonly">not is_manager or is_checked_out</attribute>
+            </xpath>
             <!-- Workflow guidance banner — inserted as the FIRST thing inside
                  the sheet (above Employee / Check In). Only visible for
                  field attendance records; hidden for manual attendance. -->
             <xpath expr="//sheet/*[1]" position="before">
                 <field name="attendance_source" invisible="1"/>
+                <field name="is_checked_out" invisible="1"/>
                 <div class="alert alert-warning" role="alert"
                      invisible="attendance_source != 'field'">
                     <h5 class="alert-heading mb-2">👋 How to fill your Field Attendance for today</h5>
@@ -177,13 +259,50 @@
                 </div>
             </xpath>
             <xpath expr="//sheet" position="inside">
-                <group string="Field Attendance" invisible="attendance_source != 'field'">
+                <group string="Field Attendance" class="o_field_attendance_compact"
+                       invisible="attendance_source != 'field'">
                     <field name="source_visit_count" invisible="1"/>
                     <field name="source_trip_ended" invisible="1"/>
                     <field name="show_primary_return_button" invisible="1"/>
                     <field name="show_office_to_home_button" invisible="1"/>
                     <field name="has_return_trip_lines" invisible="1"/>
                     <field name="is_checked_out" invisible="1"/>
+                    <style>
+                        .o_field_attendance_compact .o_inner_group,
+                        .o_field_attendance_compact .o_group,
+                        .o_field_attendance_compact > div > .o_horizontal_separator,
+                        .o_field_attendance_compact .o_horizontal_separator {
+                            margin-top: 0 !important;
+                            margin-bottom: 0 !important;
+                            padding-top: 0 !important;
+                            padding-bottom: 0 !important;
+                            row-gap: 0 !important;
+                            --o-form-group-row-gap: 0 !important;
+                        }
+                        .o_field_attendance_compact .o_field_widget[name='outbound_trip_line_ids'],
+                        .o_field_attendance_compact .o_field_widget[name='return_trip_line_ids'] {
+                            margin: 0 !important;
+                            padding: 0 !important;
+                        }
+                        .o_field_attendance_compact .o_field_widget[name='outbound_trip_line_ids'] .o_kanban_renderer,
+                        .o_field_attendance_compact .o_field_widget[name='return_trip_line_ids'] .o_kanban_renderer {
+                            padding: 0 !important;
+                            margin: 0 !important;
+                            gap: 0 !important;
+                        }
+                        .o_field_attendance_compact .o_field_widget[name='outbound_trip_line_ids'] .o_kanban_record,
+                        .o_field_attendance_compact .o_field_widget[name='return_trip_line_ids'] .o_kanban_record {
+                            margin: 0 0 4px 0 !important;
+                        }
+                        .o_field_attendance_compact .o_horizontal_separator {
+                            margin-top: 6px !important;
+                            margin-bottom: 4px !important;
+                        }
+                        .o_field_attendance_compact .text-center.my-1 {
+                            margin-top: 4px !important;
+                            margin-bottom: 4px !important;
+                        }
+                    </style>
                     <div class="alert alert-info" role="alert" colspan="2"
                          invisible="not is_checked_out">
                         <strong>This attendance has been checked out and is now read-only.</strong>
@@ -261,17 +380,14 @@
                         </div>
                     </div>
                     <group colspan="2"
-                           invisible="not source_trip_id and not trip_line_ids"
-                           style="margin-top: 0; margin-bottom: 0;">
+                           invisible="not source_trip_id and not trip_line_ids">
                         <field name="trip_line_count" invisible="1"/>
                         <!-- 1 line = "Secondary Trip"; 2+ lines = "Additional Trips";
                              0 lines = the wider group is hidden (handled above) -->
                         <separator string="Secondary Trip" colspan="2"
-                                   invisible="trip_line_count != 1"
-                                   style="margin-top: 4px; margin-bottom: 4px;"/>
+                                   invisible="trip_line_count != 1"/>
                         <separator string="Additional Trips" colspan="2"
-                                   invisible="trip_line_count &lt;= 1"
-                                   style="margin-top: 4px; margin-bottom: 4px;"/>
+                                   invisible="trip_line_count &lt;= 1"/>
                         <!-- Force each trip-line kanban card to span the FULL container
                              width (one card per row). Without this override the default
                              Odoo kanban grid would render cards at ~50% width which makes
@@ -383,8 +499,8 @@
                                             <field name="trip_id"
                                                    required="1"
                                                    readonly="trip_ended"
-                                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', parent.available_trip_ids)]"
-                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', parent.available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
                                             <field name="source_location" readonly="1"
                                                    invisible="not trip_id"/>
                                             <field name="destination_location" readonly="1"
@@ -418,8 +534,8 @@
                                             <field name="visit_id"
                                                    required="trip_id"
                                                    readonly="trip_ended"
-                                                   domain="[('state', '=', 'draft')]"
-                                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
+                                                   domain="[('state', '=', 'draft'), ('id', 'in', parent.available_visit_ids)]"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True, 'from_visit_picker': True}"
                                                    options="{'no_quick_create': True}"/>
                                             <field name="visit_partner_id" invisible="not visit_id"/>
                                             <field name="visit_date_time" invisible="not visit_id"/>
@@ -436,25 +552,34 @@
                                             data-hotkey="q"/>
                                     <button string="Discard" special="cancel"
                                             class="btn-secondary" data-hotkey="z"/>
-                                    <button name="action_delete_self" type="object"
-                                            string="Delete" class="btn-danger ms-auto"
-                                            icon="fa-trash"
-                                            invisible="not id"
-                                            confirm="Delete this additional trip from this attendance?"/>
                                 </footer>
                             </form>
                         </field>
-                        <!-- Outbound-section buttons only. The Add Additional
-                             Trip button (when populated) lives ONLY at the
-                             bottom of the Return Home section now, so it
-                             doesn't appear twice on the page. -->
-                        <div colspan="2" class="text-center my-1">
+                        <!-- Outbound-section buttons.
+                             - Secondary Trip      : only when the user has NO trip
+                               lines yet (empty-state entry).
+                             - Add Additional Trip : shown alongside the Via Office /
+                               Direct button once at least one trip line exists, so
+                               the user can keep adding visits before they head back.
+                             - Primary Trip (Via Office or Direct) : shown when the
+                               latest line is outbound and no return leg yet.
+                             The wrapper collapses when checked out OR after a return
+                             leg has been added (the Return Home section's own
+                             button row takes over from there). -->
+                        <div colspan="2" class="text-center my-1"
+                             invisible="is_checked_out or (trip_line_ids and not show_primary_return_button)">
                             <button name="action_add_additional_trip"
                                     type="object"
                                     string="Secondary Trip"
                                     class="btn-primary me-2"
                                     icon="fa-plus"
                                     invisible="trip_line_ids or is_checked_out"/>
+                            <button name="action_add_additional_trip"
+                                    type="object"
+                                    string="Add Additional Trip"
+                                    class="btn-primary me-2"
+                                    icon="fa-plus"
+                                    invisible="not trip_line_ids or is_checked_out"/>
                             <button name="action_open_return_trip_popup"
                                     type="object"
                                     string="Primary Trip (Via Office or Direct)"
@@ -466,10 +591,8 @@
                     <!-- RETURN HOME section: dedicated kanban for return-trip legs.
                          Same card design as Additional Trips (full-width, two-column
                          Trip/Visit layout) but filtered to is_return_trip=True. -->
-                    <group colspan="2" invisible="not has_return_trip_lines"
-                           style="margin-top: 0;">
-                        <separator string="Return Home" colspan="2"
-                                   style="margin-top: 4px; margin-bottom: 4px;"/>
+                    <group colspan="2" invisible="not has_return_trip_lines">
+                        <separator string="Return Home" colspan="2"/>
                         <style>
                             .o_field_widget[name='return_trip_line_ids'] .o_kanban_renderer .o_kanban_record {
                                 width: 100% !important;
@@ -544,10 +667,15 @@
                                     </div>
                                     <group>
                                         <group>
+                                            <field name="attendance_available_trip_ids" invisible="1"/>
                                             <field name="trip_id"
                                                    readonly="trip_ended"
-                                                   domain="[('trip_status', '=', 'draft')]"
-                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                                            <div class="text-muted small mt-1" colspan="2"
+                                                 invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
+                                                No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
+                                            </div>
                                             <field name="source_location" readonly="1" invisible="not trip_id"/>
                                             <field name="destination_location" readonly="1" invisible="not trip_id"/>
                                             <field name="start_km" required="trip_id" invisible="not trip_id" readonly="trip_ended"/>
@@ -567,10 +695,6 @@
                                 <footer>
                                     <button string="Save" special="save" class="btn-primary" data-hotkey="q"/>
                                     <button string="Discard" special="cancel" class="btn-secondary" data-hotkey="z"/>
-                                    <button name="action_delete_self" type="object"
-                                            string="Delete" class="btn-danger ms-auto"
-                                            icon="fa-trash" invisible="not id"
-                                            confirm="Delete this return trip leg?"/>
                                 </footer>
                             </form>
                         </field>
@@ -630,11 +754,16 @@
                     </div>
                     <group>
                         <group>
+                            <field name="attendance_available_trip_ids" invisible="1"/>
                             <field name="trip_id"
                                    required="1"
                                    readonly="trip_ended"
-                                   domain="[('trip_status', '=', 'draft')]"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                            <div class="text-muted small mt-1" colspan="2"
+                                 invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
+                                No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
+                            </div>
                             <field name="source_location" readonly="1"
                                    invisible="not trip_id"/>
                             <field name="destination_location" readonly="1"
@@ -665,11 +794,12 @@
                          so the trip context is established before the user attaches a visit. -->
                     <group invisible="not trip_id">
                         <group>
+                            <field name="attendance_available_visit_ids" invisible="1"/>
                             <field name="visit_id"
                                    required="trip_id"
                                    readonly="trip_ended"
-                                   domain="[('state', '=', 'draft')]"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True}"
+                                   domain="[('state', '=', 'draft'), ('id', 'in', attendance_available_visit_ids)]"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True, 'from_visit_picker': True}"
                                    options="{'no_quick_create': True}"/>
                             <field name="visit_partner_id" invisible="not visit_id"/>
                             <field name="visit_date_time" invisible="not visit_id"/>
@@ -693,13 +823,6 @@
                             data-hotkey="q"/>
                     <button string="Discard" special="cancel"
                             class="btn-secondary" data-hotkey="z"/>
-                    <!-- Delete this trip line if it was added by mistake.
-                         Hidden when the line is brand new (no id yet). -->
-                    <button name="action_delete_self" type="object"
-                            string="Delete" class="btn-danger ms-auto"
-                            icon="fa-trash"
-                            invisible="not id"
-                            confirm="Delete this additional trip from this attendance?"/>
                 </footer>
             </form>
         </field>
@@ -731,10 +854,15 @@
                     </group>
                     <group>
                         <group>
+                            <field name="attendance_available_trip_ids" invisible="1"/>
                             <field name="trip_id"
                                    readonly="trip_ended"
-                                   domain="[('trip_status', '=', 'draft')]"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                   domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                            <div class="text-muted small mt-1" colspan="2"
+                                 invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
+                                No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
+                            </div>
                             <field name="source_location" readonly="1"
                                    invisible="not trip_id"/>
                             <field name="destination_location" readonly="1"
@@ -767,11 +895,6 @@
                             data-hotkey="q"/>
                     <button string="Discard" special="cancel"
                             class="btn-secondary" data-hotkey="z"/>
-                    <button name="action_delete_self" type="object"
-                            string="Delete" class="btn-danger ms-auto"
-                            icon="fa-trash"
-                            invisible="not id"
-                            confirm="Delete this return trip leg?"/>
                 </footer>
             </form>
         </field>
@@ -849,6 +972,8 @@
                 <field name="check_out"/>
                 <field name="daily_total_hours" widget="float_time" string="Hours"/>
                 <field name="source_trip_id" string="Trip"/>
+                <field name="all_trips_display" string="All Trips" optional="show"/>
+                <field name="all_visits_display" string="All Visits" optional="show"/>
                 <field name="gps_location_name" string="Location"/>
                 <field name="is_late"/>
                 <field name="late_minutes_display" string="Late Time"/>

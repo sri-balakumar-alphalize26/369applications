@@ -1,13 +1,34 @@
 # -*- coding: utf-8 -*-
 import logging
 from odoo import api, fields, models, _
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
 
 _logger = logging.getLogger(__name__)
 
 
 class VehicleTracking(models.Model):
     _inherit = 'vehicle.tracking'
+
+    def _check_start_km_for_picker_flow(self):
+        """Block save when a draft trip is being persisted from the
+        field-attendance trip-picker popup with start_km <= 0. The view
+        already shows the required-* on the field, but Odoo treats an
+        Integer value of 0 as "filled" for required validation — so we
+        need an explicit server-side check that rejects zero/blank as a
+        draft Start KM. Scoped to the `from_trip_picker` context so HR
+        users editing trips directly in the Vehicle Tracking module are
+        not blocked.
+        """
+        if not self.env.context.get('from_trip_picker'):
+            return
+        for rec in self:
+            if rec.start_trip or rec.end_trip or rec.trip_cancel:
+                continue
+            if not rec.start_km or rec.start_km <= 0:
+                raise ValidationError(_(
+                    "Please enter Start KM (greater than 0) before saving "
+                    "the trip. Draft trips cannot be saved with Start KM = 0."
+                ))
 
     @api.model
     def name_search(self, name='', domain=None, operator='ilike', limit=100):
@@ -57,6 +78,15 @@ class VehicleTracking(models.Model):
             'target': 'new',
         }
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        # Picker-flow guard: a draft trip created from the field-attendance
+        # trip picker MUST carry a positive Start KM. Raises ValidationError
+        # if not, which rolls the create back and pops the standard modal.
+        records._check_start_km_for_picker_flow()
+        return records
+
     def write(self, vals):
         """Force-fix: when a trip has end_km > start_km AND is started but not
         ended, auto-end it on save. This means the regular Save button does
@@ -80,6 +110,8 @@ class VehicleTracking(models.Model):
         we do internally from re-triggering this branch.
         """
         res = super().write(vals)
+        # Picker-flow guard on edits: same rule as create.
+        self._check_start_km_for_picker_flow()
         if self.env.context.get('skip_auto_end_trip'):
             return res
         for rec in self:
@@ -144,6 +176,10 @@ class VehicleTracking(models.Model):
                     "[field-attendance] _mark_linked_visits_done in action_custom_save failed"
                 )
             # Chain to next action based on which flow opened the dialog.
+            # Carry the `previous_trip_destination_id` flag through so the
+            # next-trip picker stays filtered to trips that START where the
+            # driver just ended up.
+            prev_dest_id = self.env.context.get('previous_trip_destination_id')
             attendance_id = self.env.context.get('redirect_to_attendance_id')
             if attendance_id:
                 return {
@@ -155,7 +191,10 @@ class VehicleTracking(models.Model):
                         'hr_field_attendance.view_field_attendance_trip_line_form'
                     ).id,
                     'target': 'new',
-                    'context': {'default_attendance_id': attendance_id},
+                    'context': {
+                        'default_attendance_id': attendance_id,
+                        'previous_trip_destination_id': prev_dest_id,
+                    },
                 }
             # NEW: Primary Trip (Via Office or Direct) close-previous flow
             return_trip_att_id = self.env.context.get('redirect_to_return_trip_attendance_id')
@@ -173,6 +212,7 @@ class VehicleTracking(models.Model):
                         'default_attendance_id': return_trip_att_id,
                         'default_is_return_trip': True,
                         'show_return_route_field': True,
+                        'previous_trip_destination_id': prev_dest_id,
                     },
                 }
             # NEW: Primary Trip (Office to Home) close-previous flow
@@ -193,6 +233,7 @@ class VehicleTracking(models.Model):
                         'default_return_leg_type': 'via_office',
                         'default_is_office_to_home_leg': True,
                         'show_return_route_field': False,
+                        'previous_trip_destination_id': prev_dest_id,
                     },
                 }
             checkout_att_id = self.env.context.get('redirect_to_checkout_attendance_id')
@@ -244,7 +285,9 @@ class VehicleTracking(models.Model):
                     "[field-attendance] mark visits done in custom save failed"
                 )
         # Chain to the appropriate next action depending on which flow
-        # opened this dialog.
+        # opened this dialog. Carry the `previous_trip_destination_id`
+        # flag through so the chained popup keeps its filter scope.
+        prev_dest_id = self.env.context.get('previous_trip_destination_id')
         attendance_id = self.env.context.get('redirect_to_attendance_id')
         if attendance_id:
             return {
@@ -256,7 +299,10 @@ class VehicleTracking(models.Model):
                     'hr_field_attendance.view_field_attendance_trip_line_form'
                 ).id,
                 'target': 'new',
-                'context': {'default_attendance_id': attendance_id},
+                'context': {
+                    'default_attendance_id': attendance_id,
+                    'previous_trip_destination_id': prev_dest_id,
+                },
             }
         # NEW: Primary Trip (Via Office or Direct) close-previous flow
         return_trip_att_id = self.env.context.get('redirect_to_return_trip_attendance_id')
@@ -274,6 +320,7 @@ class VehicleTracking(models.Model):
                     'default_attendance_id': return_trip_att_id,
                     'default_is_return_trip': True,
                     'show_return_route_field': True,
+                    'previous_trip_destination_id': prev_dest_id,
                 },
             }
         # NEW: Primary Trip (Office to Home) close-previous flow
@@ -294,6 +341,7 @@ class VehicleTracking(models.Model):
                     'default_return_leg_type': 'via_office',
                     'default_is_office_to_home_leg': True,
                     'show_return_route_field': False,
+                    'previous_trip_destination_id': prev_dest_id,
                 },
             }
         checkout_att_id = self.env.context.get('redirect_to_checkout_attendance_id')
@@ -379,6 +427,9 @@ class VehicleTracking(models.Model):
                     'hr_field_attendance.view_field_attendance_trip_line_form'
                 ).id,
                 'target': 'new',
-                'context': {'default_attendance_id': attendance_id},
+                'context': {
+                    'default_attendance_id': attendance_id,
+                    'previous_trip_destination_id': self.env.context.get('previous_trip_destination_id'),
+                },
             }
         return None
