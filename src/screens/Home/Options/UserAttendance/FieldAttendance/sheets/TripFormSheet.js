@@ -303,7 +303,7 @@ const TripFormSheet = ({
                     {(selectedTrip.source_id?.[1] || selectedTrip.source || '')} → {(selectedTrip.destination_id?.[1] || selectedTrip.destination || '')}
                   </Text>
                 </>
-              ) : (mode === 'outbound' && previousDestinationId && onCreateNewTrip) ? (
+              ) : ((mode === 'outbound' || mode === 'return') && previousDestinationId && onCreateNewTrip) ? (
                 <TouchableOpacity
                   style={styles.createCta}
                   onPress={onCreateNewTrip}

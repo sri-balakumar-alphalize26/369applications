@@ -558,12 +558,15 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     const match = list.find((s) => Number(s._id) === Number(prefillId));
     if (!match) { console.log('[VehicleTrackingForm] source-prefill skipped: id', prefillId, 'not found in', list.length, 'sources'); return; }
     console.log('[VehicleTrackingForm] prefill source from previous destination:', match.name);
+    // NOTE: deliberately NOT seeding start_latitude / start_longitude here.
+    // The trip's start GPS should reflect where the user PHYSICALLY tapped
+    // Start Trip (their phone GPS = currentCoords), not the source
+    // location's registered coords. Leaving formData.start_lat/lng empty
+    // makes the submit path fall through to currentCoords.
     setFormData((prev) => ({
       ...prev,
       source: match.name,
       source_id: match._id,
-      start_latitude: prev.start_latitude || (match.latitude != null ? String(match.latitude) : ''),
-      start_longitude: prev.start_longitude || (match.longitude != null ? String(match.longitude) : ''),
     }));
   }, [dropdowns.sourceLocations, route?.params?.prefillSourceId, isEditMode]);
 
