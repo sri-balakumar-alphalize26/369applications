@@ -1,6 +1,6 @@
 {
     'name': 'Vehicle Tracking',
-    'version': '19.0.2.3.0',
+    'version': '19.0.2.4.0',
     'summary': 'Track vehicle movement, trips, driver logs with AI Fraud Detection',
     'description': """
 Odoo 19 Vehicle Tracking Module with AI Fraud Detection
@@ -24,14 +24,18 @@ New in v1.1 - AI Fraud Detection:
         'data/vehicle_ai_sequence.xml',
         'data/vehicle_ai_config.xml',
         'data/vehicle_purpose_data.xml',
+        # Views must be declared before actions reference them.
+        # The Reports actions in vehicle_tracking_actions.xml ref view
+        # IDs defined in vehicle_fuel_log_view.xml, so that file moves
+        # ABOVE the actions file. Same order rule for tracking_view.
         'views/vehicle_tracking_view.xml',
+        'views/vehicle_fuel_log_view.xml',
         'views/vehicle_tracking_actions.xml',
         'views/vehicle_tracking_menus.xml',
         'views/vehicle_purpose_view.xml',
         'views/fleet_vehicle_inherit_view.xml',
         'views/fleet_vehicle_menu.xml',
         'views/vehicle_location_menu.xml',
-        'views/vehicle_fuel_log_view.xml',
         'views/vehicle_ai_views.xml',
     ],
     

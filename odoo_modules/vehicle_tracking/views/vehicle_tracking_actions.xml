@@ -28,4 +28,36 @@
     </field>
   </record>
 
+  <!-- Reports → Fuel Entries — list of all fuel.log rows with totals
+       at the bottom. Drillable into a read-only detail with images. -->
+  <record id="action_fuel_entries_report" model="ir.actions.act_window">
+    <field name="name">Fuel Entries Report</field>
+    <field name="res_model">vehicle.fuel.log</field>
+    <field name="view_mode">list,form</field>
+    <field name="search_view_id" ref="view_vehicle_fuel_log_report_search"/>
+    <field name="view_ids" eval="[
+        (5, 0, 0),
+        (0, 0, {'view_mode': 'list', 'view_id': ref('view_vehicle_fuel_log_report_list')}),
+        (0, 0, {'view_mode': 'form', 'view_id': ref('view_vehicle_fuel_log_report_form')})
+    ]"/>
+    <field name="help" type="html">
+      <p>All fuel entries logged across trips, with totals.</p>
+    </field>
+  </record>
+
+  <!-- Reports → Trip Comparison — actual vs estimated for ended trips. -->
+  <record id="action_trip_comparison_report" model="ir.actions.act_window">
+    <field name="name">Trip Comparison Report</field>
+    <field name="res_model">vehicle.tracking</field>
+    <field name="view_mode">list,form</field>
+    <field name="domain">[('end_trip','=',True)]</field>
+    <field name="view_ids" eval="[
+        (5, 0, 0),
+        (0, 0, {'view_mode': 'list', 'view_id': ref('view_vehicle_tracking_comparison_list')})
+    ]"/>
+    <field name="help" type="html">
+      <p>Comparison of actual vs estimated KM and time for ended trips.</p>
+    </field>
+  </record>
+
 </odoo>

@@ -7,4 +7,28 @@
       sequence="10"
       action="vehicle_tracking.action_vehicle_tracking"
       groups="base.group_user"/>
+
+  <!-- Reports parent — sequence 40 sits between Vehicle Locations (25)
+       and AI Fraud Detection (50) so it appears in that slot in the
+       top horizontal nav. -->
+  <menuitem
+      id="menu_vehicle_tracking_reports"
+      name="Reports"
+      parent="vehicle_tracking.menu_vehicle_tracking_root"
+      sequence="40"
+      groups="base.group_user"/>
+
+  <menuitem
+      id="menu_vehicle_tracking_reports_fuel"
+      name="Fuel Entries"
+      parent="menu_vehicle_tracking_reports"
+      action="action_fuel_entries_report"
+      sequence="10"/>
+
+  <menuitem
+      id="menu_vehicle_tracking_reports_comparison"
+      name="Trip Comparison"
+      parent="menu_vehicle_tracking_reports"
+      action="action_trip_comparison_report"
+      sequence="20"/>
 </odoo>

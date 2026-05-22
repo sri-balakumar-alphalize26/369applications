@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- PDF report action for Trip Comparison. Triggered from the
+         Download PDF button in the Reports → Trip Comparison list. -->
+    <record id="action_report_trip_comparison" model="ir.actions.report">
+        <field name="name">Trip Comparison Report</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_trip_comparison_doc</field>
+        <field name="report_file">vehicle_tracking.report_trip_comparison_doc</field>
+        <field name="print_report_name">'Trip_Comparison_Report'</field>
+    </record>
+
+    <!-- QWeb template — landscape orientation works better for the
+         12-column comparison table, but using portrait + smaller font
+         to keep the standard external layout. Negative variance is
+         green ("under estimate"); positive is red ("over estimate"). -->
+    <template id="report_trip_comparison_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h2>Trip Comparison Report</h2>
+                    <p>
+                        <strong>Generated:</strong>
+                        <span t-esc="context_timestamp(datetime.datetime.now()).strftime('%Y-%m-%d %H:%M')"/>
+                        &amp;nbsp;|&amp;nbsp;
+                        <strong>Trips:</strong>
+                        <span t-esc="len(docs)"/>
+                    </p>
+
+                    <table class="table table-sm table-bordered" style="font-size:10px;">
+                        <thead style="background-color:#f0f0f0;">
+                            <tr>
+                                <th>Ref</th>
+                                <th>Date</th>
+                                <th>Vehicle</th>
+                                <th>Driver</th>
+                                <th>Source</th>
+                                <th>Destination</th>
+                                <th class="text-end">Est KM</th>
+                                <th class="text-end">Actual KM</th>
+                                <th class="text-end">KM Var</th>
+                                <th class="text-end">Est Hrs</th>
+                                <th class="text-end">Actual Hrs</th>
+                                <th class="text-end">Time Var</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="docs" t-as="o">
+                                <td><span t-field="o.ref"/></td>
+                                <td><span t-field="o.date"/></td>
+                                <td><span t-field="o.vehicle_id"/></td>
+                                <td><span t-field="o.driver_id"/></td>
+                                <td><span t-field="o.source_id"/></td>
+                                <td><span t-field="o.destination_id"/></td>
+                                <td class="text-end"><span t-field="o.estimated_km"/></td>
+                                <td class="text-end"><span t-field="o.km_travelled"/></td>
+                                <td class="text-end"
+                                    t-attf-style="color: #{'#dc3545' if o.km_variance &gt; 0 else ('#198754' if o.km_variance &lt; 0 else '#000000')};">
+                                    <span t-field="o.km_variance"/>
+                                </td>
+                                <td class="text-end"><span t-field="o.estimated_time"/></td>
+                                <td class="text-end"><span t-field="o.duration"/></td>
+                                <td class="text-end"
+                                    t-attf-style="color: #{'#dc3545' if o.time_variance &gt; 0 else ('#198754' if o.time_variance &lt; 0 else '#000000')};">
+                                    <span t-field="o.time_variance"/>
+                                </td>
+                            </tr>
+                        </tbody>
+                        <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                            <tr>
+                                <td colspan="6" class="text-end">Totals:</td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('estimated_km'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('km_travelled'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('km_variance'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('estimated_time'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('duration'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('time_variance'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </t>
+        </t>
+    </template>
+
+</odoo>

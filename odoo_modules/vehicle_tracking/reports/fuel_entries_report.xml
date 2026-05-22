@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- PDF report action for Fuel Entries. Triggered from the
+         Download PDF button in the Reports → Fuel Entries list view. -->
+    <record id="action_report_fuel_entries" model="ir.actions.report">
+        <field name="name">Fuel Entries Report</field>
+        <field name="model">vehicle.fuel.log</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_fuel_entries_doc</field>
+        <field name="report_file">vehicle_tracking.report_fuel_entries_doc</field>
+        <field name="print_report_name">'Fuel_Entries_Report'</field>
+    </record>
+
+    <!-- QWeb template — uses Odoo's standard external layout (company
+         header/footer) and prints a clean table with totals. Reads
+         docs (a recordset of vehicle.fuel.log) and sums Amount + Litres
+         using Python comprehensions inside the template. -->
+    <template id="report_fuel_entries_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <h2>Fuel Entries Report</h2>
+                    <p>
+                        <strong>Generated:</strong>
+                        <span t-esc="context_timestamp(datetime.datetime.now()).strftime('%Y-%m-%d %H:%M')"/>
+                        &amp;nbsp;|&amp;nbsp;
+                        <strong>Entries:</strong>
+                        <span t-esc="len(docs)"/>
+                    </p>
+
+                    <table class="table table-sm table-bordered">
+                        <thead style="background-color:#f0f0f0;">
+                            <tr>
+                                <th>Ref</th>
+                                <th>Vehicle</th>
+                                <th>Driver</th>
+                                <th class="text-end">Amount</th>
+                                <th class="text-end">Fuel (L)</th>
+                                <th class="text-end">Odometer</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr t-foreach="docs" t-as="o">
+                                <td><span t-field="o.name"/></td>
+                                <td><span t-field="o.vehicle_id"/></td>
+                                <td><span t-field="o.driver_id"/></td>
+                                <td class="text-end"><span t-field="o.amount"/></td>
+                                <td class="text-end"><span t-field="o.fuel_level"/></td>
+                                <td class="text-end"><span t-field="o.odometer"/></td>
+                                <td><span t-field="o.create_date"/></td>
+                            </tr>
+                        </tbody>
+                        <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                            <tr>
+                                <td colspan="3" class="text-end">Totals:</td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('amount'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td class="text-end">
+                                    <span t-esc="sum(docs.mapped('fuel_level'))" t-options="{'widget': 'float', 'precision': 2}"/>
+                                </td>
+                                <td colspan="2"/>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </t>
+        </t>
+    </template>
+
+</odoo>

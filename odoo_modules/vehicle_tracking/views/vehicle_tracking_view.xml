@@ -222,4 +222,37 @@
       </list>
     </field>
   </record>
+
+  <!-- ============================================================
+       Reports → Trip Comparison
+       List of ended trips with the four core comparison values:
+       estimated vs actual KM, estimated vs actual duration, plus
+       the stored-computed km_variance and time_variance so admins
+       can sort by biggest outlier. Action filters end_trip=True so
+       only completed trips show.
+       ============================================================ -->
+  <record id="view_vehicle_tracking_comparison_list" model="ir.ui.view">
+    <field name="name">vehicle.tracking.comparison.list</field>
+    <field name="model">vehicle.tracking</field>
+    <field name="arch" type="xml">
+      <list string="Trip Comparison" create="false">
+        <field name="ref"/>
+        <field name="date"/>
+        <field name="vehicle_id"/>
+        <field name="driver_id"/>
+        <field name="source_id"/>
+        <field name="destination_id"/>
+        <field name="estimated_km" sum="Total Est KM"/>
+        <field name="km_travelled" sum="Total Actual KM"/>
+        <field name="km_variance" sum="Total KM Variance"
+               decoration-danger="km_variance &gt; 0"
+               decoration-success="km_variance &lt; 0"/>
+        <field name="estimated_time" sum="Total Est Hrs"/>
+        <field name="duration" sum="Total Actual Hrs"/>
+        <field name="time_variance" sum="Total Time Variance"
+               decoration-danger="time_variance &gt; 0"
+               decoration-success="time_variance &lt; 0"/>
+      </list>
+    </field>
+  </record>
 </odoo>

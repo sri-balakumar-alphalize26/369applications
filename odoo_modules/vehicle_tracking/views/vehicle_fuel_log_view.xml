@@ -1,4 +1,73 @@
 <odoo>
+    <!-- ============================================================
+         Reports → Fuel Entries
+         Clean business view of every fuel.log row with sum totals on
+         Amount and Fuel Level. Drillable into a read-only detail form
+         that shows odometer + receipt images.
+         ============================================================ -->
+    <record id="view_vehicle_fuel_log_report_list" model="ir.ui.view">
+        <field name="name">vehicle.fuel.log.report.list</field>
+        <field name="model">vehicle.fuel.log</field>
+        <field name="arch" type="xml">
+            <list string="Fuel Entries" create="false">
+                <field name="name"/>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="amount" sum="Total Amount"/>
+                <field name="fuel_level" sum="Total Litres"/>
+                <field name="odometer"/>
+                <field name="create_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_vehicle_fuel_log_report_form" model="ir.ui.view">
+        <field name="name">vehicle.fuel.log.report.form</field>
+        <field name="model">vehicle.fuel.log</field>
+        <field name="arch" type="xml">
+            <form string="Fuel Entry Details" create="false" edit="false">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="vehicle_tracking_id"/>
+                            <field name="vehicle_id"/>
+                            <field name="driver_id"/>
+                            <field name="create_date"/>
+                        </group>
+                        <group>
+                            <field name="amount"/>
+                            <field name="fuel_level"/>
+                            <field name="odometer"/>
+                            <field name="gps_lat"/>
+                            <field name="gps_long"/>
+                        </group>
+                    </group>
+                    <group string="Images">
+                        <field name="odometer_image" widget="image" filename="odometer_image_filename"/>
+                        <field name="odometer_image_filename" invisible="1"/>
+                        <field name="receipt_image" widget="image" filename="receipt_image_filename"/>
+                        <field name="receipt_image_filename" invisible="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_vehicle_fuel_log_report_search" model="ir.ui.view">
+        <field name="name">vehicle.fuel.log.report.search</field>
+        <field name="model">vehicle.fuel.log</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <separator/>
+                <filter name="group_vehicle" string="Vehicle" context="{'group_by': 'vehicle_id'}"/>
+                <filter name="group_driver" string="Driver" context="{'group_by': 'driver_id'}"/>
+            </search>
+        </field>
+    </record>
+
     <record id="view_vehicle_fuel_log_form_popup" model="ir.ui.view">
         <field name="name">vehicle.fuel.log.form.popup</field>
         <field name="model">vehicle.fuel.log</field>
