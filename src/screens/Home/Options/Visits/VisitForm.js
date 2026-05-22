@@ -207,41 +207,40 @@ const VisitForm = ({ navigation, route }) => {
       ]);
 
       let location = null;
+      let usedCachedFix = false;
 
-      // (1) cached fix ≤ 5 min
+      // (1) any-age cache — instant display so the form isn't blank.
       try {
-        location = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
-        if (location) console.log('[VisitForm] using cached last-known fix');
+        location = await Location.getLastKnownPositionAsync({});
+        if (location) {
+          usedCachedFix = true;
+          console.log('[VisitForm] INSTANT any-age cached fix (will refine in background)');
+        }
       } catch (e) { console.log('[VisitForm] last-known cache failed:', e?.message); }
 
-      // (2) live LOW
-      if (!location) {
-        try {
-          location = await positionWithTimeout({
-            accuracy: Location.Accuracy.Low,
-            mayShowUserSettingsDialog: true,
-          }, 4000);
-          if (location) console.log('[VisitForm] got Low-accuracy fix');
-        } catch (e) { console.log('[VisitForm] Low fetch failed:', e?.message); }
-      }
-
-      // (3) live BALANCED
+      // (2) live BALANCED — the accuracy the user actually needs. Longer
+      // timeout (12 s) since this is the target, not a quick probe. LOW
+      // accuracy step removed entirely — user explicitly asked for Balanced
+      // every time, and LOW had been timing out for them anyway.
       if (!location) {
         try {
           location = await positionWithTimeout({
             accuracy: Location.Accuracy.Balanced,
             mayShowUserSettingsDialog: true,
-          }, 8000);
+          }, 12000);
           if (location) console.log('[VisitForm] got Balanced-accuracy fix');
         } catch (e) { console.log('[VisitForm] Balanced fetch failed:', e?.message); }
       }
 
-      // (4) any-age stale cache
+      // (3) POST-LIVE cache re-check. Even when getCurrentPositionAsync times
+      // out, Android's FusedLocationProvider often populates the cache as a
+      // side-effect — so a follow-up getLastKnownPositionAsync succeeds where
+      // the live call failed.
       if (!location) {
         try {
-          location = await Location.getLastKnownPositionAsync();
-          if (location) console.log('[VisitForm] using stale last-known fix');
-        } catch (e) { console.log('[VisitForm] stale last-known failed:', e?.message); }
+          location = await Location.getLastKnownPositionAsync({});
+          if (location) console.log('[VisitForm] POST-LIVE cache populated');
+        } catch (e) { console.log('[VisitForm] post-live cache failed:', e?.message); }
       }
 
       // If services flipped off during the ladder (rare race), re-prompt.
@@ -289,6 +288,37 @@ const VisitForm = ({ navigation, route }) => {
         latitude: lat,
         locationName,
       }));
+
+      // Background refresh: if the initial display used a stale cached fix,
+      // keep trying Balanced until it lands and silently upgrade the coords.
+      // This gives "Balanced accuracy every time" without making the user
+      // wait — the form shows last-known immediately and the precise coords
+      // arrive a few seconds later.
+      if (usedCachedFix) {
+        console.log('[VisitForm] starting background Balanced refresh…');
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+          .then(async fresh => {
+            if (!fresh?.coords) return;
+            const fLat = fresh.coords.latitude;
+            const fLng = fresh.coords.longitude;
+            console.log('[VisitForm] background Balanced upgrade:', fLat, fLng);
+            let fName = '';
+            try {
+              const rg = await Location.reverseGeocodeAsync({ latitude: fLat, longitude: fLng });
+              if (rg && rg.length > 0) {
+                const p = rg[0];
+                fName = [p.name, p.street, p.city, p.region, p.country].filter(Boolean).join(', ');
+              }
+            } catch (_) { /* leave name as-is */ }
+            setFormData(prev => ({
+              ...prev,
+              latitude: fLat,
+              longitude: fLng,
+              locationName: fName || prev.locationName,
+            }));
+          })
+          .catch(err => console.log('[VisitForm] background Balanced refresh failed:', err?.message));
+      }
     } catch (error) {
       console.error('[VisitForm] Error fetching location:', error);
       setLocationError('Could not read your location. Tap Turn On Location to retry.');

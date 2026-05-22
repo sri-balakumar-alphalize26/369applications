@@ -3607,10 +3607,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         </View>
       )}
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+      {/* RoundedScrollContainer already wraps its children in a
+          KeyboardAvoidingView internally — adding a second KAV here was
+          causing an Android "double-handler" race where the keyboard
+          sometimes failed to appear on the first tap of the PIN field.
+          Replaced the outer KAV with a plain View. */}
+      <View style={{ flex: 1 }}>
         <RoundedScrollContainer style={styles.content}>
           {/* Header Card */}
           <View style={styles.headerCard}>
@@ -3672,10 +3674,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                   placeholder="Enter your PIN"
                   placeholderTextColor={COLORS.gray}
                   value={pinInput}
-                  onChangeText={setPinInput}
+                  onChangeText={(t) => {
+                    console.log('[PIN] onChangeText length=', t.length);
+                    setPinInput(t);
+                  }}
+                  onFocus={() => console.log('[PIN] onFocus — soft keyboard should be visible now')}
+                  onBlur={() => console.log('[PIN] onBlur — soft keyboard dismissed')}
                   keyboardType="number-pad"
                   secureTextEntry
                   maxLength={10}
+                  // Android occasionally suppresses the soft keyboard on focus
+                  // when other inputs/modals have recently dismissed it. Force
+                  // it on every focus to dodge that race.
+                  showSoftInputOnFocus
+                  returnKeyType="done"
+                  blurOnSubmit
                 />
                 <TouchableOpacity
                   style={[styles.pinVerifyButton, { backgroundColor: attendanceMode === 'wfh' ? '#2196F3' : attendanceMode === 'field' ? '#1976D2' : COLORS.primaryThemeColor }]}
@@ -3704,7 +3717,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           {attendanceMode === 'waiver' && isVerified && renderWaiverSection()}
           {attendanceMode === 'field' && isVerified && renderFieldSection()}
         </RoundedScrollContainer>
-      </KeyboardAvoidingView>
+      </View>
 
       <OverlayLoader visible={loading && !showCamera} />
 

@@ -82,16 +82,48 @@ const TripFormSheet = ({
       if (initialSelectedTripId) loadTrips();
       if (initialSelectedVisitId) loadVisits();
       // Back-nav restore: parent asked us to also open the trip picker, so
-      // the user lands on the same layer they came from.
-      if (autoOpenPicker) {
+      // the user lands on the same layer they came from. Skip when an
+      // initialSelectedTripId is also being applied — that means we just
+      // came back from Create-New and the trip is already auto-selected
+      // (locked field), so popping the picker on top would be redundant.
+      if (autoOpenPicker && !initialSelectedTripId) {
         console.log(TAG, 'auto-opening trip picker on visible (back-nav restore)');
         setTripPickerOpen(true);
         loadTrips();
+        onAutoOpenPickerHandled?.();
+      } else if (autoOpenPicker && initialSelectedTripId) {
+        // Still consume the flag so the parent state goes back to false.
+        console.log(TAG, 'skipping picker auto-open: trip already pre-selected');
         onAutoOpenPickerHandled?.();
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  // Late-sync for initialSelectedTripId. Without this, the parent's state
+  // updates from useFocusEffect (setPendingTripId + setPrimaryOpen) can land
+  // in two separate React commits — the first commit toggles `visible` to
+  // true with initialSelectedTripId still undefined, the open-effect above
+  // runs and sets selectedTripId to null, then the second commit arrives
+  // with initialSelectedTripId set but the open-effect doesn't re-run. This
+  // standalone effect catches that second commit and syncs the selection.
+  useEffect(() => {
+    if (visible && initialSelectedTripId) {
+      console.log(TAG, 'late-sync initialSelectedTripId →', initialSelectedTripId);
+      setSelectedTripId(initialSelectedTripId);
+      loadTrips();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, initialSelectedTripId]);
+
+  useEffect(() => {
+    if (visible && initialSelectedVisitId) {
+      console.log(TAG, 'late-sync initialSelectedVisitId →', initialSelectedVisitId);
+      setSelectedVisitId(initialSelectedVisitId);
+      loadVisits();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, initialSelectedVisitId]);
 
   // Load full trip / visit objects only for the available_*_ids list — server
   // already filtered by used-trip exclusion and (for trips) source location.
@@ -269,7 +301,6 @@ const TripFormSheet = ({
                   </View>
                   <Text style={styles.detail}>
                     {(selectedTrip.source_id?.[1] || selectedTrip.source || '')} → {(selectedTrip.destination_id?.[1] || selectedTrip.destination || '')}
-                    {tripStartKm != null ? `  ·  Start KM: ${tripStartKm}` : ''}
                   </Text>
                 </>
               ) : (mode === 'outbound' && previousDestinationId && onCreateNewTrip) ? (
@@ -301,11 +332,20 @@ const TripFormSheet = ({
                 </TouchableOpacity>
               )}
 
-              {/* Start KM — shown only as a fallback. When the selected trip
-                  already carries a non-zero start_km, the value is rendered
-                  inside the source→destination caption above; the editable
-                  input is suppressed to avoid two competing values. */}
-              {tripStartKm == null ? (
+              {/* Start KM — fetched from the selected trip's start_km when
+                  available, shown as its own labelled row directly under
+                  Source Trip. Read-only locked display matches the Source
+                  Trip selected-trip field above. Falls back to an editable
+                  input when the trip lacks a non-zero start_km (legacy data
+                  or rare edge case). */}
+              {tripStartKm != null ? (
+                <>
+                  <Text style={styles.label}>Start KM</Text>
+                  <View style={styles.lockedField}>
+                    <Text style={styles.fieldVal} numberOfLines={1}>{tripStartKm} km</Text>
+                  </View>
+                </>
+              ) : (
                 <>
                   <Text style={styles.label}>Start KM *</Text>
                   <View style={styles.kmRow}>
@@ -320,12 +360,14 @@ const TripFormSheet = ({
                     <Text style={styles.unit}>km</Text>
                   </View>
                 </>
-              ) : null}
+              )}
 
-              {/* Visit picker (outbound only) — same Create-CTA shortcut as the
-                  trip block above: when nothing is selected and we can navigate
-                  to VisitForm, lead with the green "Create New Visit" CTA. */}
-              {needsVisit ? (
+              {/* Visit picker (outbound only) — gated on selectedTrip so the
+                  field only appears AFTER a source trip is attached. Mirrors
+                  the Odoo module's "Add Additional Trip" form, where the
+                  Visit row reveals itself only once Source Trip has a value.
+                  Same Create-CTA shortcut as the trip block above. */}
+              {needsVisit && selectedTrip ? (
                 <>
                   <Text style={styles.label}>Customer Visit *</Text>
                   {selectedVisit ? (
@@ -397,6 +439,7 @@ const TripFormSheet = ({
         loading={loadingPicker}
         selectedId={selectedTripId}
         previousDestinationId={previousDestinationId}
+        newTripId={initialSelectedTripId}
         onClose={() => setTripPickerOpen(false)}
         onSelect={(t) => { setSelectedTripId(t?.id); setTripPickerOpen(false); }}
         onCreateNew={onCreateNewTrip ? () => { setTripPickerOpen(false); onCreateNewTrip(); } : undefined}

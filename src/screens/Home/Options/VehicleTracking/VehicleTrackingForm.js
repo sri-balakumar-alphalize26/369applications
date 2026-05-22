@@ -35,6 +35,12 @@ import { StyledAlertModal } from '@components/Modal';
 // These Odoo `vehicle.tracking` fields are mapped in this form: amount, battery_checking, company_id, completion_status, coolant_water, create_date, create_uid, daily_checks, date, destination, display_name, driver_id, duration, end_fuel_checking, end_fuel_document, end_fuel_document_filename, end_fuel_status, end_km, end_latitude, end_longitude, end_time, end_trip, estimated_time, fuel_checking, fuel_status, id, image_url, invoice_line_ids, invoice_match, invoice_message, invoice_number, km_travelled, number_plate, oil_checking, purpose_of_visit, ref, remarks, source, start_km, start_latitude
 
 
+// Odoo Many2one fields come back as [id, displayName] tuples. These helpers
+// normalise that shape — used by the initial-state extractor and the
+// post-dropdown hydration effects.
+const m2oId = (v) => (Array.isArray(v) ? v[0] : (v || null));
+const m2oName = (v) => (Array.isArray(v) ? (v[1] || '') : '');
+
 const VehicleTrackingForm = ({ navigation, route }) => {
   console.log('VehicleTrackingForm loaded');
 
@@ -231,8 +237,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     // fetchVehicleTrackingTripsOdoo returns for both draft and in_progress
     // trips. The previous code only consulted them when initialTripState
     // was 'in_progress', so a draft re-opened after Save showed empty.
-    vehicle: existingTripData?.vehicle_name || existingTripData?.vehicle || '',
-    driver: existingTripData?.driver_name || existingTripData?.driver || '',
+    // M2O fields may arrive as either a flat `vehicle_name` snake_case string
+    // (fetchVehicleTrackingTripsOdoo style) OR an Odoo `[id, name]` tuple
+    // (raw read result via readVehicleTrackingForTripIdsOdoo). m2oName covers
+    // the tuple case; the flat fallback keeps the older callers working.
+    vehicle: existingTripData?.vehicle_name || existingTripData?.vehicle || m2oName(existingTripData?.vehicle_id) || '',
+    driver: existingTripData?.driver_name || existingTripData?.driver || m2oName(existingTripData?.driver_id) || '',
     plateNumber: existingTripData?.number_plate || existingTripData?.plateNumber || '',
     tankCapacity:
       typeof existingTripData?.pre_trip_litres !== 'undefined' && existingTripData?.pre_trip_litres !== ''
@@ -246,10 +256,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       typeof existingTripData?.start_longitude !== 'undefined' && existingTripData?.start_longitude !== ''
         ? String(existingTripData.start_longitude ?? '')
         : '',
-    source: existingTripData?.source_name || existingTripData?.source || '',
-    destination: existingTripData?.destination_name || existingTripData?.destination || '',
-    source_id: existingTripData?.source_id || '',
-    destination_id: existingTripData?.destination_id || '',
+    // Same fallback ladder for source / destination — name string, then
+    // direct flat field, then tuple's display name.
+    source: existingTripData?.source_name || existingTripData?.source || m2oName(existingTripData?.source_id) || '',
+    destination: existingTripData?.destination_name || existingTripData?.destination || m2oName(existingTripData?.destination_id) || '',
+    // For the ID fields we want the raw integer — m2oId unwraps the tuple
+    // if the payload is in `[id, name]` shape, else returns the flat value.
+    source_id: m2oId(existingTripData?.source_id) || '',
+    destination_id: m2oId(existingTripData?.destination_id) || '',
     estimatedTime:
       typeof existingTripData?.estimated_time !== 'undefined' && existingTripData?.estimated_time !== ''
         ? String(existingTripData.estimated_time)
@@ -336,8 +350,28 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     purposesOfVisit: false,
   });
 
-  // Purpose of Visit state
-  const [purposeOfVisit, setPurposeOfVisit] = useState(existingTripData?.purpose_of_visit || '');
+  // Purpose of Visit state — also accepts the [id, name] tuple shape from
+  // readVehicleTrackingForTripIdsOdoo (raw Odoo read).
+  const [purposeOfVisit, setPurposeOfVisit] = useState(
+    existingTripData?.purpose_of_visit || m2oName(existingTripData?.purpose_of_visit_id) || ''
+  );
+
+  // One-shot trace so we can see at a glance whether the form hydrated the
+  // existing trip correctly. Fires only when isEditMode (existingTripData
+  // truthy). Drop a single line per mount.
+  useEffect(() => {
+    if (!existingTripData) return;
+    console.log('[VehicleTrackingForm:hydrate] initial state from tripData', {
+      vehicle: existingTripData.vehicle_name || m2oName(existingTripData.vehicle_id),
+      driver: existingTripData.driver_name || m2oName(existingTripData.driver_id),
+      source: existingTripData.source_name || m2oName(existingTripData.source_id),
+      destination: existingTripData.destination_name || m2oName(existingTripData.destination_id),
+      purpose: existingTripData.purpose_of_visit || m2oName(existingTripData.purpose_of_visit_id),
+      startKm: existingTripData.start_km,
+      endKm: existingTripData.end_km,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [selectedType, setSelectedType] = useState(null);
   const [isVisible, setIsVisible] = useState(false);
@@ -577,11 +611,15 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     if (!isEditMode || !existingTripData?.vehicle_id) return;
     if (!dropdowns.vehicles || dropdowns.vehicles.length === 0) return;
     let cancelled = false;
+    // Unwrap the tuple shape (Odoo raw read returns [id, name]) before comparing
+    // against the flat _id in the dropdowns. Without this, the string compare
+    // would try "3,BYD/Marudi/TN" === "3" and always miss → form stays blank.
+    const vehicleIdFromTrip = m2oId(existingTripData.vehicle_id);
+    console.log('[VehicleTrackingForm:hydrate] vehicle-match attempt', { vehicleIdFromTrip, vehiclesLoaded: dropdowns.vehicles.length });
     (async () => {
       try {
         const match = (dropdowns.vehicles || []).find(v =>
-          String(v._id) === String(existingTripData.vehicle_id) ||
-          String(v._id) === String(existingTripData.vehicle_id?.toString())
+          String(v._id) === String(vehicleIdFromTrip)
         );
         if (cancelled) return;
         if (match) {
@@ -591,27 +629,29 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             driver: match.driver?.name || prev.driver,
             plateNumber: match.plate_number || prev.plateNumber,
           }));
-          console.log('[VehicleTrackingForm] Auto-matched vehicle from dropdowns for edit:', match.name, match._id);
+          console.log('[VehicleTrackingForm:hydrate] vehicle matched:', match.name, match._id);
         } else {
-          console.log('[VehicleTrackingForm] No vehicle match found in dropdowns for vehicle_id:', existingTripData.vehicle_id);
-          // Fallback: fetch vehicle details by id and populate form fields
+          console.log('[VehicleTrackingForm:hydrate] no dropdown match, trying fallback fetch for id:', vehicleIdFromTrip);
+          // Fallback: fetch vehicle details by id and populate form fields.
+          // Pass the unwrapped id, NOT the tuple — fetchVehicleDetailsOdoo
+          // calls .replace() on the input and would crash on the tuple.
           try {
-            const details = await fetchVehicleDetailsOdoo({ vehicle_id: existingTripData.vehicle_id });
+            const details = await fetchVehicleDetailsOdoo({ vehicle_id: vehicleIdFromTrip });
             if (cancelled || !details) return;
             setFormData(prev => ({
               ...prev,
-              vehicle: details.name || prev.vehicle || existingTripData.vehicle_name || '',
-              driver: details.driver?.name || prev.driver || existingTripData.driver_name || '',
+              vehicle: details.name || prev.vehicle || m2oName(existingTripData.vehicle_id) || '',
+              driver: details.driver?.name || prev.driver || m2oName(existingTripData.driver_id) || '',
               plateNumber: details.license_plate || prev.plateNumber || existingTripData.number_plate || '',
               tankCapacity: prev.tankCapacity || details.tank_capacity || prev.tankCapacity || '',
             }));
-            console.log('[VehicleTrackingForm] Populated vehicle from fetchVehicleDetailsOdoo fallback:', details.name, existingTripData.vehicle_id);
+            console.log('[VehicleTrackingForm:hydrate] vehicle hydrated via fetch fallback:', details.name);
           } catch (fetchErr) {
-            console.warn('Failed to fetch vehicle details fallback for vehicle_id:', existingTripData.vehicle_id, fetchErr);
+            console.warn('[VehicleTrackingForm:hydrate] fetchVehicleDetailsOdoo failed:', fetchErr?.message);
           }
         }
       } catch (e) {
-        console.warn('Error auto-matching vehicle for edit:', e);
+        console.warn('[VehicleTrackingForm:hydrate] vehicle auto-match threw:', e?.message);
       }
     })();
     return () => { cancelled = true; };
@@ -1255,6 +1295,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       }
       if (!formData.destination) {
         newErrors.destination = 'Destination is required when starting a trip';
+      }
+      // Start KM must be present AND > 0 — the odometer reading is required
+      // to compute trip distance later and to chain with the previous trip.
+      const startKmNum = parseFloat(formData.startKM);
+      if (!formData.startKM || !Number.isFinite(startKmNum) || startKmNum <= 0) {
+        newErrors.startKM = 'Start KM is required and must be greater than 0 to start a trip';
       }
     }
 
@@ -2216,12 +2262,17 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <Text style={styles.sectionTitle}>Route Details</Text>
         </View>
         <View style={styles.sectionGroup}>
-          {/* Started Location */}
+          {/* Started Location — always read-only, but once the trip has been
+              started the value is also locked-by-data (no further GPS or
+              reverse-geocode updates flow into it). Add a lock icon + the
+              same blue-grey tint we use on the other locked fields (Vehicle,
+              Date, Source) so the user can see the state at a glance. */}
           <FormInput
             label="Started Location:"
             value={currentLocationName || 'Fetching location...'}
             editable={false}
-            style={{ backgroundColor: '#f5f5f5' }}
+            dropIcon={tripStartedFlag ? 'lock' : undefined}
+            style={{ backgroundColor: tripStartedFlag ? '#F0F4F8' : '#f5f5f5' }}
           />
 
           {/* Source — locked when entered via FieldAttendance's Create-New CTA

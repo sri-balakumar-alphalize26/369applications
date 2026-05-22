@@ -15,7 +15,6 @@ import {
   createAdditionalTripOdoo,
   createReturnTripOdoo,
   fieldActionCheckOutOdoo,
-  attachPrimaryTripOdoo,
   readVehicleTrackingForTripIdsOdoo,
 } from '@api/services/generalApi';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
@@ -204,33 +203,28 @@ const FieldAttendanceSection = ({
 
       if (!sheet) return;
 
-      // Primary trip + new trip → auto-attach (server-side attach_primary_trip).
-      if (pendingTripId && sheet === 'primary') {
-        console.log(TAG, 'pending new trip detected — auto-attach as primary', { pendingTripId });
-        try {
-          const res = await attachPrimaryTripOdoo(attendanceId, pendingTripId);
-          if (res?.success) {
-            showToastMessage('Primary trip attached');
-            await refresh({ silent: true });
-          } else {
-            console.warn(TAG, 'attach_primary_trip returned non-success:', res);
-            showToastMessage(res?.message || 'Could not attach trip — pick it manually');
-            openNextSheet(sheet);
-          }
-        } catch (e) {
-          console.error(TAG, 'attach_primary_trip threw:', e?.message);
-          openNextSheet(sheet);
-        }
-        return;
-      }
+      // NOTE: the old "primary + pendingTripId → auto-attach silently" branch
+      // was removed because the user wants Start Trip to redirect to the
+      // popup (consistent with outbound), not skip to the bare FA page. The
+      // popup will reopen via the generic branch below; tapping Save in the
+      // popup calls setupPrimaryTripOdoo which performs the attach.
 
       // Any other create-new return → stash the new id so the re-opened
-      // sheet can auto-select it, then re-open the sheet.
+      // sheet auto-selects it, then re-open the sheet. We do NOT auto-open
+      // the picker here — the trip is already shown in the locked Source
+      // Trip field, so popping the picker on top would be redundant.
+      //
+      // Explicitly RESET autoOpenPickerOnRestore here so a stale `true`
+      // left over from a previous edit-pencil tap doesn't bleed into this
+      // create-new return path. The edit-pencil flow (handleEditTripFromPicker)
+      // sets the flag and the plain-back branch below consumes it; this
+      // branch must zero it out for the Create-New path.
       if (pendingTripId || pendingVisitId) {
         console.log(TAG, 'pending new record detected — re-opening', sheet,
           { pendingTripId, pendingVisitId });
         if (pendingTripId) setPendingTripId(Number(pendingTripId));
         if (pendingVisitId) setPendingVisitId(Number(pendingVisitId));
+        setAutoOpenPickerOnRestore(false);
         openNextSheet(sheet);
         return;
       }
@@ -393,7 +387,10 @@ const FieldAttendanceSection = ({
     // picker on visibility.
     setAutoOpenPickerOnRestore(true);
     closeAllSheets();
-    navigation.navigate('VehicleTrackingForm', { tripData: trip });
+    // `returnTo: 'fieldAttendance'` makes VehicleTrackingForm route its
+    // post-Save / post-Start-Trip navigation back HERE (via the pending-
+    // channel + goBack), instead of falling through to the VTF list page.
+    navigation.navigate('VehicleTrackingForm', { tripData: trip, returnTo: 'fieldAttendance' });
   };
 
   const handleCreateNewVisit = () => {
@@ -771,9 +768,10 @@ const FieldAttendanceSection = ({
         availableTripIds={state.available_trip_ids}
         availableVisitIds={[]}
         previousDestinationId={state.previous_trip_destination_id}
+        initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSavePrimary}
-        onClose={() => setPrimaryOpen(false)}
+        onClose={() => { setPrimaryOpen(false); setPendingTripId(null); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -804,9 +802,10 @@ const FieldAttendanceSection = ({
         availableTripIds={state.available_trip_ids}
         availableVisitIds={[]}
         previousDestinationId={state.previous_trip_destination_id}
+        initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSaveReturn}
-        onClose={() => setReturnOpen(false)}
+        onClose={() => { setReturnOpen(false); setPendingTripId(null); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -819,9 +818,10 @@ const FieldAttendanceSection = ({
         availableTripIds={state.available_trip_ids}
         availableVisitIds={[]}
         previousDestinationId={state.previous_trip_destination_id}
+        initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSaveOfficeToHome}
-        onClose={() => setOfficeHomeOpen(false)}
+        onClose={() => { setOfficeHomeOpen(false); setPendingTripId(null); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -837,12 +837,13 @@ const FieldAttendanceSection = ({
         onOpenInVehicleTracking={(trip) => {
           // Close the popup and forward to VehicleTrackingForm in edit mode.
           // Stash the detail trip id so the focus-effect can re-open the
-          // popup when the user backs out of VehicleTrackingForm.
+          // popup when the user backs out of VehicleTrackingForm. returnTo
+          // routes Save/Start-Trip back to FA instead of the VTF list page.
           console.log(TAG, 'TripDetail → open in Vehicle Tracking', { tripId: trip?.id });
           lastActiveSheetRef.current = 'trip_detail';
           lastDetailTripIdRef.current = trip?.id || null;
           setTripDetailOpen(false);
-          navigation.navigate('VehicleTrackingForm', { tripData: trip });
+          navigation.navigate('VehicleTrackingForm', { tripData: trip, returnTo: 'fieldAttendance' });
         }}
       />
       <VisitsListSheet
