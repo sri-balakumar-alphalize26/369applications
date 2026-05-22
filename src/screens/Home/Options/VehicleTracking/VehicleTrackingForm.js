@@ -413,11 +413,19 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         const cookie = await AsyncStorage.getItem('odoo_cookie');
         if (cancelled) return;
         const headers = cookie ? { Cookie: cookie } : undefined;
-        console.log('[View popup] log id=', viewFuelLog.id, 'cookie present:', !!cookie);
-        setViewOdometerSrc(viewFuelLog.odometer_image
-          ? { uri: viewFuelLog.odometer_image, headers } : null);
-        setViewReceiptSrc(viewFuelLog.receipt_image
-          ? { uri: viewFuelLog.receipt_image, headers } : null);
+        console.log('[View popup] log id=', viewFuelLog.id, 'cookie present:', !!cookie,
+          'odoB64:', !!viewFuelLog.odometer_image_data, 'recB64:', !!viewFuelLog.receipt_image_data);
+        // Prefer the inline base64 data URI — no cookie needed, no broken
+        // thumbnail. Fall back to the /web/image URL with the saved cookie
+        // header for legacy logs that pre-date the base64 read.
+        setViewOdometerSrc(viewFuelLog.odometer_image_data
+          ? { uri: viewFuelLog.odometer_image_data }
+          : viewFuelLog.odometer_image
+            ? { uri: viewFuelLog.odometer_image, headers } : null);
+        setViewReceiptSrc(viewFuelLog.receipt_image_data
+          ? { uri: viewFuelLog.receipt_image_data }
+          : viewFuelLog.receipt_image
+            ? { uri: viewFuelLog.receipt_image, headers } : null);
       } catch (e) {
         console.error('[View popup] cookie read failed', e?.message);
       }

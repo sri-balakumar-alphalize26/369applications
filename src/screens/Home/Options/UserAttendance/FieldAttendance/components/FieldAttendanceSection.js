@@ -1009,6 +1009,11 @@ const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits
   }
   const trip = line.trip;
   const visit = line.visit;
+  const fuelCount = Number(trip?.fuel_log_count || 0);
+  const fuelAdded = fuelCount > 0 || Number(trip?.total_fuel_litres || 0) > 0;
+  const fuelBadge = fuelAdded
+    ? (fuelCount > 0 ? `${fuelCount} fuel log${fuelCount === 1 ? '' : 's'} added` : 'Fuel added')
+    : '';
   const tripStatusLabel =
     trip?.trip_status === 'in_progress' ? 'Trip Started' :
     trip?.trip_status === 'ended' ? 'Trip Ended' :
@@ -1056,6 +1061,7 @@ const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits
         onOpenTrip={onOpenTrip}
         onViewVisits={visit && onViewVisits ? onViewVisits : null}
         onAddFuel={trip?.trip_status === 'in_progress' && onAddFuel ? onAddFuel : null}
+        fuelBadge={fuelBadge}
       />
     </View>
   );
@@ -1073,9 +1079,9 @@ const ColRow = ({ k, v }) => (
 // trip card. Hidden once the attendance is checked out. Add Fuel only
 // appears for in_progress trips (matches the module — can't add fuel to
 // an ended or cancelled trip).
-const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
+const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel, fuelBadge }) => {
   if (readOnly) return null;
-  if (!onOpenTrip && !onViewVisits && !onAddFuel) return null;
+  if (!onOpenTrip && !onViewVisits && !onAddFuel && !fuelBadge) return null;
   return (
     <View style={styles.cardActionsRow}>
       {onOpenTrip ? (
@@ -1086,6 +1092,12 @@ const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
       ) : null}
       {onAddFuel ? (
         <CardBtn icon="local-gas-station" label="Add Fuel" onPress={onAddFuel} />
+      ) : null}
+      {fuelBadge ? (
+        <View style={styles.fuelBadge}>
+          <MaterialIcons name="check-circle" size={12} color="#2E7D32" />
+          <Text style={styles.fuelBadgeText}>{fuelBadge}</Text>
+        </View>
       ) : null}
     </View>
   );
@@ -1204,6 +1216,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#E3F2FD', borderRadius: 8,
   },
   cardBtnText: { fontSize: 12, color: FIELD_COLOR, fontFamily: FONT_FAMILY.urbanistBold },
+  // Small green chip rendered next to Add Fuel when one or more fuel.logs
+  // are attached to this trip. Mirrors the Odoo module's "N fuel log added"
+  // indicator on the secondary trip card.
+  fuelBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 4,
+    backgroundColor: '#E8F5E9', borderRadius: 8,
+  },
+  fuelBadgeText: { fontSize: 11, color: '#2E7D32', fontFamily: FONT_FAMILY.urbanistBold },
   totalsCard: {
     backgroundColor: '#fff', borderRadius: 10, padding: 12, marginTop: 14,
     borderWidth: 1, borderColor: '#EEE',

@@ -1011,6 +1011,11 @@ class HrAttendance(models.Model):
             # stays continuous. Sent as an Odoo M2O tuple shape so the client's
             # existing Array.isArray helpers keep working.
             'vehicle_id': [trip.vehicle_id.id, trip.vehicle_id.name] if trip.vehicle_id else False,
+            # Fuel rollups for the mobile FA secondary-trip card — used to
+            # show "N fuel log(s) added" next to the Add Fuel button.
+            'fuel_log_count': len(trip.fuel_log_ids) if trip.fuel_log_ids else 0,
+            'total_fuel_litres': float(trip.total_fuel_litres or 0),
+            'total_fuel_amount': float(trip.total_fuel_amount or 0),
         }
 
     def _serialize_visit(self, visit):

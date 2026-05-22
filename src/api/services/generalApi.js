@@ -797,16 +797,35 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
         kwargs: {
           fields: ['id', 'name', 'amount', 'fuel_level', 'odometer',
                    'create_date', 'driver_id', 'vehicle_tracking_id',
-                   'gps_lat', 'gps_long', 'odometer_image', 'receipt_image'],
+                   'gps_lat', 'gps_long'],
           context: { bin_size: false },
         },
       });
+      // Binary image fields fetched separately with bin_size=false so we
+      // get the actual base64 payload instead of a "1.2 KB" placeholder.
+      // Embedding base64 as a data URI lets RN render the thumbnail
+      // without needing session cookies — the /web/image URL stays as a
+      // fallback for very large images / legacy rendering paths.
+      let binById = {};
+      try {
+        const binRows = await _fieldRpc({
+          model: 'vehicle.fuel.log',
+          method: 'read',
+          args: [allFuelIds, ['odometer_image', 'receipt_image']],
+          kwargs: { context: { bin_size: false } },
+        });
+        (binRows || []).forEach(r => { binById[r.id] = r; });
+      } catch (e) {
+        console.warn('[readVehicleTrackingForTripIdsOdoo] binary-field read failed:', e?.message);
+      }
       const baseImg = ODOO_BASE_URL();
       const byTripId = {};
       (fuelLogs || []).forEach(l => {
         const tid = Array.isArray(l.vehicle_tracking_id) ? l.vehicle_tracking_id[0] : l.vehicle_tracking_id;
         if (!tid) return;
         const v = l.create_date ? `?v=${encodeURIComponent(l.create_date)}` : '';
+        const odoB64 = binById[l.id]?.odometer_image;
+        const recB64 = binById[l.id]?.receipt_image;
         (byTripId[tid] = byTripId[tid] || []).push({
           id: l.id,
           name: l.name || '',
@@ -819,6 +838,8 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
           gps_long: l.gps_long || '',
           odometer_image: `${baseImg}/web/image/vehicle.fuel.log/${l.id}/odometer_image${v}`,
           receipt_image: `${baseImg}/web/image/vehicle.fuel.log/${l.id}/receipt_image${v}`,
+          odometer_image_data: odoB64 ? `data:image/jpeg;base64,${odoB64}` : '',
+          receipt_image_data: recB64 ? `data:image/jpeg;base64,${recB64}` : '',
         });
       });
       trips.forEach(t => { t.fuel_logs = byTripId[t.id] || []; });
