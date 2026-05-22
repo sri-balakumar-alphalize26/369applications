@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CommonActions } from '@react-navigation/native';
 import { setPendingNewTrip } from '@utils/newTripChannel';
 import { Camera } from 'expo-camera';
+import Constants from 'expo-constants';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchSourcesOdoo, fetchVehicleTrackingTripsOdoo } from '@api/services/generalApi';
@@ -91,7 +92,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       // preserved. Also covers ended/cancelled trips (read-only).
       const td = route?.params?.tripData;
       if (td && (td.start_trip || td.end_trip || td.trip_cancel)) {
-        console.log('[VehicleTrackingForm] skipping GPS fetch on mount — trip already started/ended/cancelled', {
+        console.log('[STARTED-LOC] mount GPS fetch SKIPPED — trip already started/ended/cancelled; STORED value will be used', {
           start_trip: td.start_trip, end_trip: td.end_trip, trip_cancel: td.trip_cancel,
         });
         return;
@@ -147,7 +148,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
               const addr = reverseGeocode[0];
               const locationName = [addr.name, addr.street, addr.city, addr.region].filter(Boolean).join(', ');
               setCurrentLocationName(locationName);
-              console.log('Current location name:', locationName);
+              console.log('[STARTED-LOC] source=FRESH-GPS (mount fetch for new trip):', locationName);
             }
           })
           .catch(geocodeError => console.error('Reverse geocode error:', geocodeError));
@@ -178,7 +179,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     const lat = Number(td.start_latitude);
     const lng = Number(td.start_longitude);
     if (Number.isNaN(lat) || Number.isNaN(lng) || (!lat && !lng)) return;
-    console.log('[VehicleTrackingForm] hydrating started location from tripData:', { lat, lng });
+    console.log('[STARTED-LOC] hydrating from STORED tripData (saved at trip start):', { lat, lng });
     setCurrentCoords({ latitude: lat, longitude: lng });
     Location.reverseGeocodeAsync({ latitude: lat, longitude: lng })
       .then(reverseGeocode => {
@@ -186,10 +187,10 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           const a = reverseGeocode[0];
           const name = [a.name, a.street, a.city, a.region].filter(Boolean).join(', ');
           setCurrentLocationName(name);
-          console.log('[VehicleTrackingForm] hydrated started location name:', name);
+          console.log('[STARTED-LOC] source=STORED tripData (not a fresh fetch):', name);
         }
       })
-      .catch(err => console.warn('[VehicleTrackingForm] reverse-geocode for stored coords failed:', err?.message));
+      .catch(err => console.warn('[STARTED-LOC] reverse-geocode for STORED coords failed:', err?.message));
   }, [route?.params?.tripData]);
 
   // Get existing trip data from route params (when editing/continuing a trip)
@@ -268,6 +269,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       typeof existingTripData?.estimated_time !== 'undefined' && existingTripData?.estimated_time !== ''
         ? String(existingTripData.estimated_time)
         : (existingTripData?.estimatedTime || ''),
+    // OpenRouteService-derived driving distance (km, decimal). Auto-filled
+    // when both source and destination have coords; display-only.
+    estimatedKm:
+      typeof existingTripData?.estimated_km !== 'undefined' && existingTripData?.estimated_km !== ''
+        ? String(existingTripData.estimated_km)
+        : (existingTripData?.estimatedKm || ''),
     startTrip: existingTripData?.start_trip || false,
     startKM:
       (typeof existingTripData?.start_km !== 'undefined' && existingTripData?.start_km !== 0 && existingTripData?.start_km !== '')
@@ -280,8 +287,37 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     endKM: existingTripData?.end_km != null
       ? String(existingTripData.end_km)
       : (existingTripData?.endKM != null ? String(existingTripData.endKM) : ''),
-    startTime: (existingTripData?.start_time || existingTripData?.startTime) ? new Date(existingTripData.start_time || existingTripData.startTime) : new Date(),
-    endTime: (existingTripData?.end_time || existingTripData?.endTime) ? new Date(existingTripData.end_time || existingTripData.endTime) : null,
+    // Odoo returns datetimes as "YYYY-MM-DD HH:MM:SS" with NO timezone
+    // marker but representing UTC. JavaScript's `new Date(str)` with a
+    // space (not 'T') and no 'Z' parses as LOCAL time on most engines,
+    // which silently shifts the moment by the user's UTC offset (e.g.
+    // 5:30 h in IST). That's the "start time keeps changing on reopen"
+    // bug — it isn't changing, the display was wrong because parsing
+    // ignored UTC. The helper below converts the Odoo string to ISO Z
+    // form so JS parses as UTC, then formatDateTime shows it in local.
+    startTime: (() => {
+      const raw = existingTripData?.start_time || existingTripData?.startTime;
+      if (!raw) return new Date();
+      if (raw instanceof Date) return raw;
+      const s = String(raw);
+      // Already an ISO Z form → trust it. Else assume Odoo UTC with space.
+      const parsed = /Z$|[+-]\d\d:?\d\d$/.test(s)
+        ? new Date(s)
+        : new Date(s.replace(' ', 'T') + 'Z');
+      console.log('[START-TIME] hydrate from Odoo string:', s, '→ Date:', parsed.toISOString());
+      return parsed;
+    })(),
+    endTime: (() => {
+      const raw = existingTripData?.end_time || existingTripData?.endTime;
+      if (!raw) return null;
+      if (raw instanceof Date) return raw;
+      const s = String(raw);
+      const parsed = /Z$|[+-]\d\d:?\d\d$/.test(s)
+        ? new Date(s)
+        : new Date(s.replace(' ', 'T') + 'Z');
+      console.log('[END-TIME] hydrate from Odoo string:', s, '→ Date:', parsed.toISOString());
+      return parsed;
+    })(),
     travelledKM: existingTripData?.travelledKM || '0',
     invoiceNumbers: existingTripData?.invoiceNumbers || '',
     amount: existingTripData?.amount || '0',
@@ -455,6 +491,11 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const [sourceDistance, setSourceDistance] = useState(null);
   const SOURCE_MATCH_THRESHOLD = 100; // meters
 
+  // Destination coords (from picked dropdown item) and a loading flag for the
+  // OpenRouteService route fetch. Both reset whenever destination changes.
+  const [destCoords, setDestCoords] = useState(null);
+  const [fetchingEstimate, setFetchingEstimate] = useState(false);
+
   // ---- Per-type dropdown loaders ----
   // Each loader is independent so the four fetches run in parallel and any
   // single failure doesn't block the others. The popup reads the live state
@@ -619,6 +660,71 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       return { ...prev, startKM: String(n) };
     });
   }, [route?.params?.prefillStartKm, isEditMode]);
+
+  // Edit-mode: hydrate destCoords from the picked destination's dropdown
+  // row once destinations have loaded, so the ORS effect can fire without
+  // forcing the user to re-pick the destination.
+  useEffect(() => {
+    if (!formData.destination) return;
+    const list = dropdowns?.destinations || [];
+    if (!list.length) return;
+    const match = list.find((d) => d.name === formData.destination);
+    if (!match) return;
+    const lat = match.latitude ?? match.lat ?? match.geo_lat ?? match.lat_lng?.lat ?? null;
+    const lon = match.longitude ?? match.lon ?? match.lng ?? match.geo_lng ?? match.lat_lng?.lng ?? null;
+    if (lat != null && lon != null) {
+      setDestCoords((prev) => prev ?? { latitude: parseFloat(lat), longitude: parseFloat(lon) });
+    }
+  }, [dropdowns.destinations, formData.destination]);
+
+  // Edit-mode: same for source — hydrate sourceCoords from the picked
+  // source's dropdown row once sources have loaded.
+  useEffect(() => {
+    if (!formData.source) return;
+    const list = dropdowns?.sourceLocations || [];
+    if (!list.length) return;
+    const match = list.find((s) => s.name === formData.source);
+    if (!match) return;
+    const lat = match.latitude ?? match.lat ?? match.geo_lat ?? match.lat_lng?.lat ?? null;
+    const lon = match.longitude ?? match.lon ?? match.lng ?? match.geo_lng ?? match.lat_lng?.lng ?? null;
+    if (lat != null && lon != null) {
+      setSourceCoords((prev) => prev ?? { latitude: parseFloat(lat), longitude: parseFloat(lon) });
+    }
+  }, [dropdowns.sourceLocations, formData.source]);
+
+  // Auto-fetch OpenRouteService distance + duration whenever both source
+  // and destination coords are known. Fills `estimatedKm` + `estimatedTime`
+  // on the form; both fields render as read-only and submit with the trip.
+  //
+  // Gate: only fetch (and only clear) while the trip is still in draft.
+  // Once Start Trip is tapped, the saved values are frozen — re-fetching
+  // here would overwrite what was originally promised at trip start and
+  // break the Trip Comparison logic. Mirrors the same gate verifySource
+  // uses below.
+  useEffect(() => {
+    if (initialTripState !== 'not_started') {
+      console.log('[ORS] skipping — trip already started/ended/cancelled, state=', initialTripState);
+      return;
+    }
+    if (!sourceCoords || !destCoords) {
+      // Either endpoint missing — clear estimates so the user sees an "—".
+      setFormData((prev) => ({ ...prev, estimatedKm: '', estimatedTime: '' }));
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setFetchingEstimate(true);
+      const { km, timeHrs } = await fetchOrsDirections(sourceCoords, destCoords);
+      if (cancelled) return;
+      setFormData((prev) => ({
+        ...prev,
+        estimatedKm: km != null ? km.toFixed(2) : '',
+        estimatedTime: timeHrs != null ? String(timeHrs.toFixed(2)) : '',
+      }));
+      setFetchingEstimate(false);
+    })();
+    return () => { cancelled = true; };
+  }, [sourceCoords, destCoords, initialTripState]);
 
   // True when the form is opened from FieldAttendance's "Create New Trip"
   // CTA — the source must equal the previous trip's destination, so the
@@ -1074,6 +1180,17 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         setSourceDistance(null);
       }
     }
+    if (field === 'destination') {
+      // Mirror source: extract picked destination's lat/lng so the ORS
+      // route-fetch effect has both endpoints.
+      const lat = item.latitude ?? item.lat ?? item.geo_lat ?? item.lat_lng?.lat ?? null;
+      const lon = item.longitude ?? item.lon ?? item.lng ?? item.geo_lng ?? item.lat_lng?.lng ?? null;
+      if (lat != null && lon != null) {
+        setDestCoords({ latitude: parseFloat(lat), longitude: parseFloat(lon) });
+      } else {
+        setDestCoords(null);
+      }
+    }
     setIsVisible(false);
   };
 
@@ -1089,6 +1206,63 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
+  };
+
+  // OpenRouteService driving-directions fetch. Returns { km, timeHrs } or
+  // { km: null, timeHrs: null } on any failure. ORS expects lng,lat order
+  // (the opposite of Google) — the URL builder handles that explicitly.
+  const fetchOrsDirections = async (srcCoords, dstCoords) => {
+    const ORS_KEY =
+      Constants?.expoConfig?.extra?.openRouteServiceKey
+      || Constants?.manifest?.extra?.openRouteServiceKey
+      || '';
+    if (!ORS_KEY) {
+      console.warn('[ORS] no API key configured in app.json extra.openRouteServiceKey');
+      return { km: null, timeHrs: null };
+    }
+    if (!srcCoords?.latitude || !srcCoords?.longitude
+        || !dstCoords?.latitude || !dstCoords?.longitude) {
+      return { km: null, timeHrs: null };
+    }
+    const start = `${srcCoords.longitude},${srcCoords.latitude}`;
+    const end = `${dstCoords.longitude},${dstCoords.latitude}`;
+    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${ORS_KEY}&start=${start}&end=${end}`;
+    console.log('[ORS] src lng,lat=' + start, ' dst lng,lat=' + end);
+    try {
+      const resp = await fetch(url);
+      const status = resp.status;
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        console.warn('[ORS]   status=' + status + ' body=' + text.slice(0, 200));
+        return { km: null, timeHrs: null };
+      }
+      const data = await resp.json();
+      const summary = data?.features?.[0]?.properties?.summary;
+      if (!summary) {
+        console.warn('[ORS]   no summary in response', JSON.stringify(data).slice(0, 200));
+        return { km: null, timeHrs: null };
+      }
+      const km = (summary.distance || 0) / 1000;
+      // ORS calculates time using posted speed limits with no live traffic.
+      // For India that drastically underestimates real driving time —
+      // highways with a 100 km/h limit actually average 50-60 km/h once
+      // congestion, mountain curves, and toll stops are factored in.
+      // 1.5× correction gives a usable estimate ("on the road" feel
+      // matching what Google Maps says). Tweak ORS_TIME_CORRECTION if
+      // the gap shifts with real-world feedback.
+      const ORS_TIME_CORRECTION = 1.5;
+      const rawTimeHrs = (summary.duration || 0) / 3600;
+      const timeHrs = rawTimeHrs * ORS_TIME_CORRECTION;
+      console.log('[ORS]   status=' + status
+        + ' km=' + km.toFixed(2)
+        + ' rawTimeHrs=' + rawTimeHrs.toFixed(2)
+        + ' adjustedTimeHrs=' + timeHrs.toFixed(2)
+        + ' factor=' + ORS_TIME_CORRECTION);
+      return { km, timeHrs };
+    } catch (e) {
+      console.warn('[ORS] fetch failed:', e?.message);
+      return { km: null, timeHrs: null };
+    }
   };
 
   const verifySource = async () => {
@@ -1130,7 +1304,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             const a = rev[0];
             const name = [a.name, a.street, a.city, a.region].filter(Boolean).join(', ');
             setCurrentLocationName(name);
-            console.log('[verifySource] resolved address:', name);
+            console.log('[STARTED-LOC] source=VERIFY-SOURCE button (user-initiated fresh fetch):', name);
           }
         })
         .catch(() => { /* ignore — coords still saved without name */ });
@@ -1338,6 +1512,13 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       }
       if (!formData.destination) {
         newErrors.destination = 'Destination is required when starting a trip';
+      }
+      // Purpose of Visit is mandatory at Start Trip — the save site
+      // resolves the m2o id by display name from `purposeOfVisit` state.
+      // Without a picked value, the resolver returns null and Odoo never
+      // stores a purpose. Gating here prevents the orphan-record bug.
+      if (!purposeOfVisit || (typeof purposeOfVisit === 'string' && !purposeOfVisit.trim())) {
+        newErrors.purposeOfVisit = 'Purpose of Visit is required to start a trip';
       }
       // Start KM must be present AND > 0 — the odometer reading is required
       // to compute trip distance later and to chain with the previous trip.
@@ -1584,6 +1765,9 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         end_time: formatDateTimeOdoo(formData.endTime),
         end_trip: formData.endTrip,
         estimated_time: parseFloat(formData.estimatedTime) || 0,
+        // OpenRouteService-derived KM. Odoo silently drops this until the
+        // matching `estimated_km` Float field is added to vehicle.tracking.
+        estimated_km: parseFloat(formData.estimatedKm) || 0,
         fuel_checking: checklistSnake.fuel_checking,
         image_url: formData.imageUri || '',
         // Fuel invoice: send URI and filename (backend should accept URI or handle upload)
@@ -2375,22 +2559,98 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             style={getFieldStyle('destination')}
           />
 
-          {/* Estimated Time — opens an HH:MM time picker. Stored as decimal
-              hours (Odoo `estimated_time` is Float, e.g. 2:30 → 2.5). */}
+          {/* Estimated KM + Estimated Time — both auto-populated from
+              OpenRouteService once source + destination are selected.
+              Read-only; placeholder shows "—" until both endpoints picked. */}
+          <FormInput
+            label="Estimated KM:"
+            value={(() => {
+              if (fetchingEstimate) return 'Calculating…';
+              const n = parseFloat(formData.estimatedKm);
+              if (!Number.isFinite(n) || n <= 0) return '';
+              return `${n.toFixed(2)} km`;
+            })()}
+            placeholder="—"
+            dropIcon="road-variant"
+            editable={false}
+          />
           <FormInput
             label="Estimated Time:"
             value={(() => {
+              if (fetchingEstimate) return 'Calculating…';
               const n = parseFloat(formData.estimatedTime);
               if (!Number.isFinite(n) || n <= 0) return '';
               const h = Math.floor(n);
               const m = Math.round((n - h) * 60);
               return `${h}:${String(m).padStart(2, '0')} hrs`;
             })()}
-            onPress={() => setIsEstimatedTimePickerVisible(true)}
-            placeholder="Tap to pick HH:MM"
+            placeholder="—"
             dropIcon="clock-outline"
             editable={false}
           />
+
+          {/* Trip Comparison — only shown once the trip has ended.
+              Shows the actual KM + actual duration alongside the estimated
+              values so the driver can see if the trip ran over/under. Uses
+              neutral grey delta text — no red/green — to avoid the
+              comparison feeling like surveillance. Server-side mirror lives
+              in vehicle.tracking.km_variance / time_variance for admin
+              filtering. */}
+          {(initialTripState === 'completed' || formData.endTrip) ? (
+            <View style={styles.tripComparisonBox}>
+              <Text style={styles.tripComparisonHeader}>Trip Comparison</Text>
+              <Text style={styles.tripComparisonHelp}>
+                How the actual trip compared to the route estimate. "+" means the trip ran longer than estimated; "−" means it was shorter.
+              </Text>
+
+              <View style={styles.tripComparisonRow}>
+                <Text style={styles.tripComparisonLabel}>Actual KM</Text>
+                <Text style={styles.tripComparisonValue}>
+                  {`${parseInt(formData.travelledKM, 10) || 0} km`}
+                </Text>
+                <Text style={styles.tripComparisonDelta}>
+                  {(() => {
+                    const a = parseFloat(formData.travelledKM) || 0;
+                    const e = parseFloat(formData.estimatedKm) || 0;
+                    if (a === 0 || e === 0) return '';
+                    const d = a - e;
+                    const sign = d > 0 ? '+' : '';
+                    return `(${sign}${d.toFixed(1)} km vs estimate)`;
+                  })()}
+                </Text>
+              </View>
+
+              <View style={styles.tripComparisonRow}>
+                <Text style={styles.tripComparisonLabel}>Actual Time</Text>
+                <Text style={styles.tripComparisonValue}>
+                  {(() => {
+                    if (!formData.startTime || !formData.endTime) return '—';
+                    const ms = formData.endTime.getTime() - formData.startTime.getTime();
+                    const hrs = ms / 3_600_000;
+                    if (hrs <= 0) return '—';
+                    const h = Math.floor(hrs);
+                    const m = Math.round((hrs - h) * 60);
+                    return `${h}:${String(m).padStart(2, '0')} hrs`;
+                  })()}
+                </Text>
+                <Text style={styles.tripComparisonDelta}>
+                  {(() => {
+                    if (!formData.startTime || !formData.endTime) return '';
+                    const ms = formData.endTime.getTime() - formData.startTime.getTime();
+                    const actualHrs = ms / 3_600_000;
+                    const estHrs = parseFloat(formData.estimatedTime) || 0;
+                    if (actualHrs <= 0 || estHrs === 0) return '';
+                    const d = actualHrs - estHrs;
+                    const sign = d > 0 ? '+' : '';
+                    const absD = Math.abs(d);
+                    const h = Math.floor(absD);
+                    const m = Math.round((absD - h) * 60);
+                    return `(${sign}${h}:${String(m).padStart(2, '0')} vs estimate)`;
+                  })()}
+                </Text>
+              </View>
+            </View>
+          ) : null}
         </View>
 
         {/* Odometer & Timing */}
@@ -2411,11 +2671,26 @@ const VehicleTrackingForm = ({ navigation, route }) => {
             selectTextOnFocus
           />
 
-          {/* Start Time */}
+          {/* Start Time — frozen once the trip has started. Tapping is a
+              no-op (with a clear log) so the user can't accidentally
+              rewrite the moment Start Trip was originally tapped. The
+              `formData.isTripStarted` flag covers both in_progress and
+              completed states (set at line 324). */}
           <FormInput
             label="Start Time :"
             value={formatDateTime(formData.startTime)}
-            onPress={() => setIsStartTimePickerVisible(true)}
+            onPress={() => {
+              if (formData.isTripStarted) {
+                console.log('[START-TIME] tap ignored — trip already started/ended; start_time is frozen', {
+                  storedStartTime: formData.startTime,
+                  isTripStarted: formData.isTripStarted,
+                  tripStatus: formData.tripStatus,
+                });
+                return;
+              }
+              console.log('[START-TIME] opening picker — trip still in draft; start_time editable');
+              setIsStartTimePickerVisible(true);
+            }}
             editable={false}
           />
 
@@ -3443,6 +3718,52 @@ const styles = StyleSheet.create({
   },
 
   // Fuel List card (mirrors Odoo's fuel_log_ids table)
+  // Trip Comparison block — neutral grey palette so the actual-vs-estimated
+  // numbers don't feel like a red/green report card to the driver.
+  tripComparisonBox: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primaryThemeColor,
+  },
+  tripComparisonHeader: {
+    fontSize: 13,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: '#444',
+    marginBottom: 4,
+  },
+  tripComparisonHelp: {
+    fontSize: 11,
+    color: '#888',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+    fontStyle: 'italic',
+    marginBottom: 8,
+    lineHeight: 15,
+  },
+  tripComparisonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  tripComparisonLabel: {
+    flex: 1,
+    fontSize: 12,
+    color: '#666',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
+  tripComparisonValue: {
+    fontSize: 13,
+    color: '#222',
+    fontFamily: FONT_FAMILY.urbanistBold,
+  },
+  tripComparisonDelta: {
+    fontSize: 11,
+    color: '#888',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
   fuelListCard: {
     backgroundColor: '#fff',
     borderRadius: 12,

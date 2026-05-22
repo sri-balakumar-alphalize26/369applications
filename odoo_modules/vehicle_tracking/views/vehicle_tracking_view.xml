@@ -113,6 +113,21 @@
 
               <field name="amount" readonly="end_trip or trip_cancel"/>
               <field name="estimated_time" readonly="end_trip or trip_cancel"/>
+              <field name="estimated_km" readonly="end_trip or trip_cancel"/>
+            </group>
+          </group>
+          <!-- Trip Comparison — appears once the trip is ended. Shows
+               actual KM/duration alongside their variance vs the
+               ORS-estimated values. Admins can sort the list view by
+               km_variance / time_variance to find outlier trips. -->
+          <group string="Trip Comparison" invisible="not end_trip">
+            <group>
+              <field name="km_travelled" readonly="1"/>
+              <field name="km_variance" readonly="1"/>
+            </group>
+            <group>
+              <field name="duration" readonly="1"/>
+              <field name="time_variance" readonly="1"/>
             </group>
           </group>
           <separator string="Vehicle Checklist" colspan="2"/>

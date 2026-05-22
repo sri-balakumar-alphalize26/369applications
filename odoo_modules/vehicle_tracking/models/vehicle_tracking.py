@@ -47,6 +47,21 @@ class VehicleTracking(models.Model):
 
     amount = fields.Float(string='Amount')
     estimated_time = fields.Float(string='Estimated Time (Hrs)', default=00.00)
+    estimated_km = fields.Float(string='Estimated KM', default=0.00)
+
+    # Trip comparison — actual minus estimated. Both stored so admins can
+    # sort the list view by biggest variance. Positive = trip ran LONGER
+    # than estimated.
+    km_variance = fields.Float(
+        string='KM Variance',
+        compute='_compute_km_variance', store=True,
+        help='Actual km_travelled minus estimated_km. '
+             'Positive = trip was longer than estimated.')
+    time_variance = fields.Float(
+        string='Time Variance (Hrs)',
+        compute='_compute_time_variance', store=True,
+        help='Actual duration minus estimated_time. '
+             'Positive = trip took longer than estimated.')
 
     coolant_water = fields.Boolean(string='Coolant Water')
     oil_checking = fields.Boolean(string='Oil Checking')
@@ -170,6 +185,16 @@ class VehicleTracking(models.Model):
             else:
                 rec.duration = 0.0
 
+    @api.depends('km_travelled', 'estimated_km')
+    def _compute_km_variance(self):
+        for rec in self:
+            rec.km_variance = (rec.km_travelled or 0) - (rec.estimated_km or 0)
+
+    @api.depends('duration', 'estimated_time')
+    def _compute_time_variance(self):
+        for rec in self:
+            rec.time_variance = (rec.duration or 0) - (rec.estimated_time or 0)
+
     # --- Visited stops (auto-derived from customer.visit) -----------------
 
     def _resolve_employee_from_driver(self):
@@ -275,7 +300,7 @@ class VehicleTracking(models.Model):
     @api.onchange(
         'date', 'vehicle_id', 'driver_id', 'number_plate',
         'source_id', 'destination_id', 'start_km', 'end_km', 'purpose_of_visit_id',
-        'start_time', 'end_time', 'invoice_number', 'amount', 'estimated_time',
+        'start_time', 'end_time', 'invoice_number', 'amount', 'estimated_time', 'estimated_km',
         'coolant_water', 'oil_checking', 'tyre_checking',
         'battery_checking', 'daily_checks', 'fuel_checking',
         'image_url', 'remarks', 'invoice_line_ids',

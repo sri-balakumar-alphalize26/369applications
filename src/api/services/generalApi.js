@@ -75,7 +75,8 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
           kwargs: {
             fields: [
               "id", "ref", "state", "vehicle_id", "driver_id", "date", "number_plate", "start_km", "end_km", "start_trip", "end_trip", "source_id", "destination_id",
-              "coolant_water", "oil_checking", "tyre_checking", "battery_checking", "fuel_checking", "daily_checks", "purpose_of_visit_id", "estimated_time",
+              "coolant_water", "oil_checking", "tyre_checking", "battery_checking", "fuel_checking", "daily_checks", "purpose_of_visit_id",
+              "estimated_time", "estimated_km", "km_variance", "time_variance",
               "start_latitude", "start_longitude", "end_latitude", "end_longitude", "trip_cancel", "start_time", "end_time", "amount", "remarks",
               "image_url", "km_travelled", "duration", "invoice_number", "fuel_log_ids"
             ],
@@ -98,6 +99,9 @@ export const fetchVehicleTrackingTripsOdoo = async (params = {}) => {
       .filter(trip => !trip.trip_cancel)
       .map(trip => ({
         estimated_time: trip.estimated_time || '',
+        estimated_km: trip.estimated_km || '',
+        km_variance: trip.km_variance || 0,
+        time_variance: trip.time_variance || 0,
         id: trip.id,
         ref: trip.ref || '',
         state: trip.state || 'draft',
@@ -778,7 +782,7 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
         // Photo + notes
         'image_url', 'image_filename', 'remarks',
         // Misc form fields
-        'estimated_time', 'invoice_number',
+        'estimated_time', 'estimated_km', 'km_variance', 'time_variance', 'invoice_number',
       ],
     },
   });

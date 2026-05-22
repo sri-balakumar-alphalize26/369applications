@@ -1,9 +1,9 @@
-{
+  {
   "expo": {
     "name": "369aiAlphalize",
     "slug": "369aialphalize",
-    "owner": "",
-    "version": "1.0.79",
+    "owner": "citig",
+    "version": "1.0.87",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -99,8 +99,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "9773a14d-2c92-4fd1-8252-d1c7cca945c7"
-      }
+        "projectId": "dabfc2f6-aa16-448f-b988-2a327cfc3ffe"
+      },
+      "openRouteServiceKey": "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjJlOWU5MTM0OGI3MTQ4ZTQ4NjA5ZjdlY2ZhYmNjODA4IiwiaCI6Im11cm11cjY0In0="
     }
   }
 }
