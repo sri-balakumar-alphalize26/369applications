@@ -1134,17 +1134,27 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           }
         })
         .catch(() => { /* ignore — coords still saved without name */ });
-      const dist = getDistanceMeters(current.latitude, current.longitude, sourceCoords.latitude, sourceCoords.longitude);
-      setSourceDistance(dist);
-      const matched = dist <= SOURCE_MATCH_THRESHOLD;
+      // Subtract GPS accuracy (uncertainty radius) from the raw distance —
+      // gives a lower-bound of true distance, mirroring verifyAttendanceLocation.
+      const raw = getDistanceMeters(current.latitude, current.longitude, sourceCoords.latitude, sourceCoords.longitude);
+      const accuracy = current.accuracy ?? 0;
+      const effective = Math.max(0, raw - accuracy);
+      const matched = effective <= SOURCE_MATCH_THRESHOLD;
+      setSourceDistance(Math.round(effective));
       setSourceMatched(matched);
-      console.log('[verifySource] result:', { matched, distance: dist });
+      console.log('[verifySource]', {
+        raw: Math.round(raw),
+        accuracy: Math.round(accuracy),
+        effective: Math.round(effective),
+        threshold: SOURCE_MATCH_THRESHOLD,
+        matched,
+      });
       if (matched) {
-        showToastMessage(`Source verified (${Math.round(dist)} m)`, 'success');
+        showToastMessage(`Source verified (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'success');
       } else {
-        showToastMessage(`Source mismatch (${Math.round(dist)} m)`, 'warning');
+        showToastMessage(`Source mismatch (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'warning');
       }
-      return { matched, distance: dist };
+      return { matched, distance: effective };
     } catch (error) {
       console.error('[verifySource] FAILED:', error?.message);
       showToastMessage('Failed to verify source location', 'error');
@@ -1165,14 +1175,25 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     }
     try {
       const current = await getCurrentLocation('Verify Destination');
-      const dist = getDistanceMeters(current.latitude, current.longitude, parseFloat(lat), parseFloat(lon));
-      const matched = dist <= SOURCE_MATCH_THRESHOLD;
+      // Subtract GPS accuracy from raw distance — same accuracy-aware
+      // pattern as verifySource / verifyAttendanceLocation.
+      const raw = getDistanceMeters(current.latitude, current.longitude, parseFloat(lat), parseFloat(lon));
+      const accuracy = current.accuracy ?? 0;
+      const effective = Math.max(0, raw - accuracy);
+      const matched = effective <= SOURCE_MATCH_THRESHOLD;
+      console.log('[verifyDestination]', {
+        raw: Math.round(raw),
+        accuracy: Math.round(accuracy),
+        effective: Math.round(effective),
+        threshold: SOURCE_MATCH_THRESHOLD,
+        matched,
+      });
       if (matched) {
-        showToastMessage(`Destination verified (${Math.round(dist)} m)`, 'success');
+        showToastMessage(`Destination verified (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'success');
       } else {
-        showToastMessage(`Destination mismatch (${Math.round(dist)} m)`, 'warning');
+        showToastMessage(`Destination mismatch (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'warning');
       }
-      return { matched, distance: dist };
+      return { matched, distance: effective };
     } catch (error) {
       console.error('Error verifying destination:', error);
       showToastMessage('Failed to verify destination location', 'error');
@@ -1355,11 +1376,21 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   };
 
   // Function to get current GPS location using expo-location.
-  // 4-step ladder: cached (≤5min) → LOW live (cell/wifi, ~1s) → BALANCED live
+  // 4-step ladder: cached → LOW live (cell/wifi, ~1s) → BALANCED live
   // (8s timeout) → any-age stale cache. Designed to always return real coords
   // (or last-known) instead of falling through to the fallback.
+  //
+  // The verify-button path passes a label ('Verify Source' / 'Verify
+  // Destination'). For that path we (a) tighten the cache window to 30 s
+  // so a 4-min-old fix from when the user was walking up doesn't win, and
+  // (b) lift step 2 to Balanced so cell-tower-only (±150-500 m) fixes
+  // can't gate a user-deliberate verify. Non-verify callers keep the old
+  // optimised ladder.
   const getCurrentLocation = async (logAddressLabel = '') => {
-    const FALLBACK = { latitude: 25.2048, longitude: 55.2708 };
+    const FALLBACK = { latitude: 25.2048, longitude: 55.2708, accuracy: 0 };
+    const isVerify = !!logAddressLabel && /^Verify/i.test(logAddressLabel);
+    const cacheMaxAge = isVerify ? 30_000 : 300_000;
+    const step2Accuracy = isVerify ? Location.Accuracy.Balanced : Location.Accuracy.Low;
     try {
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
@@ -1369,32 +1400,34 @@ const VehicleTrackingForm = ({ navigation, route }) => {
 
       let coords = null;
 
-      // 1) Cached fix — widened to 5min so we don't churn on near-stale data.
+      // 1) Cached fix — 5 min for warmers, 30 s for user-initiated verify.
       try {
-        const last = await Location.getLastKnownPositionAsync({ maxAge: 300_000 });
+        const last = await Location.getLastKnownPositionAsync({ maxAge: cacheMaxAge });
         if (last?.coords) {
           coords = last.coords;
-          console.log('[VehicleTrackingForm] CACHED GPS:', coords.latitude, coords.longitude);
+          console.log('[VehicleTrackingForm] CACHED GPS:', coords.latitude, coords.longitude,
+            'accuracy:', coords.accuracy, 'maxAge:', cacheMaxAge);
         }
       } catch (_) { /* fall through */ }
 
-      // 2) LOW-accuracy live fetch — cell + WiFi only, ~1s on most networks.
+      // 2) Live fetch — LOW (warmers) or BALANCED (verify).
       if (!coords) {
         try {
           const live = await Promise.race([
-            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout-low')), 4000)),
+            Location.getCurrentPositionAsync({ accuracy: step2Accuracy }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('gps-timeout-step2')), isVerify ? 6000 : 4000)),
           ]);
           if (live?.coords) {
             coords = live.coords;
-            console.log('[VehicleTrackingForm] LIVE-LOW GPS:', coords.latitude, coords.longitude);
+            console.log('[VehicleTrackingForm] LIVE step-2 GPS:', coords.latitude, coords.longitude,
+              'accuracy:', coords.accuracy, 'mode:', isVerify ? 'Balanced' : 'Low');
           }
         } catch (err) {
-          console.log('[VehicleTrackingForm] live LOW fetch failed:', err?.message);
+          console.log('[VehicleTrackingForm] live step-2 fetch failed:', err?.message);
         }
       }
 
-      // 3) BALANCED live fetch with 8s timeout — only if LOW also failed.
+      // 3) BALANCED live fetch with 8s timeout — only if step 2 also failed.
       if (!coords) {
         try {
           const live = await Promise.race([
@@ -1403,7 +1436,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           ]);
           if (live?.coords) {
             coords = live.coords;
-            console.log('[VehicleTrackingForm] LIVE-BALANCED GPS:', coords.latitude, coords.longitude);
+            console.log('[VehicleTrackingForm] LIVE-BALANCED GPS:', coords.latitude, coords.longitude,
+              'accuracy:', coords.accuracy);
           }
         } catch (err) {
           console.log('[VehicleTrackingForm] live BALANCED fetch failed:', err?.message);
@@ -1416,7 +1450,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           const anyLast = await Location.getLastKnownPositionAsync({});
           if (anyLast?.coords) {
             coords = anyLast.coords;
-            console.log('[VehicleTrackingForm] STALE GPS:', coords.latitude, coords.longitude);
+            console.log('[VehicleTrackingForm] STALE GPS:', coords.latitude, coords.longitude,
+              'accuracy:', coords.accuracy);
           }
         } catch (_) { /* ignore */ }
       }
@@ -1439,7 +1474,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           .catch(geoError => console.log('Reverse geocoding failed:', geoError));
       }
 
-      return { latitude: coords.latitude, longitude: coords.longitude };
+      return { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy ?? 0 };
     } catch (error) {
       console.error('Expo Location error:', error);
       return FALLBACK;
