@@ -39,6 +39,7 @@ import HistoryFiltersSheet from '@screens/Home/Options/UserAttendance/FieldAtten
 import FieldAttendanceSection from '@screens/Home/Options/UserAttendance/FieldAttendance/components/FieldAttendanceSection';
 import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
+import ClosePreviousTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/ClosePreviousTripSheet';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -201,7 +202,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     visible: false,
     tripId: null,
     tripRef: '',
-    value: '',
+    startKm: 0,
     saving: false,
   });
   // After Create-New-Trip → VehicleTrackingForm → Start Trip, we want to
@@ -649,12 +650,17 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // server-side too, but doing it client-side first guarantees end_km is
   // captured and works regardless of whether the addon is upgraded.
   const handleFieldCheckOut = useCallback(() => {
-    if (!fieldData?.attendance_id) return;
+    console.log('[UA-CHECKOUT] handleFieldCheckOut tapped', { attendanceId: fieldData?.attendance_id });
+    if (!fieldData?.attendance_id) {
+      console.log('[UA-CHECKOUT]   no fieldData.attendance_id → bail');
+      return;
+    }
     // Cross-mode guard: if the open attendance was created via Office
     // (attendance_source = 'manual'), block field check-out and direct
     // the user back to Office mode. Defensive — usually fieldData would
     // be null for an office record so this branch is rare.
     if (todayAttendance?.attendance_source && todayAttendance.attendance_source !== 'field' && todayAttendance.id === fieldData.attendance_id) {
+      console.log('[UA-CHECKOUT]   blocked: attendance is office mode, not field');
       showAlert({
         message: 'You checked in via Office Attendance. Switch to Office mode to check out.',
         confirmText: 'OK',
@@ -665,43 +671,79 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       return;
     }
     const lastOpen = resolveLastOpenTrip();
+    console.log('[UA-CHECKOUT]   resolveLastOpenTrip →', lastOpen);
     if (lastOpen?.tripId) {
-      setEndKmPrompt({
-        visible: true,
-        tripId: lastOpen.tripId,
-        tripRef: lastOpen.tripRef,
-        value: '',
-        saving: false,
-      });
+      // Hydrate start_km from vehicle.tracking so the popup can block when
+      // End KM <= Start KM. Mirrors FieldAttendanceSection's pre-popup
+      // hydration; `_serialize_trip` historically didn't include start_km.
+      (async () => {
+        let startKm = 0;
+        try {
+          console.log('[UA-CHECKOUT]   hydrating prev trip start_km from server', { tripId: lastOpen.tripId });
+          const rows = await readVehicleTrackingForTripIdsOdoo([Number(lastOpen.tripId)]);
+          const full = rows?.[0];
+          if (full && typeof full.start_km === 'number') {
+            startKm = full.start_km;
+            console.log('[UA-CHECKOUT]   hydrated start_km:', startKm);
+          } else {
+            console.log('[UA-CHECKOUT]   hydrate returned no start_km, defaulting to 0');
+          }
+        } catch (e) {
+          console.warn('[UA-CHECKOUT]   hydrate start_km failed, defaulting to 0:', e?.message);
+        }
+        console.log('[UA-CHECKOUT]   opening End KM prompt', {
+          tripId: lastOpen.tripId,
+          tripRef: lastOpen.tripRef,
+          startKm,
+        });
+        setEndKmPrompt({
+          visible: true,
+          tripId: lastOpen.tripId,
+          tripRef: lastOpen.tripRef,
+          startKm,
+          saving: false,
+        });
+      })();
       return;
     }
     // No open trip — still mark any straggler draft visits done, then
     // jump straight into the confirm/camera/checkout flow.
+    console.log('[UA-CHECKOUT]   no open trip — marking visits done and proceeding to confirm/camera');
     (async () => {
       await markAllDayVisitsDone();
       proceedWithFieldCheckOut();
     })();
   }, [fieldData, todayAttendance, showAlert, hideAlert, resolveLastOpenTrip, markAllDayVisitsDone, proceedWithFieldCheckOut]);
 
-  // Modal Save handler — closes the last trip with the entered end_km,
-  // bulk-marks all linked visits done, then runs the existing confirm +
-  // camera + checkout flow.
-  const submitEndKmAndCheckout = useCallback(async () => {
-    const km = Number(endKmPrompt.value);
-    if (!endKmPrompt.value || Number.isNaN(km) || km < 0) {
+  // Save handler — receives the already-validated End KM (Number) from
+  // ClosePreviousTripSheet's own validation (n > 0 AND n > startKm).
+  // Closes the trip with that value, bulk-marks linked visits done, then
+  // runs the existing confirm + camera + checkout flow.
+  const submitEndKmAndCheckout = useCallback(async (km) => {
+    const n = Number(km);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.warn('[UA-CHECKOUT] submitEndKmAndCheckout: invalid km', { km });
       showToastMessage('Enter a valid End KM');
       return;
     }
+    console.log('[UA-CHECKOUT] submitEndKmAndCheckout', {
+      tripId: endKmPrompt.tripId,
+      startKm: endKmPrompt.startKm,
+      endKm: n,
+    });
     setEndKmPrompt((s) => ({ ...s, saving: true }));
     try {
-      await endVehicleTripFromAttendanceOdoo(endKmPrompt.tripId, null, km);
+      await endVehicleTripFromAttendanceOdoo(endKmPrompt.tripId, null, n);
+      console.log('[UA-CHECKOUT]   trip ended OK → bulk-marking visits done');
       await markAllDayVisitsDone();
-      setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false });
+      setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false });
       if (fieldData?.attendance_id) {
         await refreshFieldDetail(fieldData.attendance_id);
       }
+      console.log('[UA-CHECKOUT]   chaining into proceedWithFieldCheckOut');
       proceedWithFieldCheckOut();
     } catch (e) {
+      console.warn('[UA-CHECKOUT]   end trip failed:', e?.message);
       setEndKmPrompt((s) => ({ ...s, saving: false }));
       showToastMessage(e?.message || 'Failed to finalize trip');
     }
@@ -3926,57 +3968,27 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       />
 
       {/* End-KM prompt — shown before field check-out when the day's last trip
-          is still open. On Save we close the trip with the entered KM and
-          bulk-mark every linked visit done, then continue to camera+checkout. */}
-      <Modal
+          is still open. Reuses ClosePreviousTripSheet's styling (yellow
+          banner, "> startKm" placeholder, blocking validation so end_km
+          must be > start_km). On Save we close the trip with the entered KM
+          and bulk-mark every linked visit done, then continue to
+          camera+checkout. */}
+      <ClosePreviousTripSheet
         visible={endKmPrompt.visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
+        previousTripRef={endKmPrompt.tripRef}
+        previousStartKm={endKmPrompt.startKm}
+        saving={endKmPrompt.saving}
+        title={`End KM for ${endKmPrompt.tripRef || `Trip #${endKmPrompt.tripId || ''}`}`}
+        disclaimer={"Enter the trip's end odometer reading. We'll close the trip with this value and mark its visits done before checking you out."}
+        saveLabel="Save & Checkout"
+        onSave={submitEndKmAndCheckout}
+        onClose={() => {
           if (!endKmPrompt.saving) {
-            setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false });
+            console.log('[UA-CHECKOUT] End KM prompt closed by user');
+            setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false });
           }
         }}
-      >
-        <View style={styles.endKmOverlay}>
-          <View style={styles.endKmSheet}>
-            <Text style={styles.endKmTitle}>
-              End KM for {endKmPrompt.tripRef || `Trip #${endKmPrompt.tripId}`}
-            </Text>
-            <Text style={styles.endKmHint}>
-              Enter the trip's end odometer reading. We'll close the trip with this value and mark its visits done before checking you out.
-            </Text>
-            <TextInput
-              keyboardType="number-pad"
-              placeholder="e.g. 12345"
-              placeholderTextColor="#999"
-              value={endKmPrompt.value}
-              onChangeText={(t) => setEndKmPrompt((s) => ({ ...s, value: t.replace(/[^0-9.]/g, '') }))}
-              style={styles.endKmInput}
-              editable={!endKmPrompt.saving}
-              autoFocus
-            />
-            <View style={styles.endKmButtonRow}>
-              <TouchableOpacity
-                onPress={() => setEndKmPrompt({ visible: false, tripId: null, tripRef: '', value: '', saving: false })}
-                disabled={endKmPrompt.saving}
-                style={[styles.endKmBtn, styles.endKmBtnSecondary]}
-              >
-                <Text style={styles.endKmBtnSecondaryText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={submitEndKmAndCheckout}
-                disabled={endKmPrompt.saving || !endKmPrompt.value}
-                style={[styles.endKmBtn, styles.endKmBtnPrimary, (endKmPrompt.saving || !endKmPrompt.value) && { opacity: 0.6 }]}
-              >
-                {endKmPrompt.saving
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <Text style={styles.endKmBtnPrimaryText}>Save & Checkout</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      />
 
       {/* Styled alert modal — matches the logout popup design */}
       <StyledAlertModal

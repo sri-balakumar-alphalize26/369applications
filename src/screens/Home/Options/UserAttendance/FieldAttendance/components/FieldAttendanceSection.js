@@ -503,7 +503,12 @@ const FieldAttendanceSection = ({
         const action = pendingNextAction;
         console.log(TAG, '  chaining to queued next sheet:', action);
         setPendingNextAction(null);
-        openNextSheet(action);
+        if (action === 'checkout') {
+          console.log(TAG, '  chaining to checkout RPC after close-prev save');
+          await runCheckOutRpc();
+        } else {
+          openNextSheet(action);
+        }
       }
     } catch (e) {
       console.error(TAG, 'handleClosePreviousTrip threw:', e?.message);
@@ -605,36 +610,67 @@ const FieldAttendanceSection = ({
     } finally { setBusy(false); }
   };
 
-  const handleCheckOut = () => {
-    console.log(TAG, 'handleCheckOut clicked');
-    showAlert({
-      message: 'Check out now? Your last open trip will be closed, every visit marked as Done, and the whole page locks.',
-      confirmText: 'Check Out',
-      cancelText: 'Cancel',
-      destructive: true,
-      onConfirm: async () => {
-        console.log(TAG, 'checkOut confirmed');
-        hideAlert();
-        setBusy(true);
-        try {
-          const res = await fieldActionCheckOutOdoo(attendanceId);
-          if (res?.error) {
-            console.warn(TAG, 'checkOut error:', res.error);
-            showToastMessage(errMsg(res.error, 'Check out failed'));
-            return;
-          }
-          console.log(TAG, 'checkOut OK');
-          showToastMessage('Checked out successfully');
-          await refresh({ silent: true });
-          if (typeof onCheckedOut === 'function') onCheckedOut();
-        } catch (e) {
-          console.error(TAG, 'handleCheckOut threw:', e?.message);
-          showToastMessage(e?.message || 'Check out failed');
-        } finally {
-          setBusy(false);
+  // Hoisted so both the direct-checkout path (no open trip) and the chained
+  // close-prev → checkout path land in the same RPC + toast + refresh code.
+  const runCheckOutRpc = async () => {
+    console.log(TAG, 'runCheckOutRpc start', { attendanceId });
+    setBusy(true);
+    try {
+      const res = await fieldActionCheckOutOdoo(attendanceId);
+      if (res?.error) {
+        console.warn(TAG, 'checkOut error:', res.error);
+        showToastMessage(errMsg(res.error, 'Check out failed'));
+        return;
+      }
+      console.log(TAG, 'checkOut OK');
+      showToastMessage('Checked out successfully');
+      await refresh({ silent: true });
+      if (typeof onCheckedOut === 'function') onCheckedOut();
+    } catch (e) {
+      console.error(TAG, 'handleCheckOut threw:', e?.message);
+      showToastMessage(e?.message || 'Check out failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCheckOut = async () => {
+    console.log(TAG, 'handleCheckOut clicked — FORCE-opening Close Previous Trip popup');
+    // FORCE: always open the Close Previous Trip popup when the user taps
+    // Check Out. The popup itself is the confirmation step (user enters
+    // End KM and taps Save & Checkout). No prior alert, no isOpen guard.
+    const prev = lastOpenTripInfo();
+    console.log(TAG, '  checkout: lastOpenTripInfo →', prev);
+    // Fall back to source_trip directly, then to a blank record, so the
+    // popup ALWAYS has something to show even when there's no open leg.
+    let ref = prev?.ref || state?.source_trip?.ref || '';
+    let startKm = prev?.startKm ?? state?.source_trip?.start_km ?? 0;
+    const tripId = prev?.tripId || state?.source_trip?.id || null;
+    if (tripId) {
+      try {
+        console.log(TAG, '  checkout: hydrating start_km from server', { tripId });
+        const rows = await readVehicleTrackingForTripIdsOdoo([Number(tripId)]);
+        const full = rows?.[0];
+        if (full && typeof full.start_km === 'number') {
+          startKm = full.start_km;
+          console.log(TAG, '  checkout: hydrated start_km:', startKm);
         }
-      },
+        if (full?.ref) ref = full.ref;
+      } catch (e) {
+        console.warn(TAG, '  checkout: hydrate start_km failed:', e?.message);
+      }
+    } else {
+      console.log(TAG, '  checkout: no trip on attendance — opening popup with blank defaults');
+    }
+    console.log(TAG, '  opening Close Previous Trip popup for checkout', { ref, tripId, startKm, isOpen: prev?.isOpen });
+    setClosePrevMeta({
+      ref,
+      startKm,
+      mode: 'checkout',
+      isOpen: prev?.isOpen ?? true,
     });
+    setPendingNextAction('checkout');
+    setClosePrevOpen(true);
   };
 
   // ---------- Render ----------
@@ -839,6 +875,16 @@ const FieldAttendanceSection = ({
         visible={closePrevOpen}
         previousTripRef={closePrevMeta.ref}
         previousStartKm={closePrevMeta.startKm}
+        // Checkout flow gets module-style copy — "End KM for VT-0056
+        // (Trip Started)" title + clearer disclaimer + "Save & Checkout"
+        // button. Defaults retained for the next-trip flow (Save & Exit).
+        title={closePrevMeta.mode === 'checkout'
+          ? `End KM for ${closePrevMeta.ref || 'this trip'} (${closePrevMeta.isOpen ? 'Trip Started' : 'Trip Ended'})`
+          : undefined}
+        disclaimer={closePrevMeta.mode === 'checkout'
+          ? "Enter the trip's end odometer reading. We'll close the trip with this value and mark its visits done before checking you out."
+          : undefined}
+        saveLabel={closePrevMeta.mode === 'checkout' ? 'Save & Checkout' : 'Save & Exit'}
         saving={busy}
         onSave={handleClosePreviousTrip}
         onClose={() => { setClosePrevOpen(false); setPendingNextAction(null); }}
@@ -951,7 +997,9 @@ const FieldAttendanceSection = ({
         onOpenInVisits={(visit) => {
           console.log(TAG, 'VisitDetail → open Customer Visit page', { visitId: visit?.id });
           setVisitDetailOpen(false);
-          navigation.navigate('VisitDetails', { visitId: visit?.id, visitDetails: visit });
+          // returnTo: 'fieldAttendance' suppresses the Reset-to-Draft button
+          // on the Customer Visit page (existing guard in VisitDetails.js).
+          navigation.navigate('VisitDetails', { visitId: visit?.id, visitDetails: visit, returnTo: 'fieldAttendance' });
         }}
       />
       <AddFuelSheet

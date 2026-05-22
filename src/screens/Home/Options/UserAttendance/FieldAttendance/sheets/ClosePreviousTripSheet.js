@@ -15,6 +15,11 @@ const TAG = '[FA-CLOSE]';
 // Save & Exit. Validates End KM > previous Start KM.
 const ClosePreviousTripSheet = ({
   visible, previousTripRef, previousStartKm, saving, onSave, onClose,
+  // Optional overrides so the same popup can serve "starting next trip"
+  // (default) and "checking out" (callers pass checkout-flavoured strings).
+  title = 'Close Previous Trip',
+  disclaimer,
+  saveLabel = 'Save & Exit',
 }) => {
   const [endKm, setEndKm] = useState('');
   const [errorText, setErrorText] = useState('');
@@ -23,7 +28,13 @@ const ClosePreviousTripSheet = ({
   // doesn't re-fire on every parent render (which churned the log).
   useEffect(() => {
     if (visible) {
-      console.log(TAG, 'open', { previousTripRef, previousStartKm });
+      console.log(TAG, 'open', {
+        previousTripRef,
+        previousStartKm,
+        title,
+        saveLabel,
+        hasCustomDisclaimer: !!disclaimer,
+      });
       setEndKm('');
       setErrorText('');
     }
@@ -55,17 +66,21 @@ const ClosePreviousTripSheet = ({
           <View style={styles.card}>
             <View style={styles.header}>
               <MaterialIcons name="warning-amber" size={20} color="#F9A825" />
-              <Text style={styles.title}>Close Previous Trip</Text>
+              <Text style={styles.title}>{title}</Text>
               <TouchableOpacity onPress={onClose} disabled={saving}>
                 <MaterialIcons name="close" size={20} color="#888" />
               </TouchableOpacity>
             </View>
             <View style={styles.disclaimerBox}>
-              <Text style={styles.disclaimerText}>
-                You're starting the next trip. Enter the <Text style={{ fontFamily: FONT_FAMILY.urbanistBold }}>End KM</Text> for{' '}
-                <Text style={{ fontFamily: FONT_FAMILY.urbanistBold }}>{previousTripRef || 'previous trip'}</Text> and click Save & Exit.
-                The trip will be ended automatically and the next trip's popup will open.
-              </Text>
+              {disclaimer ? (
+                <Text style={styles.disclaimerText}>{disclaimer}</Text>
+              ) : (
+                <Text style={styles.disclaimerText}>
+                  You're starting the next trip. Enter the <Text style={{ fontFamily: FONT_FAMILY.urbanistBold }}>End KM</Text> for{' '}
+                  <Text style={{ fontFamily: FONT_FAMILY.urbanistBold }}>{previousTripRef || 'previous trip'}</Text> and click Save & Exit.
+                  The trip will be ended automatically and the next trip's popup will open.
+                </Text>
+              )}
             </View>
             <Text style={styles.label}>End KM</Text>
             <View style={styles.kmRow}>
@@ -88,7 +103,7 @@ const ClosePreviousTripSheet = ({
               <TouchableOpacity style={[styles.saveBtn, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
                 {saving
                   ? <ActivityIndicator color="#fff" />
-                  : <><MaterialIcons name="check" size={16} color="#fff" /><Text style={styles.saveText}>Save & Exit</Text></>}
+                  : <><MaterialIcons name="check" size={16} color="#fff" /><Text style={styles.saveText}>{saveLabel}</Text></>}
               </TouchableOpacity>
             </View>
           </View>
