@@ -717,7 +717,7 @@ const FieldAttendanceSection = ({
         <View style={styles.readOnlyBanner}>
           <MaterialIcons name="lock" size={16} color="#1565C0" />
           <Text style={styles.readOnlyText}>
-            This attendance has been checked out and is now read-only.
+            This attendance has been checked out and is now read-only. You can view your trips and visits below but no further edits are allowed.
           </Text>
         </View>
       ) : (
@@ -1128,8 +1128,12 @@ const ColRow = ({ k, v }) => (
 // appears for in_progress trips (matches the module — can't add fuel to
 // an ended or cancelled trip).
 const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel, fuelBadge }) => {
-  if (readOnly) return null;
-  if (!onOpenTrip && !onViewVisits && !onAddFuel && !fuelBadge) return null;
+  // After checkout we keep the navigation actions visible (Open Source
+  // Trip, View Visits) and the fuel badge — they're read-only. Only the
+  // genuinely-edit action (Add Fuel) is suppressed, mirroring the Odoo
+  // web module's locked-card layout.
+  const effectiveAddFuel = readOnly ? null : onAddFuel;
+  if (!onOpenTrip && !onViewVisits && !effectiveAddFuel && !fuelBadge) return null;
   return (
     <View style={styles.cardActionsRow}>
       {onOpenTrip ? (
@@ -1138,8 +1142,8 @@ const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel, fuelBadge })
       {onViewVisits ? (
         <CardBtn icon="place" label="View Visits" onPress={onViewVisits} />
       ) : null}
-      {onAddFuel ? (
-        <CardBtn icon="local-gas-station" label="Add Fuel" onPress={onAddFuel} />
+      {effectiveAddFuel ? (
+        <CardBtn icon="local-gas-station" label="Add Fuel" onPress={effectiveAddFuel} />
       ) : null}
       {fuelBadge ? (
         <View style={styles.fuelBadge}>
