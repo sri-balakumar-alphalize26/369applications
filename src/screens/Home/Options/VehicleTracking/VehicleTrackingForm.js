@@ -593,6 +593,16 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   // Seed start_km from the previous trip's end_km so the odometer chain
   // stays continuous. Editable so the driver can correct it if the real
   // reading differs.
+  // Auto-open the Add Fuel popup when navigated in with `openAddFuel: true`
+  // (Field Attendance secondary-trip card → Add Fuel button).
+  useEffect(() => {
+    if (route?.params?.openAddFuel) {
+      console.log('[VehicleTrackingForm] auto-opening Add Fuel popup (route.params.openAddFuel)');
+      handleToggleAddFuel?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route?.params?.openAddFuel]);
+
   useEffect(() => {
     const prefillKm = route?.params?.prefillStartKm;
     if (prefillKm == null) { console.log('[VehicleTrackingForm] startKm-prefill skipped: no prefillStartKm'); return; }

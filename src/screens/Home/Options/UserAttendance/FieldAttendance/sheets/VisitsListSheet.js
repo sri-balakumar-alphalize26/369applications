@@ -26,7 +26,7 @@ const VisitsListSheet = ({
   visible,
   visits,
   loading,
-  title = 'Linked Visits',
+  title = 'Visit Details',
   onClose,
   onOpenInVisits,
   onVisitPress,

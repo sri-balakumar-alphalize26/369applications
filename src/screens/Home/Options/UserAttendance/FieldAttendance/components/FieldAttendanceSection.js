@@ -21,6 +21,8 @@ import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
 import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
+import VisitDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitDetailSheet';
+import AddFuelSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/AddFuelSheet';
 import WorkflowBanner from '@screens/Home/Options/UserAttendance/FieldAttendance/components/WorkflowBanner';
 import ClosePreviousTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/ClosePreviousTripSheet';
 import TripFormSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripFormSheet';
@@ -104,6 +106,15 @@ const FieldAttendanceSection = ({
   const [tripDetailTrip, setTripDetailTrip] = useState(null);
   const [visitsListOpen, setVisitsListOpen] = useState(false);
   const [visitsListRows, setVisitsListRows] = useState([]);
+  // Visit detail popup — mirrors trip detail (Open Trip → TripDetailSheet).
+  // Tapping a row in VisitsListSheet opens this overview popup; the user
+  // then taps "Open in Customer Visit" inside the popup to navigate to
+  // the full Customer Visit screen.
+  const [visitDetailOpen, setVisitDetailOpen] = useState(false);
+  const [visitDetailVisit, setVisitDetailVisit] = useState(null);
+  // Add Fuel popup — opens directly in FA section (no navigation to VTF).
+  const [addFuelOpen, setAddFuelOpen] = useState(false);
+  const [addFuelTrip, setAddFuelTrip] = useState(null);
 
   const handleOpenTrip = async (tripId) => {
     if (!tripId) return;
@@ -127,6 +138,16 @@ const FieldAttendanceSection = ({
     console.log(TAG, 'handleViewVisits', { count: rows.length });
     if (rows.length === 0) {
       showToastMessage('No visits attached');
+      return;
+    }
+    // Single visit (the common case for outbound/return trip lines) — skip
+    // the intermediate list popup and open the detail overview directly.
+    // Multi-visit cases (e.g. primary trip's source_visits array) still go
+    // through the list so the user can pick which one to inspect.
+    if (rows.length === 1) {
+      console.log(TAG, '  single visit — opening VisitDetailSheet directly', { visitId: rows[0]?.id });
+      setVisitDetailVisit(rows[0]);
+      setVisitDetailOpen(true);
       return;
     }
     setVisitsListRows(rows);
@@ -396,6 +417,30 @@ const FieldAttendanceSection = ({
   // the popup chain and forward to VehicleTrackingForm in edit mode.
   // React Navigation's stack preserves the FA screen below, so the device
   // back-button returns the user here.
+  // Add Fuel button on trip cards → opens the Add Fuel popup directly in
+  // the FA section. Fetches the full trip so we have vehicle_id / driver_id
+  // for the fuel.log payload, then sets state to show the popup.
+  const handleAddFuel = async (tripId) => {
+    if (!tripId) return;
+    console.log(TAG, 'handleAddFuel — opening popup in place', { tripId });
+    setBusy(true);
+    try {
+      const rows = await readVehicleTrackingForTripIdsOdoo([Number(tripId)]);
+      const trip = rows?.[0];
+      if (!trip) {
+        showToastMessage('Could not load trip');
+        return;
+      }
+      setAddFuelTrip(trip);
+      setAddFuelOpen(true);
+    } catch (e) {
+      console.error(TAG, 'handleAddFuel threw:', e?.message);
+      showToastMessage('Failed to open Add Fuel');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleEditTripFromPicker = (trip) => {
     console.log(TAG, 'edit trip from picker', { tripId: trip?.id, ref: trip?.ref });
     // Remember which main popup was open under the picker so back from
@@ -698,6 +743,7 @@ const FieldAttendanceSection = ({
               readOnly={isCheckedOut}
               onOpenTrip={() => handleOpenTrip(line.trip?.id)}
               onViewVisits={line.visit ? () => handleViewVisits(line.visit) : null}
+              onAddFuel={() => handleAddFuel(line.trip?.id)}
             />
           ))}
         </>
@@ -729,6 +775,7 @@ const FieldAttendanceSection = ({
               isReturn
               readOnly={isCheckedOut}
               onOpenTrip={() => handleOpenTrip(line.trip?.id)}
+              onAddFuel={() => handleAddFuel(line.trip?.id)}
             />
           ))}
         </>
@@ -886,6 +933,35 @@ const FieldAttendanceSection = ({
         visits={visitsListRows}
         loading={false}
         onClose={() => setVisitsListOpen(false)}
+        onVisitPress={(visit) => {
+          // Two-step like Open Trip: row tap opens the OVERVIEW popup
+          // (VisitDetailSheet) — the popup itself has an "Open in Customer
+          // Visit" button that navigates to the full Customer Visit page.
+          console.log(TAG, 'VisitsList → open VisitDetailSheet', { visitId: visit?.id });
+          setVisitsListOpen(false);
+          setVisitDetailVisit(visit);
+          setVisitDetailOpen(true);
+        }}
+      />
+      <VisitDetailSheet
+        visible={visitDetailOpen}
+        visit={visitDetailVisit}
+        loading={false}
+        onClose={() => setVisitDetailOpen(false)}
+        onOpenInVisits={(visit) => {
+          console.log(TAG, 'VisitDetail → open Customer Visit page', { visitId: visit?.id });
+          setVisitDetailOpen(false);
+          navigation.navigate('VisitDetails', { visitId: visit?.id, visitDetails: visit });
+        }}
+      />
+      <AddFuelSheet
+        visible={addFuelOpen}
+        trip={addFuelTrip}
+        onClose={() => setAddFuelOpen(false)}
+        onSaved={async () => {
+          showToastMessage('Fuel entry added');
+          await refresh({ silent: true });
+        }}
       />
 
       <StyledAlertModal
@@ -921,7 +997,10 @@ const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits }) =
   );
 };
 
-const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits }) => {
+// Mirrors the Odoo module's secondary-trip card layout: two side-by-side
+// columns — TRIP DETAILS on the left, VISIT DETAILS on the right — plus
+// Open Source Trip / View Visits / Add Fuel buttons at the bottom.
+const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
   let badge = null;
   if (isReturn) {
     if (line.is_office_to_home_leg) badge = 'Office → Home';
@@ -930,34 +1009,83 @@ const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits
   }
   const trip = line.trip;
   const visit = line.visit;
+  const tripStatusLabel =
+    trip?.trip_status === 'in_progress' ? 'Trip Started' :
+    trip?.trip_status === 'ended' ? 'Trip Ended' :
+    trip?.trip_status === 'cancelled' ? 'Cancelled' :
+    (trip?.trip_status || 'draft');
+  const fmtDuration = (h) => {
+    const n = Number(h);
+    if (!Number.isFinite(n) || n <= 0) return '00:00';
+    const hh = Math.floor(n);
+    const mm = Math.round((n - hh) * 60);
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  };
+  const fmtDT = (s) => (s ? String(s).slice(0, 16).replace('T', ' ') : '—');
   return (
     <View style={[styles.tripCard, isReturn && styles.tripCardReturn]}>
       {badge ? <Text style={styles.legBadge}>{badge}</Text> : null}
-      <Row k="Trip:" v={`${trip?.ref || `#${trip?.id}`} (${trip?.trip_status || 'draft'})`} />
-      <Row k="Route:" v={`${trip?.source || ''} → ${trip?.destination || ''}`} />
-      {visit ? <Row k="Visit:" v={`${visit.name} — ${visit.customer || ''}`} /> : null}
-      <Row k="KM:" v={String(line.km_travelled || 0)} />
+      <View style={styles.twoColRow}>
+        {/* Left column — Trip Details */}
+        <View style={styles.twoColCol}>
+          <Text style={styles.twoColHeader}>TRIP DETAILS</Text>
+          <ColRow k="Source Trip" v={`${trip?.ref || `#${trip?.id}`} (${tripStatusLabel})`} />
+          <ColRow k="Source" v={trip?.source} />
+          <ColRow k="Destination" v={trip?.destination} />
+          <ColRow k="KM Travelled" v={String(line.km_travelled || 0)} />
+          <ColRow k="Duration (Hrs)" v={fmtDuration(line.duration)} />
+          <ColRow k="GPS Lat" v={trip?.start_latitude || '—'} />
+          <ColRow k="GPS Lng" v={trip?.start_longitude || '—'} />
+        </View>
+        {/* Right column — Visit Details (omitted for return legs without a
+            visit attached). */}
+        {visit ? (
+          <View style={styles.twoColCol}>
+            <Text style={styles.twoColHeader}>VISIT DETAILS</Text>
+            <ColRow k="Visit" v={visit.name || `#${visit.id}`} />
+            <ColRow k="Customer" v={visit.customer || (Array.isArray(visit.partner_id) ? visit.partner_id[1] : '')} />
+            <ColRow k="Date / Time" v={fmtDT(visit.date_time)} />
+            <ColRow k="Location" v={visit.location_name} />
+            <ColRow k="Latitude" v={visit.latitude || '—'} />
+            <ColRow k="Longitude" v={visit.longitude || '—'} />
+          </View>
+        ) : null}
+      </View>
       <ActionRow
         readOnly={readOnly}
         onOpenTrip={onOpenTrip}
         onViewVisits={visit && onViewVisits ? onViewVisits : null}
+        onAddFuel={trip?.trip_status === 'in_progress' && onAddFuel ? onAddFuel : null}
       />
     </View>
   );
 };
 
+// Small key/value row used inside the two-column card layout.
+const ColRow = ({ k, v }) => (
+  <View style={styles.colRow}>
+    <Text style={styles.colRowKey} numberOfLines={1}>{k}:</Text>
+    <Text style={styles.colRowVal} numberOfLines={2}>{v || '—'}</Text>
+  </View>
+);
+
 // Row of small chip-style action buttons rendered at the bottom of every
-// trip card. Hidden once the attendance is checked out.
-const ActionRow = ({ readOnly, onOpenTrip, onViewVisits }) => {
+// trip card. Hidden once the attendance is checked out. Add Fuel only
+// appears for in_progress trips (matches the module — can't add fuel to
+// an ended or cancelled trip).
+const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
   if (readOnly) return null;
-  if (!onOpenTrip && !onViewVisits) return null;
+  if (!onOpenTrip && !onViewVisits && !onAddFuel) return null;
   return (
     <View style={styles.cardActionsRow}>
       {onOpenTrip ? (
-        <CardBtn icon="open-in-new" label="Open Trip" onPress={onOpenTrip} />
+        <CardBtn icon="open-in-new" label="Open Source Trip" onPress={onOpenTrip} />
       ) : null}
       {onViewVisits ? (
         <CardBtn icon="place" label="View Visits" onPress={onViewVisits} />
+      ) : null}
+      {onAddFuel ? (
+        <CardBtn icon="local-gas-station" label="Add Fuel" onPress={onAddFuel} />
       ) : null}
     </View>
   );
@@ -1043,6 +1171,28 @@ const styles = StyleSheet.create({
   actionBtn_return:  { backgroundColor: '#009688' },
   actionBtn_home:    { backgroundColor: '#E65100' },
   actionBtnText: { color: '#fff', fontSize: 13.5, fontFamily: FONT_FAMILY.urbanistBold, letterSpacing: 0.2 },
+  // Two-column TRIP DETAILS / VISIT DETAILS layout inside the secondary
+  // trip card — mirrors the Odoo module's side-by-side panels.
+  twoColRow: {
+    flexDirection: 'row', gap: 8, marginTop: 4,
+  },
+  twoColCol: {
+    flex: 1,
+    backgroundColor: '#FAFAFA',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1, borderColor: '#EEE',
+  },
+  twoColHeader: {
+    fontSize: 10.5,
+    fontFamily: FONT_FAMILY.urbanistBold,
+    color: '#666',
+    letterSpacing: 0.6,
+    marginBottom: 6,
+  },
+  colRow: { flexDirection: 'row', marginBottom: 3, gap: 4 },
+  colRowKey: { fontSize: 10.5, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium, width: 78 },
+  colRowVal: { flex: 1, fontSize: 11, color: '#222', fontFamily: FONT_FAMILY.urbanistBold },
   cardActionsRow: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 8,
     marginTop: 10, paddingTop: 8,
