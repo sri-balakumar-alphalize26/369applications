@@ -284,6 +284,12 @@ const FieldAttendanceSection = ({
       console.log(TAG, '  blocked: attendance is checked out');
       return;
     }
+    // Wipe any leftover pendingTripId/pendingVisitId from a previous
+    // create-new flow. Otherwise the popup we're about to open will
+    // pre-select the OLD trip (the user just-tapped button is supposed
+    // to open a fresh popup for a NEW trip).
+    setPendingTripId(null);
+    setPendingVisitId(null);
     const prev = lastOpenTripInfo();
     console.log(TAG, '  previous trip info:', prev);
     if (prev?.isOpen) {
@@ -452,6 +458,8 @@ const FieldAttendanceSection = ({
       console.log(TAG, 'setupPrimaryTrip OK');
       showToastMessage('Primary trip saved');
       setPrimaryOpen(false);
+      setPendingTripId(null);
+      setPendingVisitId(null);
       await refresh({ silent: true });
     } catch (e) {
       console.error(TAG, 'handleSavePrimary threw:', e?.message);
@@ -496,6 +504,8 @@ const FieldAttendanceSection = ({
       console.log(TAG, 'createReturnTrip OK');
       showToastMessage('Return trip added');
       setReturnOpen(false);
+      setPendingTripId(null);
+      setPendingVisitId(null);
       await refresh({ silent: true });
     } catch (e) {
       console.error(TAG, 'handleSaveReturn threw:', e?.message);
@@ -518,6 +528,8 @@ const FieldAttendanceSection = ({
       console.log(TAG, 'createReturnTrip (office→home) OK');
       showToastMessage('Office → Home leg added');
       setOfficeHomeOpen(false);
+      setPendingTripId(null);
+      setPendingVisitId(null);
       await refresh({ silent: true });
     } catch (e) {
       console.error(TAG, 'handleSaveOfficeToHome threw:', e?.message);
