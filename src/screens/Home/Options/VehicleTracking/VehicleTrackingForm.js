@@ -1308,6 +1308,21 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           }
         })
         .catch(() => { /* ignore — coords still saved without name */ });
+      // If the only coords we got back are stale / hardcoded fallback,
+      // the verification is unreliable — show a clearer "GPS unavailable"
+      // message instead of a misleading mismatch. Reliable sources are
+      // 'cached' (within 30 s for verify), 'live-low', 'live-balanced',
+      // 'live-balanced-fallback'. Treat 'stale' and 'fallback' as bad.
+      if (current.source === 'stale' || current.source === 'fallback') {
+        console.warn('[verifySource] GPS unavailable, skipping match check', {
+          source: current.source,
+          coords: { latitude: current.latitude, longitude: current.longitude },
+        });
+        setSourceMatched(null);
+        setSourceDistance(null);
+        showToastMessage('GPS unavailable — source not verified', 'warning');
+        return { matched: null, distance: null, gpsUnavailable: true };
+      }
       // Subtract GPS accuracy (uncertainty radius) from the raw distance —
       // gives a lower-bound of true distance, mirroring verifyAttendanceLocation.
       const raw = getDistanceMeters(current.latitude, current.longitude, sourceCoords.latitude, sourceCoords.longitude);
@@ -1322,6 +1337,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         effective: Math.round(effective),
         threshold: SOURCE_MATCH_THRESHOLD,
         matched,
+        source: current.source,
       });
       if (matched) {
         showToastMessage(`Source verified (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'success');
@@ -1349,6 +1365,18 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     }
     try {
       const current = await getCurrentLocation('Verify Destination');
+      // Stale / fallback GPS path: live fetch timed out so we're using
+      // a multi-minute-old cached fix (often the trip's own start coords).
+      // Comparing those to the destination produces a false-looking
+      // mismatch. Surface "GPS unavailable" instead.
+      if (current.source === 'stale' || current.source === 'fallback') {
+        console.warn('[verifyDestination] GPS unavailable, skipping match check', {
+          source: current.source,
+          coords: { latitude: current.latitude, longitude: current.longitude },
+        });
+        showToastMessage('GPS unavailable — destination not verified', 'warning');
+        return { matched: null, distance: null, gpsUnavailable: true };
+      }
       // Subtract GPS accuracy from raw distance — same accuracy-aware
       // pattern as verifySource / verifyAttendanceLocation.
       const raw = getDistanceMeters(current.latitude, current.longitude, parseFloat(lat), parseFloat(lon));
@@ -1361,6 +1389,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         effective: Math.round(effective),
         threshold: SOURCE_MATCH_THRESHOLD,
         matched,
+        source: current.source,
       });
       if (matched) {
         showToastMessage(`Destination verified (${Math.round(effective)} m, accuracy ±${Math.round(accuracy)} m)`, 'success');
@@ -1568,7 +1597,10 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   // can't gate a user-deliberate verify. Non-verify callers keep the old
   // optimised ladder.
   const getCurrentLocation = async (logAddressLabel = '') => {
-    const FALLBACK = { latitude: 25.2048, longitude: 55.2708, accuracy: 0 };
+    // Each return path tags `source` so callers (verifySource /
+    // verifyDestination) can detect when the coords came from a stale
+    // fallback and avoid showing a misleading "mismatch" toast.
+    const FALLBACK = { latitude: 25.2048, longitude: 55.2708, accuracy: 0, source: 'fallback' };
     const isVerify = !!logAddressLabel && /^Verify/i.test(logAddressLabel);
     const cacheMaxAge = isVerify ? 30_000 : 300_000;
     const step2Accuracy = isVerify ? Location.Accuracy.Balanced : Location.Accuracy.Low;
@@ -1580,12 +1612,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       }
 
       let coords = null;
+      let source = null;
 
       // 1) Cached fix — 5 min for warmers, 30 s for user-initiated verify.
       try {
         const last = await Location.getLastKnownPositionAsync({ maxAge: cacheMaxAge });
         if (last?.coords) {
           coords = last.coords;
+          source = 'cached';
           console.log('[VehicleTrackingForm] CACHED GPS:', coords.latitude, coords.longitude,
             'accuracy:', coords.accuracy, 'maxAge:', cacheMaxAge);
         }
@@ -1600,6 +1634,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           ]);
           if (live?.coords) {
             coords = live.coords;
+            source = isVerify ? 'live-balanced' : 'live-low';
             console.log('[VehicleTrackingForm] LIVE step-2 GPS:', coords.latitude, coords.longitude,
               'accuracy:', coords.accuracy, 'mode:', isVerify ? 'Balanced' : 'Low');
           }
@@ -1617,6 +1652,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           ]);
           if (live?.coords) {
             coords = live.coords;
+            source = 'live-balanced-fallback';
             console.log('[VehicleTrackingForm] LIVE-BALANCED GPS:', coords.latitude, coords.longitude,
               'accuracy:', coords.accuracy);
           }
@@ -1625,12 +1661,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         }
       }
 
-      // 4) Any-age cache, last resort
+      // 4) Any-age cache, last resort. Mark as 'stale' so verify* can
+      // recognise that the verification is unreliable.
       if (!coords) {
         try {
           const anyLast = await Location.getLastKnownPositionAsync({});
           if (anyLast?.coords) {
             coords = anyLast.coords;
+            source = 'stale';
             console.log('[VehicleTrackingForm] STALE GPS:', coords.latitude, coords.longitude,
               'accuracy:', coords.accuracy);
           }
@@ -1655,7 +1693,12 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           .catch(geoError => console.log('Reverse geocoding failed:', geoError));
       }
 
-      return { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy ?? 0 };
+      return {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        accuracy: coords.accuracy ?? 0,
+        source: source || 'unknown',
+      };
     } catch (error) {
       console.error('Expo Location error:', error);
       return FALLBACK;
