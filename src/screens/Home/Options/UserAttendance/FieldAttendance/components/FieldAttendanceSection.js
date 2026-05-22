@@ -343,7 +343,7 @@ const FieldAttendanceSection = ({
     setOfficeHomeOpen(false);
   };
 
-  const handleCreateNewTrip = () => {
+  const handleCreateNewTrip = async () => {
     // Snapshot which sheet was open so we can re-open / auto-attach on return.
     lastActiveSheetRef.current =
       primaryOpen ? 'primary' :
@@ -356,7 +356,26 @@ const FieldAttendanceSection = ({
     // starts on the same vehicle and continues the odometer. Both stay
     // editable in VehicleTrackingForm — the user can override if needed.
     const prev = lastOpenTripInfo();
-    const prefillVehicleId = prev?.vehicleId || null;
+    let prefillVehicleId = prev?.vehicleId || null;
+    // Backend _serialize_trip in older module versions (pre-19.0.1.15.3)
+    // doesn't include vehicle_id, so prev.vehicleId is often null even when
+    // the trip has a vehicle. Fetch the full trip record as a fallback —
+    // mirrors the start_km hydration pattern in startNextTripFlow.
+    if (!prefillVehicleId && prev?.tripId) {
+      try {
+        console.log(TAG, 'handleCreateNewTrip — hydrating vehicle_id from server', { tripId: prev.tripId });
+        const rows = await readVehicleTrackingForTripIdsOdoo([Number(prev.tripId)]);
+        const full = rows?.[0];
+        if (full?.vehicle_id) {
+          prefillVehicleId = Array.isArray(full.vehicle_id) ? full.vehicle_id[0] : full.vehicle_id;
+          console.log(TAG, '  hydrated vehicle_id:', prefillVehicleId);
+        } else {
+          console.log(TAG, '  vehicle_id not on fetched row either; leaving null');
+        }
+      } catch (e) {
+        console.warn(TAG, '  hydrate vehicle_id failed:', e?.message);
+      }
+    }
     const prefillStartKm = prev?.endKm || null;
     console.log(TAG, 'handleCreateNewTrip — previous trip snapshot:', prev);
     console.log(TAG, 'handleCreateNewTrip — lastActiveSheet:', lastActiveSheetRef.current,
@@ -399,12 +418,16 @@ const FieldAttendanceSection = ({
     navigation.navigate('VehicleTrackingForm', { tripData: trip, returnTo: 'fieldAttendance' });
   };
 
-  const handleCreateNewVisit = () => {
+  const handleCreateNewVisit = (params) => {
     // Visit picker is only reachable from outbound mode.
     lastActiveSheetRef.current = 'outbound';
-    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound, navigate → VisitForm');
+    // The popup forwards the selected source trip's purpose_of_visit_id so
+    // VisitForm can prefill the Purpose dropdown — only this entry path
+    // carries that signal.
+    const prefillPurposeId = params?.purposeOfVisitId || null;
+    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound, prefillPurposeId:', prefillPurposeId, 'navigate → VisitForm');
     closeAllSheets();
-    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance' });
+    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance', prefillPurposeId });
   };
 
   // ---------- Mutations ----------

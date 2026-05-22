@@ -341,6 +341,23 @@ const VisitForm = ({ navigation, route }) => {
           employees: employees.map(e => ({ id: e.id, label: e.name })),
           visitPurpose: purposes.map(p => ({ id: p.id, label: p.name })),
         });
+        // Prefill Visit Purpose when navigated in from FieldAttendance's
+        // "Create New Visit" CTA — the caller passes the source trip's
+        // purpose_of_visit_id, we resolve it against the purposes list and
+        // pre-select the dropdown.
+        const prefillPurposeId = route?.params?.prefillPurposeId;
+        if (prefillPurposeId) {
+          const matchPurpose = purposes.find(p => Number(p.id) === Number(prefillPurposeId));
+          if (matchPurpose) {
+            console.log('[VisitForm] prefill purpose from source trip:', matchPurpose.name);
+            setFormData(prev => ({
+              ...prev,
+              visitPurpose: { id: matchPurpose.id, label: matchPurpose.name },
+            }));
+          } else {
+            console.log('[VisitForm] prefillPurposeId', prefillPurposeId, 'not found in', purposes.length, 'purposes');
+          }
+        }
         if (!formData.visitedBy) {
           const userName = currentUser?.related_profile?.name || currentUser?.name || '';
           const match = employees.find(e => e.name?.toLowerCase() === userName?.toLowerCase());

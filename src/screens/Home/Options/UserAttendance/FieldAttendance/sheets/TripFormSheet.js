@@ -388,7 +388,17 @@ const TripFormSheet = ({
                   ) : onCreateNewVisit ? (
                     <TouchableOpacity
                       style={styles.createCta}
-                      onPress={onCreateNewVisit}
+                      onPress={() => {
+                        // Pass the selected trip's purpose_of_visit_id so the
+                        // VisitForm can prefill its Purpose dropdown — only
+                        // this entry path (visit-from-trip) carries that
+                        // information; other VisitForm openers don't.
+                        const pid = Array.isArray(selectedTrip?.purpose_of_visit_id)
+                          ? selectedTrip.purpose_of_visit_id[0]
+                          : selectedTrip?.purpose_of_visit_id;
+                        console.log(TAG, 'Create New Visit tapped — forwarding purposeOfVisitId:', pid);
+                        onCreateNewVisit({ purposeOfVisitId: pid || null });
+                      }}
                       disabled={saving}
                       activeOpacity={0.85}
                     >

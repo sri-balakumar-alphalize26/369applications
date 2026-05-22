@@ -571,11 +571,22 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     if (!list.length) { console.log('[VehicleTrackingForm] vehicle-prefill waiting: vehicles not loaded yet'); return; }
     const match = list.find((v) => Number(v._id) === Number(prefillId));
     if (!match) { console.log('[VehicleTrackingForm] vehicle-prefill skipped: id', prefillId, 'not found in', list.length, 'vehicles'); return; }
-    console.log('[VehicleTrackingForm] prefill vehicle from previous trip:', match.name);
+    // Mirror the manual-dropdown selection at line ~980-986: setting just
+    // `vehicle` left the Driver and Plate Number rows blank because they
+    // come from the same dropdown row, not from the trip itself. Also note
+    // the formData field is `plateNumber` (camelCase) — the previous code
+    // wrote to `number_plate` which the form doesn't read.
+    const driverName = match.driver?.name || '';
+    const plateNumber = match.plate_number || '';
+    const tank = match.tankCapacity ?? match.tank_capacity ?? '';
+    console.log('[VehicleTrackingForm] prefill vehicle from previous trip:', match.name,
+      { driver: driverName, plate: plateNumber, tank });
     setFormData((prev) => ({
       ...prev,
       vehicle: match.name,
-      number_plate: prev.number_plate || match.number_plate || match.plate || '',
+      driver: driverName || prev.driver,
+      plateNumber: plateNumber || prev.plateNumber,
+      tankCapacity: tank !== '' && tank != null ? String(tank) : prev.tankCapacity,
     }));
   }, [dropdowns.vehicles, route?.params?.prefillVehicleId, isEditMode]);
 
@@ -2419,15 +2430,18 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         </View>
         <View style={styles.sectionGroup}>
           {/* Purpose of Visit — editable={false} blocks the keyboard so only
-              the centered dropdown popup opens on tap. */}
+              the centered dropdown popup opens on tap. Locked once trip is
+              completed/cancelled, matching the rest of the form's read-only
+              behaviour. */}
           <FormInput
             label="Purpose of Visit:"
             value={purposeOfVisit}
-            onPress={() => openDropdown('purposeOfVisit')}
-            dropIcon="chevron-down"
+            onPress={isTripLocked ? null : () => openDropdown('purposeOfVisit')}
+            dropIcon={isTripLocked ? 'lock' : 'chevron-down'}
             placeholder="Select purpose of visit"
             required
             editable={false}
+            style={isTripLocked ? { backgroundColor: '#F0F4F8' } : undefined}
           />
 
           {/* Invoice Numbers */}
