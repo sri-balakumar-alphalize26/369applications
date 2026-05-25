@@ -73,6 +73,10 @@ const FieldAttendanceSection = ({
   embedded = false,
   showCheckOutButton = false,
   onCheckedOut,
+  // Parent (e.g. UserAttendanceScreen) bumps this after a successful
+  // check-out so the embedded section re-fetches and locks down the UI
+  // (read-only banner, hidden CTAs, hidden Add Fuel). Initial 0 → skipped.
+  refreshTrigger = 0,
 }) => {
   const navigation = useNavigation();
   const [state, setState] = useState(null);
@@ -221,6 +225,17 @@ const FieldAttendanceSection = ({
   }, [attendanceId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Parent-triggered refresh (e.g. UA bumps it post-checkout). The user
+  // stays on the same screen during check-out, so neither useFocusEffect
+  // nor a prop change to attendanceId fires — without this hook the
+  // embedded FA section would keep showing pre-checkout CTAs.
+  useEffect(() => {
+    if (!attendanceId) return;
+    if (!refreshTrigger) return; // ignore the initial 0
+    console.log(TAG, 'refreshTrigger changed — re-fetching state', { refreshTrigger });
+    refresh({ silent: true });
+  }, [refreshTrigger, attendanceId, refresh]);
 
   // Load (or scrub) the pending-secondary-trip marker on mount and whenever
   // the attendanceId changes. The marker is scoped by attendanceId so a

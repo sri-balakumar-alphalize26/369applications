@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
-import { getPendingSecondaryTrip } from '@utils/pendingSecondaryTrip';
+import { getPendingSecondaryTrip, clearPendingSecondaryTrip } from '@utils/pendingSecondaryTrip';
 import { StyledAlertModal } from '@components/Modal';
 import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from '@components/containers';
@@ -25,6 +25,7 @@ import {
   searchDraftCustomerVisitsOdoo,
   readVehicleTrackingForTripIdsOdoo,
   readCustomerVisitsByIdsOdoo,
+  getFieldAttendanceStateOdoo,
   updateFieldAttendancePrimaryTripOdoo,
   createFieldTripLineOdoo,
   deleteFieldTripLineOdoo,
@@ -224,6 +225,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [pendingFieldVisitDetailReopen, setPendingFieldVisitDetailReopen] = useState(null); // { parentSheet, visitsListIds } | null
   // End-KM prompt before Add Additional Trip — captures the previous trip's
   // end odometer reading and writes it onto the trip during auto-end.
+  // Tick we bump after a successful check-out so the embedded FA section
+  // (which doesn't see UA's focus events while the user stays on the same
+  // screen) re-fetches its server state and locks down — banner shows, all
+  // "next trip" CTAs hide, Add Fuel disappears, etc.
+  const [faRefreshTick, setFaRefreshTick] = useState(0);
   const [endKmPromptVisible, setEndKmPromptVisible] = useState(false);
   const [endKmPromptTripId, setEndKmPromptTripId] = useState(null);
   const [endKmPromptTripRef, setEndKmPromptTripRef] = useState('');
@@ -573,6 +579,27 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   };
 
+  // Locate the most recent trip on the attendance, REGARDLESS of trip_ended
+  // flag. Used at check-out to verify End KM server-side (the trip_ended
+  // cached flag can be stale — createAdditionalTripOdoo's server hook sets
+  // it to true even though end_km may still be 0). We then hydrate the
+  // trip and gate the End-KM popup on `end_km`, not on `trip_ended`.
+  const findMostRecentTripIdFromState = useCallback(() => {
+    if (fieldLines && fieldLines.length > 0) {
+      const last = fieldLines[fieldLines.length - 1];
+      const id = Array.isArray(last?.trip_id) ? last.trip_id[0] : null;
+      const ref = Array.isArray(last?.trip_id) ? last.trip_id[1] : '';
+      if (id) return { tripId: Number(id), tripRef: ref };
+    }
+    if (Array.isArray(fieldDetail?.source_trip_id) && fieldDetail.source_trip_id[0]) {
+      return {
+        tripId: Number(fieldDetail.source_trip_id[0]),
+        tripRef: fieldDetail.source_trip_id[1] || '',
+      };
+    }
+    return null;
+  }, [fieldLines, fieldDetail]);
+
   // Resolve the day's last still-open trip — mirrors the server logic and
   // the openAddTrip handler. Last trip line (if any) takes precedence over
   // the primary trip. Returns null when everything is already closed.
@@ -656,23 +683,68 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       console.log('[UA-CHECKOUT]   no fieldData.attendance_id → bail');
       return;
     }
-    // Block check-out while a pending secondary trip is still waiting
-    // for its customer visit. The user must complete the trip+visit pair
-    // before they can check out.
+    // Pending secondary trip = trip created via Start Trip without a visit
+    // yet attached. There's no `trip_line` for it on the server, so
+    // resolveLastOpenTrip() can't find it — we detect it via the local
+    // pendingSecondaryTrip marker and route through the same End-KM popup
+    // (ClosePreviousTripSheet) used elsewhere. On Save the trip is closed
+    // server-side and check-out continues.
     (async () => {
       const pending = await getPendingSecondaryTrip();
       if (pending && Number(pending.attendanceId) === Number(fieldData.attendance_id)) {
-        console.log('[UA-CHECKOUT]   blocked: pending secondary trip has no visit yet', pending);
-        showAlert({
-          message: 'You have a pending trip without a customer visit. Please tap "Enter Visits" on the pending trip card and complete the visit before checking out.',
-          confirmText: 'OK',
-          cancelText: null,
-          onConfirm: hideAlert,
-          onCancel: hideAlert,
+        console.log('[UA-CHECKOUT]   pending secondary trip detected — opening End KM popup',
+          { tripId: pending.tripId, startKm: pending.startKm });
+        setEndKmPrompt({
+          visible: true,
+          tripId: pending.tripId,
+          tripRef: pending.ref || `Trip #${pending.tripId}`,
+          startKm: Number(pending.startKm) || 0,
+          saving: false,
         });
         return;
       }
-      // No pending block — proceed with the existing check-out flow.
+      // Server-truth fallback: use the same RPC the FA section trusts
+      // (getFieldAttendanceStateOdoo). UA's own fieldLines lags behind
+      // after the two-phase create flow, so we re-fetch the canonical
+      // state and look at the most recent trip's end_km directly. If
+      // end_km is missing/0, surface the End KM popup before check-out.
+      try {
+        const faState = await getFieldAttendanceStateOdoo(fieldData.attendance_id);
+        console.log('[UA-CHECKOUT]   fa-state for end-km gate:', {
+          tripLines: faState?.trip_lines?.length || 0,
+          returnLines: faState?.return_lines?.length || 0,
+          hasSourceTrip: !!faState?.source_trip,
+        });
+        const allTrips = [
+          ...(faState?.trip_lines || []).map((l) => l?.trip),
+          ...(faState?.return_lines || []).map((l) => l?.trip),
+        ].filter(Boolean);
+        const lastTrip = allTrips.length ? allTrips[allTrips.length - 1] : faState?.source_trip;
+        if (lastTrip?.id) {
+          const tripId = Number(lastTrip.id);
+          const startKm = Number(lastTrip.start_km) || 0;
+          const endKm = Number(lastTrip.end_km) || 0;
+          if (!endKm) {
+            console.log('[UA-CHECKOUT]   trip has no end_km — opening End KM popup',
+              { tripId, startKm });
+            setEndKmPrompt({
+              visible: true,
+              tripId,
+              tripRef: lastTrip.ref || `Trip #${tripId}`,
+              startKm,
+              saving: false,
+            });
+            return;
+          }
+          console.log('[UA-CHECKOUT]   trip already closed (end_km>0) — proceeding', { endKm });
+        } else {
+          console.log('[UA-CHECKOUT]   no trip on FA state — proceeding with check-out');
+        }
+      } catch (e) {
+        console.warn('[UA-CHECKOUT]   fa-state lookup failed:', e?.message);
+        // Defensive: fall through on transient errors so check-out isn't blocked.
+      }
+      // No pending trip, no open trip — proceed with the existing flow.
       _continueFieldCheckOut();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -761,6 +833,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     try {
       await endVehicleTripFromAttendanceOdoo(endKmPrompt.tripId, null, n);
       console.log('[UA-CHECKOUT]   trip ended OK → bulk-marking visits done');
+      // Clear the pending-secondary-trip marker (if any) since the trip
+      // is now closed on the server. Harmless when no marker exists.
+      try { await clearPendingSecondaryTrip(); } catch (_) {}
       await markAllDayVisitsDone();
       setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false });
       if (fieldData?.attendance_id) {
@@ -787,6 +862,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       }
       showToastMessage('Field attendance checked out');
       await refreshFieldAttendance({ silent: true });
+      // Tell the embedded FA section to re-fetch so its UI locks down
+      // (read-only banner + hidden CTAs + hidden Add Fuel).
+      setFaRefreshTick((t) => t + 1);
     } catch (e) {
       showAlert({ message: e?.message || 'Failed to check out' });
     } finally {
@@ -3442,7 +3520,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                 refresh and renders the read-only banner once check_out
                 is set on the server. */}
             {fieldDetail?.id ? (
-              <FieldAttendanceSection attendanceId={fieldDetail.id} embedded />
+              <FieldAttendanceSection attendanceId={fieldDetail.id} embedded refreshTrigger={faRefreshTick} />
             ) : null}
 
             {/* Action footer */}
