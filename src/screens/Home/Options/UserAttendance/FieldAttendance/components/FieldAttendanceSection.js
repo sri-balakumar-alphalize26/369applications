@@ -707,7 +707,10 @@ const FieldAttendanceSection = ({
   //   - Add Additional (bottom)  : has_return_trip_lines      (after return cycle starts)
   // All gated by !is_checked_out.
   const hasTripLines = (state.trip_lines || []).length > 0;
-  const showPrimaryTripBtn = !state.source_trip && !isCheckedOut;
+  // Hide the primary-trip CTA once any trip line has been created — the
+  // user has clearly skipped the Home→Office leg and gone straight to a
+  // secondary trip, so offering "Setup Primary Trip" is no longer relevant.
+  const showPrimaryTripBtn = !state.source_trip && !hasTripLines && !isCheckedOut;
   const showSecondaryBtn = !hasTripLines && !isCheckedOut;
   const showAddAdditionalOutboundBtn = hasTripLines && state.show_primary_return_button && !isCheckedOut;
   const showViaOfficeOrDirectBtn = state.show_primary_return_button && !isCheckedOut;
