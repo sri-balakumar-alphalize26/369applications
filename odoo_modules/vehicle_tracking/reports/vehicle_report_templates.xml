@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- =================================================================
+         PDF templates for the Generate Report wizard. Each template reads
+         from the wizard record (`docs` is a `vehicle.report.wizard`
+         recordset, usually of length 1) and iterates the matching
+         <report_type>_line_ids. Headers + colour coding mirror the
+         existing fuel_entries_report / trip_comparison_report layouts so
+         the printed output is consistent with the older list-based PDFs.
+         ================================================================= -->
+
+    <!-- Shared header partial: report title, period chip, filter chip. -->
+    <template id="report_wizard_header_block">
+        <t t-foreach="docs" t-as="o">
+            <h2 t-esc="header_title or 'Report'"/>
+            <p>
+                <strong>Period:</strong>
+                <span t-esc="dict(o._fields['period'].selection).get(o.period)"/>
+                (<span t-field="o.date_from"/> to <span t-field="o.date_to"/>)
+                &amp;nbsp;|&amp;nbsp;
+                <strong>Company:</strong>
+                <span t-field="o.company_id"/>
+                &amp;nbsp;|&amp;nbsp;
+                <strong>Generated:</strong>
+                <span t-field="o.generated_at"/>
+            </p>
+            <p t-if="o.vehicle_ids">
+                <strong>Vehicles:</strong>
+                <span t-esc="', '.join(o.vehicle_ids.mapped('display_name'))"/>
+            </p>
+            <p t-if="o.driver_ids">
+                <strong>Drivers:</strong>
+                <span t-esc="', '.join(o.driver_ids.mapped('display_name'))"/>
+            </p>
+        </t>
+    </template>
+
+    <!-- Fuel Entries -->
+    <template id="report_wizard_fuel_entries_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <t t-call="vehicle_tracking.report_wizard_header_block">
+                        <t t-set="header_title">Fuel Entries Report</t>
+                    </t>
+                    <t t-foreach="docs" t-as="o">
+                        <table class="table table-sm table-bordered">
+                            <thead style="background-color:#f0f0f0;">
+                                <tr>
+                                    <th>Ref</th>
+                                    <th>Vehicle</th>
+                                    <th>Driver</th>
+                                    <th class="text-end">Amount</th>
+                                    <th class="text-end">Fuel (L)</th>
+                                    <th class="text-end">Odometer</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="o.fuel_line_ids" t-as="l">
+                                    <td><span t-field="l.ref"/></td>
+                                    <td><span t-field="l.vehicle_id"/></td>
+                                    <td><span t-field="l.driver_id"/></td>
+                                    <td class="text-end"><span t-field="l.amount"/></td>
+                                    <td class="text-end"><span t-field="l.litres"/></td>
+                                    <td class="text-end"><span t-field="l.odometer"/></td>
+                                    <td><span t-field="l.date"/></td>
+                                </tr>
+                            </tbody>
+                            <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                                <tr>
+                                    <td colspan="3" class="text-end">Totals:</td>
+                                    <td class="text-end">
+                                        <span t-esc="o.total_amount" t-options="{'widget': 'float', 'precision': 2}"/>
+                                    </td>
+                                    <td class="text-end">
+                                        <span t-esc="o.total_litres" t-options="{'widget': 'float', 'precision': 2}"/>
+                                    </td>
+                                    <td colspan="2"/>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <!-- Trip Comparison -->
+    <template id="report_wizard_trip_comparison_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <t t-call="vehicle_tracking.report_wizard_header_block">
+                        <t t-set="header_title">Trip Comparison Report</t>
+                    </t>
+                    <t t-foreach="docs" t-as="o">
+                        <table class="table table-sm table-bordered" style="font-size:10px;">
+                            <thead style="background-color:#f0f0f0;">
+                                <tr>
+                                    <th>Ref</th>
+                                    <th>Date</th>
+                                    <th>Vehicle</th>
+                                    <th>Driver</th>
+                                    <th>Source</th>
+                                    <th>Destination</th>
+                                    <th class="text-end">Est KM</th>
+                                    <th class="text-end">Actual KM</th>
+                                    <th class="text-end">KM Var</th>
+                                    <th class="text-end">Est Hrs</th>
+                                    <th class="text-end">Actual Hrs</th>
+                                    <th class="text-end">Time Var</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="o.trip_line_ids" t-as="l">
+                                    <td><span t-field="l.ref"/></td>
+                                    <td><span t-field="l.date"/></td>
+                                    <td><span t-field="l.vehicle_id"/></td>
+                                    <td><span t-field="l.driver_id"/></td>
+                                    <td><span t-field="l.source"/></td>
+                                    <td><span t-field="l.destination"/></td>
+                                    <td class="text-end"><span t-field="l.est_km"/></td>
+                                    <td class="text-end"><span t-field="l.actual_km"/></td>
+                                    <td class="text-end"
+                                        t-attf-style="color: #{'#dc3545' if l.km_var &gt; 0 else ('#198754' if l.km_var &lt; 0 else '#000000')};">
+                                        <span t-field="l.km_var"/>
+                                    </td>
+                                    <td class="text-end"><span t-field="l.est_hrs"/></td>
+                                    <td class="text-end"><span t-field="l.actual_hrs"/></td>
+                                    <td class="text-end"
+                                        t-attf-style="color: #{'#dc3545' if l.time_var &gt; 0 else ('#198754' if l.time_var &lt; 0 else '#000000')};">
+                                        <span t-field="l.time_var"/>
+                                    </td>
+                                </tr>
+                            </tbody>
+                            <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                                <tr>
+                                    <td colspan="6" class="text-end">Totals:</td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('est_km'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('actual_km'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('km_var'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('est_hrs'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('actual_hrs'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="sum(o.trip_line_ids.mapped('time_var'))" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <!-- Per-Driver Summary -->
+    <template id="report_wizard_driver_summary_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <t t-call="vehicle_tracking.report_wizard_header_block">
+                        <t t-set="header_title">Per-Driver Summary Report</t>
+                    </t>
+                    <t t-foreach="docs" t-as="o">
+                        <table class="table table-sm table-bordered" style="font-size:11px;">
+                            <thead style="background-color:#f0f0f0;">
+                                <tr>
+                                    <th>Driver</th>
+                                    <th class="text-end">Trips</th>
+                                    <th class="text-end">Total KM</th>
+                                    <th class="text-end">Litres</th>
+                                    <th class="text-end">Fuel Amount</th>
+                                    <th class="text-end">Avg KM/L</th>
+                                    <th class="text-end">KM Var %</th>
+                                    <th class="text-end">Time Var %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="o.driver_line_ids" t-as="l">
+                                    <td><span t-field="l.driver_id"/></td>
+                                    <td class="text-end"><span t-field="l.trip_count"/></td>
+                                    <td class="text-end"><span t-field="l.total_km"/></td>
+                                    <td class="text-end"><span t-field="l.total_fuel_litres"/></td>
+                                    <td class="text-end"><span t-field="l.total_fuel_amount"/></td>
+                                    <td class="text-end"><span t-field="l.avg_km_per_litre"/></td>
+                                    <td class="text-end"><span t-field="l.km_variance_pct"/></td>
+                                    <td class="text-end"><span t-field="l.time_variance_pct"/></td>
+                                </tr>
+                            </tbody>
+                            <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                                <tr>
+                                    <td class="text-end">Totals:</td>
+                                    <td class="text-end"><span t-esc="o.total_trips"/></td>
+                                    <td class="text-end"><span t-esc="o.total_km" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="o.total_litres" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="o.total_amount" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td colspan="3"/>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <!-- Per-Vehicle Summary -->
+    <template id="report_wizard_vehicle_summary_doc">
+        <t t-call="web.html_container">
+            <t t-call="web.external_layout">
+                <div class="page">
+                    <t t-call="vehicle_tracking.report_wizard_header_block">
+                        <t t-set="header_title">Per-Vehicle Summary Report</t>
+                    </t>
+                    <t t-foreach="docs" t-as="o">
+                        <table class="table table-sm table-bordered" style="font-size:11px;">
+                            <thead style="background-color:#f0f0f0;">
+                                <tr>
+                                    <th>Vehicle</th>
+                                    <th class="text-end">Trips</th>
+                                    <th class="text-end">Total KM</th>
+                                    <th class="text-end">Litres</th>
+                                    <th class="text-end">Fuel Amount</th>
+                                    <th class="text-end">Avg KM/L</th>
+                                    <th class="text-end">Idle Days</th>
+                                    <th class="text-end">KM Var %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr t-foreach="o.vehicle_line_ids" t-as="l">
+                                    <td><span t-field="l.vehicle_id"/></td>
+                                    <td class="text-end"><span t-field="l.trip_count"/></td>
+                                    <td class="text-end"><span t-field="l.total_km"/></td>
+                                    <td class="text-end"><span t-field="l.total_fuel_litres"/></td>
+                                    <td class="text-end"><span t-field="l.total_fuel_amount"/></td>
+                                    <td class="text-end"><span t-field="l.avg_km_per_litre"/></td>
+                                    <td class="text-end"><span t-field="l.idle_days"/></td>
+                                    <td class="text-end"><span t-field="l.km_variance_pct"/></td>
+                                </tr>
+                            </tbody>
+                            <tfoot style="background-color:#f0f0f0;font-weight:bold;">
+                                <tr>
+                                    <td class="text-end">Totals:</td>
+                                    <td class="text-end"><span t-esc="o.total_trips"/></td>
+                                    <td class="text-end"><span t-esc="o.total_km" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="o.total_litres" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td class="text-end"><span t-esc="o.total_amount" t-options="{'widget': 'float', 'precision': 2}"/></td>
+                                    <td colspan="3"/>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </t>
+                </div>
+            </t>
+        </t>
+    </template>
+
+</odoo>

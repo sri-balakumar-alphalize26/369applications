@@ -37,6 +37,13 @@ New in v1.1 - AI Fraud Detection:
         'views/fleet_vehicle_menu.xml',
         'views/vehicle_location_menu.xml',
         'views/vehicle_ai_views.xml',
+        # Generate Report wizard — must come after the Reports parent
+        # menu (vehicle_tracking_menus.xml) and after the existing
+        # Fuel Entries / Trip Comparison templates (declared elsewhere
+        # via actions), so it slots in cleanly above them.
+        'reports/vehicle_report_templates.xml',
+        'reports/vehicle_report_actions.xml',
+        'wizards/vehicle_report_wizard_views.xml',
     ],
     
     'application': True,

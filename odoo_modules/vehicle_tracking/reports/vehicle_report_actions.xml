@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- One ir.actions.report per template. Wizard's action_print_pdf
+         resolves the correct action via report_type, then report_action(self)
+         renders the wizard record with its already-populated *_line_ids. -->
+
+    <record id="action_report_wizard_fuel_entries" model="ir.actions.report">
+        <field name="name">Fuel Entries Report</field>
+        <field name="model">vehicle.report.wizard</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_wizard_fuel_entries_doc</field>
+        <field name="report_file">vehicle_tracking.report_wizard_fuel_entries_doc</field>
+        <field name="print_report_name">'Fuel_Entries_Report'</field>
+    </record>
+
+    <record id="action_report_wizard_trip_comparison" model="ir.actions.report">
+        <field name="name">Trip Comparison Report</field>
+        <field name="model">vehicle.report.wizard</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_wizard_trip_comparison_doc</field>
+        <field name="report_file">vehicle_tracking.report_wizard_trip_comparison_doc</field>
+        <field name="print_report_name">'Trip_Comparison_Report'</field>
+    </record>
+
+    <record id="action_report_wizard_driver_summary" model="ir.actions.report">
+        <field name="name">Per-Driver Summary Report</field>
+        <field name="model">vehicle.report.wizard</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_wizard_driver_summary_doc</field>
+        <field name="report_file">vehicle_tracking.report_wizard_driver_summary_doc</field>
+        <field name="print_report_name">'Driver_Summary_Report'</field>
+    </record>
+
+    <record id="action_report_wizard_vehicle_summary" model="ir.actions.report">
+        <field name="name">Per-Vehicle Summary Report</field>
+        <field name="model">vehicle.report.wizard</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">vehicle_tracking.report_wizard_vehicle_summary_doc</field>
+        <field name="report_file">vehicle_tracking.report_wizard_vehicle_summary_doc</field>
+        <field name="print_report_name">'Vehicle_Summary_Report'</field>
+    </record>
+
+</odoo>

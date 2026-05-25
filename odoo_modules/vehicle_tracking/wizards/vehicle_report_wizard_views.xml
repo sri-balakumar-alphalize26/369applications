@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Generate Report wizard form. Two visual phases on the same form:
+         filters (shown until first generate) and results (shown after
+         generated_at is set). Header buttons swap accordingly. -->
+    <record id="view_vehicle_report_wizard_form" model="ir.ui.view">
+        <field name="name">vehicle.report.wizard.form</field>
+        <field name="model">vehicle.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Generate Report">
+                <sheet>
+                    <!-- ===== Filter phase ===== -->
+                    <group invisible="generated_at">
+                        <group string="Period">
+                            <field name="period"/>
+                            <!-- Always editable. When a preset period is
+                                 selected, _onchange_period fills the dates;
+                                 user can still tweak them and on Generate
+                                 the server respects the period setting and
+                                 recomputes (unless period == 'custom'). -->
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                        <group string="Company">
+                            <field name="company_id"/>
+                        </group>
+                        <group string="Report">
+                            <field name="report_type"/>
+                        </group>
+                        <group string="Filters (optional)">
+                            <field name="vehicle_ids" widget="many2many_tags"/>
+                            <field name="driver_ids" widget="many2many_tags"/>
+                        </group>
+                    </group>
+
+                    <!-- ===== Result phase ===== -->
+                    <div invisible="not generated_at">
+                        <div class="o_horizontal_separator mt-3 mb-3"
+                             style="font-weight:bold;font-size:16px;color:#1a237e;">
+                            <field name="report_type" readonly="1"
+                                   options="{'no_open': True}"
+                                   class="oe_inline"/>
+                            &amp;nbsp;—&amp;nbsp;
+                            <field name="period" readonly="1" class="oe_inline"/>
+                            &amp;nbsp;(<field name="date_from" readonly="1" class="oe_inline"/>
+                            &amp;nbsp;to&amp;nbsp;
+                            <field name="date_to" readonly="1" class="oe_inline"/>)
+                        </div>
+
+                        <!-- Summary chips. Each chip is only relevant to
+                             some report types; hide the ones that don't
+                             apply via invisible. -->
+                        <group col="4">
+                            <group string="Trips"
+                                   invisible="report_type == 'fuel_entries'">
+                                <field name="total_trips" readonly="1" nolabel="1"/>
+                            </group>
+                            <group string="Total KM"
+                                   invisible="report_type == 'fuel_entries'">
+                                <field name="total_km" readonly="1" nolabel="1"/>
+                            </group>
+                            <group string="Total Litres"
+                                   invisible="report_type == 'trip_comparison'">
+                                <field name="total_litres" readonly="1" nolabel="1"/>
+                            </group>
+                            <group string="Total Fuel Amount"
+                                   invisible="report_type == 'trip_comparison'">
+                                <field name="total_amount" readonly="1" nolabel="1"/>
+                            </group>
+                        </group>
+
+                        <!-- Fuel Entries result table -->
+                        <field name="fuel_line_ids" readonly="1"
+                               invisible="report_type != 'fuel_entries'">
+                            <list create="false" delete="false" edit="false">
+                                <field name="ref"/>
+                                <field name="vehicle_id"/>
+                                <field name="driver_id"/>
+                                <field name="amount" sum="Total Amount"/>
+                                <field name="litres" sum="Total Litres"/>
+                                <field name="odometer"/>
+                                <field name="date"/>
+                            </list>
+                        </field>
+
+                        <!-- Trip Comparison result table -->
+                        <field name="trip_line_ids" readonly="1"
+                               invisible="report_type != 'trip_comparison'">
+                            <list create="false" delete="false" edit="false"
+                                  decoration-danger="km_var &gt; 0"
+                                  decoration-success="km_var &lt; 0">
+                                <field name="ref"/>
+                                <field name="date"/>
+                                <field name="vehicle_id"/>
+                                <field name="driver_id"/>
+                                <field name="source"/>
+                                <field name="destination"/>
+                                <field name="est_km" sum="Est KM"/>
+                                <field name="actual_km" sum="Actual KM"/>
+                                <field name="km_var" sum="KM Var"/>
+                                <field name="est_hrs" sum="Est Hrs"/>
+                                <field name="actual_hrs" sum="Actual Hrs"/>
+                                <field name="time_var" sum="Time Var"/>
+                            </list>
+                        </field>
+
+                        <!-- Per-Driver Summary -->
+                        <field name="driver_line_ids" readonly="1"
+                               invisible="report_type != 'driver_summary'">
+                            <list create="false" delete="false" edit="false">
+                                <field name="driver_id"/>
+                                <field name="trip_count" sum="Trips"/>
+                                <field name="total_km" sum="Total KM"/>
+                                <field name="total_fuel_litres" sum="Litres"/>
+                                <field name="total_fuel_amount" sum="Fuel Amount"/>
+                                <field name="avg_km_per_litre"/>
+                                <field name="km_variance_pct"/>
+                                <field name="time_variance_pct"/>
+                            </list>
+                        </field>
+
+                        <!-- Per-Vehicle Summary -->
+                        <field name="vehicle_line_ids" readonly="1"
+                               invisible="report_type != 'vehicle_summary'">
+                            <list create="false" delete="false" edit="false">
+                                <field name="vehicle_id"/>
+                                <field name="trip_count" sum="Trips"/>
+                                <field name="total_km" sum="Total KM"/>
+                                <field name="total_fuel_litres" sum="Litres"/>
+                                <field name="total_fuel_amount" sum="Fuel Amount"/>
+                                <field name="avg_km_per_litre"/>
+                                <field name="idle_days"/>
+                                <field name="km_variance_pct"/>
+                            </list>
+                        </field>
+                    </div>
+
+                    <field name="generated_at" invisible="1"/>
+                </sheet>
+
+                <!-- Footer in a TransientModel form replaces the auto
+                     Save/Discard buttons inside the modal dialog. -->
+                <footer>
+                    <button name="action_generate_report" string="Generate Report"
+                            type="object" class="btn-primary"
+                            invisible="generated_at"/>
+                    <button name="action_refresh" string="Refresh"
+                            type="object" class="btn-warning"
+                            icon="fa-refresh"
+                            invisible="not generated_at"/>
+                    <button name="action_print_pdf" string="PDF Report"
+                            type="object" class="btn-info"
+                            icon="fa-file-pdf-o"
+                            invisible="not generated_at"/>
+                    <button name="action_export_excel" string="Excel Export"
+                            type="object" class="btn-success"
+                            icon="fa-file-excel-o"
+                            invisible="not generated_at"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Window action: open as wizard dialog (target="new"). -->
+    <record id="action_vehicle_report_wizard" model="ir.actions.act_window">
+        <field name="name">Generate Report</field>
+        <field name="res_model">vehicle.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="view_vehicle_report_wizard_form"/>
+        <field name="target">new</field>
+    </record>
+
+    <!-- Top entry under Vehicle Tracking → Reports. -->
+    <menuitem id="menu_vehicle_tracking_reports_generate"
+              name="Generate Report"
+              parent="vehicle_tracking.menu_vehicle_tracking_reports"
+              action="action_vehicle_report_wizard"
+              sequence="5"/>
+
+</odoo>
