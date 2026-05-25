@@ -19,6 +19,10 @@ import {
 } from '@api/services/generalApi';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
+import {
+  getPendingSecondaryTrip,
+  clearPendingSecondaryTrip,
+} from '@utils/pendingSecondaryTrip';
 import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/TripDetailSheet';
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
 import VisitDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitDetailSheet';
@@ -99,6 +103,16 @@ const FieldAttendanceSection = ({
   // stick a stale selection.
   const [pendingTripId, setPendingTripId] = useState(null);
   const [pendingVisitId, setPendingVisitId] = useState(null);
+
+  // Two-phase secondary/additional flow: a "pending" trip is a vehicle.tracking
+  // row already created by Start Trip whose customer.visit hasn't been entered
+  // yet. The marker is persisted in AsyncStorage and reflected on the FA
+  // screen as a Pending Trip Card so the user knows to enter the visit when
+  // they reach the visit location (and the visit's lat/lng is captured there).
+  const [pendingSecondary, setPendingSecondary] = useState(null);
+  // Hydrated server-side details for the pending trip (ref, etc.) — fetched
+  // on demand so the card can render the actual VT-#### reference.
+  const [pendingTripHydrated, setPendingTripHydrated] = useState(null);
 
   // Sheets driven by per-card button taps (Open Trip / View Visits).
   const [tripDetailOpen, setTripDetailOpen] = useState(false);
@@ -208,6 +222,62 @@ const FieldAttendanceSection = ({
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Load (or scrub) the pending-secondary-trip marker on mount and whenever
+  // the attendanceId changes. The marker is scoped by attendanceId so a
+  // stale entry from yesterday's attendance never surfaces on today's.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const stored = await getPendingSecondaryTrip();
+      if (cancelled) return;
+      if (!stored) { setPendingSecondary(null); return; }
+      if (Number(stored.attendanceId) !== Number(attendanceId)) {
+        console.log(TAG, 'pending marker is for a different attendance — clearing', stored);
+        await clearPendingSecondaryTrip();
+        setPendingSecondary(null);
+        return;
+      }
+      console.log(TAG, 'loaded pending secondary trip marker', stored);
+      setPendingSecondary(stored);
+    })();
+    return () => { cancelled = true; };
+  }, [attendanceId]);
+
+  // After every server refresh, check whether the pending trip already has
+  // a trip line on the server (i.e. the visit was attached). If so, the
+  // marker is stale — clear it so the Pending card disappears.
+  useEffect(() => {
+    if (!pendingSecondary || !state) return;
+    const attached = (state.trip_lines || []).some(
+      (l) => Number(l?.trip?.id) === Number(pendingSecondary.tripId),
+    );
+    if (attached) {
+      console.log(TAG, 'pending trip is now attached as a trip_line — clearing marker', pendingSecondary.tripId);
+      clearPendingSecondaryTrip();
+      setPendingSecondary(null);
+      setPendingTripHydrated(null);
+    }
+  }, [state, pendingSecondary]);
+
+  // Hydrate the actual trip details (ref, etc.) for the pending card so we
+  // can display VT-#### properly. The local marker stores only the slim
+  // snapshot needed for instant render; the ref is fetched once.
+  useEffect(() => {
+    if (!pendingSecondary) { setPendingTripHydrated(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await readVehicleTrackingForTripIdsOdoo([Number(pendingSecondary.tripId)]);
+        if (cancelled) return;
+        const full = rows?.[0] || null;
+        if (full) setPendingTripHydrated(full);
+      } catch (e) {
+        console.warn(TAG, 'pending trip hydrate failed:', e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pendingSecondary]);
+
   // On focus return — refresh, then handle the "I just created a new trip
   // or visit" handshake from VehicleTrackingForm / VisitForm. The OLD flow
   // used the same channel pattern; we adapted it for the new state machine.
@@ -222,7 +292,52 @@ const FieldAttendanceSection = ({
       const sheet = lastActiveSheetRef.current;
       lastActiveSheetRef.current = null;
 
+      // Two-phase secondary flow: user came back from VisitForm via
+      // "Enter Visits" on the Pending Trip Card. Take the new visit id
+      // and attach it to the pending trip via createAdditionalTripOdoo —
+      // this finalises the trip line just like the popup's Save would,
+      // but with the visit's lat/lng baked in at the moment of the save
+      // (which is the actual visit location).
+      if (sheet === 'pending_attach' && pendingVisitId) {
+        const stored = await getPendingSecondaryTrip();
+        if (stored && Number(stored.attendanceId) === Number(attendanceId)) {
+          try {
+            console.log(TAG, 'pending_attach: linking visit to pending trip',
+              { tripId: stored.tripId, visitId: pendingVisitId, startKm: stored.startKm });
+            await createAdditionalTripOdoo(attendanceId, {
+              tripId: stored.tripId,
+              visitId: Number(pendingVisitId),
+              startKm: Number(stored.startKm) || 0,
+            });
+            await clearPendingSecondaryTrip();
+            setPendingSecondary(null);
+            setPendingTripHydrated(null);
+            await refresh({ silent: true });
+          } catch (e) {
+            console.error(TAG, 'pending_attach RPC failed:', e?.message);
+            showToastMessage(e?.message || 'Failed to attach visit to pending trip');
+          }
+          return;
+        }
+      }
+
       if (!sheet) return;
+
+      // Two-phase secondary flow: user came back from VehicleTrackingForm
+      // after Start Trip in outbound mode. The VehicleTrackingForm just
+      // persisted a pendingSecondaryTrip marker — instead of re-opening
+      // the trip popup, let FA refresh and the marker-loading effect will
+      // render the Pending Trip Card. Skip the generic re-open below.
+      if (sheet === 'outbound' && pendingTripId) {
+        const stored = await getPendingSecondaryTrip();
+        if (stored && Number(stored.attendanceId) === Number(attendanceId)
+            && Number(stored.tripId) === Number(pendingTripId)) {
+          console.log(TAG, 'pending secondary trip persisted — staying on FA, showing Pending card');
+          setPendingSecondary(stored);
+          setAutoOpenPickerOnRestore(false);
+          return;
+        }
+      }
 
       // NOTE: the old "primary + pendingTripId → auto-attach silently" branch
       // was removed because the user wants Start Trip to redirect to the
@@ -404,12 +519,33 @@ const FieldAttendanceSection = ({
       'prefillVehicleId:', prefillVehicleId,
       'prefillStartKm:', prefillStartKm,
       'navigate → VehicleTrackingForm');
+    // Snapshot the FA mode (primary | outbound | return | office_to_home)
+    // so VehicleTrackingForm knows whether to persist a pending-secondary
+    // marker on Start Trip. Only `outbound` triggers the two-phase flow.
+    const faMode = lastActiveSheetRef.current;
     closeAllSheets();
     navigation.navigate('VehicleTrackingForm', {
       returnTo: 'fieldAttendance',
       prefillSourceId,
       prefillVehicleId,
       prefillStartKm,
+      faMode,
+      attendanceId,
+    });
+  };
+
+  // Pending Trip Card → "Enter Visits" button. The user has driven to the
+  // actual visit location and is ready to create the customer.visit record;
+  // its lat/lng will be captured at this moment, then the FA section's
+  // useFocusEffect catches the new visit id and links it to the pending
+  // trip via createAdditionalTripOdoo (see the 'pending_attach' branch).
+  const handlePendingEnterVisits = (p) => {
+    if (!p?.tripId) return;
+    console.log(TAG, 'handlePendingEnterVisits — navigating to VisitForm', { tripId: p.tripId });
+    lastActiveSheetRef.current = 'pending_attach';
+    navigation.navigate('VisitForm', {
+      returnTo: 'fieldAttendance',
+      attachToPendingTripId: p.tripId,
     });
   };
 
@@ -628,6 +764,12 @@ const FieldAttendanceSection = ({
         return;
       }
       console.log(TAG, 'checkOut OK');
+      // The day is done — any pending secondary trip marker is now stale.
+      try {
+        await clearPendingSecondaryTrip();
+        setPendingSecondary(null);
+        setPendingTripHydrated(null);
+      } catch (_) {}
       showToastMessage('Checked out successfully');
       await refresh({ silent: true });
       if (typeof onCheckedOut === 'function') onCheckedOut();
@@ -710,11 +852,15 @@ const FieldAttendanceSection = ({
   // Hide the primary-trip CTA once any trip line has been created — the
   // user has clearly skipped the Home→Office leg and gone straight to a
   // secondary trip, so offering "Setup Primary Trip" is no longer relevant.
-  const showPrimaryTripBtn = !state.source_trip && !hasTripLines && !isCheckedOut;
-  const showSecondaryBtn = !hasTripLines && !isCheckedOut;
-  const showAddAdditionalOutboundBtn = hasTripLines && state.show_primary_return_button && !isCheckedOut;
+  // While a pending secondary trip is waiting for its visit, block the
+  // "start another trip" CTAs — the user must finish the current pair
+  // first. A hint is rendered next to the disabled button (see JSX below).
+  const blockedByPending = !!pendingSecondary;
+  const showPrimaryTripBtn = !state.source_trip && !hasTripLines && !isCheckedOut && !blockedByPending;
+  const showSecondaryBtn = !hasTripLines && !isCheckedOut && !blockedByPending;
+  const showAddAdditionalOutboundBtn = hasTripLines && state.show_primary_return_button && !isCheckedOut && !blockedByPending;
   const showViaOfficeOrDirectBtn = state.show_primary_return_button && !isCheckedOut;
-  const showAddAdditionalBottomBtn = state.has_return_trip_lines && !isCheckedOut;
+  const showAddAdditionalBottomBtn = state.has_return_trip_lines && !isCheckedOut && !blockedByPending;
   const showOfficeToHomeBtn = state.show_office_to_home_button && !isCheckedOut;
   const att = state.attendance;
 
@@ -760,6 +906,26 @@ const FieldAttendanceSection = ({
           <Text style={styles.emptyText}>No primary trip set up yet.</Text>
         </View>
       )}
+
+      {/* PENDING SECONDARY TRIP — visible while a vehicle.tracking exists
+          for outbound but the matching customer.visit hasn't been entered
+          yet. User taps Enter Visits when they reach the visit location. */}
+      {pendingSecondary ? (
+        <PendingTripCard
+          pending={pendingSecondary}
+          hydrated={pendingTripHydrated}
+          busy={busy}
+          onEnterVisits={() => handlePendingEnterVisits(pendingSecondary)}
+        />
+      ) : null}
+
+      {/* Hint shown when the next-trip CTAs are blocked because a pending
+          secondary trip is still waiting for its visit. */}
+      {blockedByPending && !isCheckedOut ? (
+        <Text style={styles.disabledHint}>
+          Complete the visit for your pending trip before adding another.
+        </Text>
+      ) : null}
 
       {/* INITIAL BUTTONS (no trips yet) */}
       {(showPrimaryTripBtn || showSecondaryBtn) ? (
@@ -1071,6 +1237,52 @@ const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits, onA
   );
 };
 
+// Pending Trip Card — shown while a secondary trip's vehicle.tracking
+// exists but its visit hasn't been entered yet (two-phase outbound flow).
+// Left column shows the trip details so the user can confirm what trip
+// they're on; right column has the "Enter Visits" button that they tap
+// once they've physically arrived at the visit location.
+const PendingTripCard = ({ pending, hydrated, busy, onEnterVisits }) => {
+  const ref = hydrated?.ref || hydrated?.name || pending?.ref || '—';
+  const source = pending?.source || '';
+  const destination = pending?.destination || '';
+  const vehicleName = pending?.vehicleName || '';
+  const driverName = pending?.driverName || '';
+  const startKm = pending?.startKm != null ? String(pending.startKm) : '—';
+  return (
+    <View style={styles.pendingCard}>
+      <View style={styles.infoBanner}>
+        <MaterialIcons name="info-outline" size={18} color="#856404" />
+        <Text style={styles.infoBannerText}>
+          Once you reach the visit, enter the customer details.
+        </Text>
+      </View>
+      <View style={styles.pendingRow}>
+        <View style={styles.pendingLeft}>
+          <Text style={styles.twoColHeader}>TRIP DETAILS</Text>
+          <ColRow k="Ref" v={ref} />
+          <ColRow k="Source" v={source} />
+          <ColRow k="Destination" v={destination} />
+          <ColRow k="Vehicle" v={vehicleName} />
+          <ColRow k="Driver" v={driverName} />
+          <ColRow k="Start KM" v={startKm} />
+        </View>
+        <View style={styles.pendingRight}>
+          <TouchableOpacity
+            style={[styles.enterVisitsBtn, busy && { opacity: 0.5 }]}
+            onPress={onEnterVisits}
+            disabled={busy}
+            activeOpacity={0.85}
+          >
+            <MaterialIcons name="add-location-alt" size={18} color="#fff" />
+            <Text style={styles.enterVisitsText}>Enter Visits</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+};
+
 // Mirrors the Odoo module's secondary-trip card layout: two side-by-side
 // columns — TRIP DETAILS on the left, VISIT DETAILS on the right — plus
 // Open Source Trip / View Visits / Add Fuel buttons at the bottom.
@@ -1255,6 +1467,29 @@ const styles = StyleSheet.create({
     borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginTop: 6,
   },
   infoBannerText: { flex: 1, fontSize: 12, color: '#856404', fontFamily: FONT_FAMILY.urbanistMedium },
+  // Pending Trip Card — outbound trip awaiting its customer.visit
+  pendingCard: {
+    backgroundColor: '#FFFBEA',
+    borderColor: '#F5C76E',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 6,
+  },
+  pendingRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
+  pendingLeft: { flex: 1.4 },
+  pendingRight: { flex: 1, alignItems: 'stretch', justifyContent: 'center' },
+  enterVisitsBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#198754', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 12,
+  },
+  enterVisitsText: { color: '#fff', fontSize: 13, fontFamily: FONT_FAMILY.urbanistBold },
+  // Hint under disabled "Add Additional Trip" buttons when blocked by pending.
+  disabledHint: {
+    fontSize: 11.5, color: '#856404',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+    marginTop: 8, marginBottom: 2, paddingHorizontal: 4,
+  },
   btnRow: { gap: 10, marginTop: 14, marginBottom: 4 },
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

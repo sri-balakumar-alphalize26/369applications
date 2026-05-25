@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CommonActions } from '@react-navigation/native';
 import { setPendingNewTrip } from '@utils/newTripChannel';
+import { setPendingSecondaryTrip } from '@utils/pendingSecondaryTrip';
 import { Camera } from 'expo-camera';
 import Constants from 'expo-constants';
 import axios from 'axios';
@@ -2105,7 +2106,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
       // Belt-and-suspenders refresh: pass a refreshKey so the parent's
       // useEffect re-fires the trip list refetch immediately on focus, in
       // addition to the existing useFocusEffect.
-      const goBackWithRefresh = () => {
+      const goBackWithRefresh = async () => {
         console.log('[handleSubmit] navigating back — activeAction=', activeAction, ' final tripId=', response?.tripId);
         // When launched from any field-attendance entry point (FAD or
         // UserAttendanceScreen's inline duplicate), set the new trip data on
@@ -2113,6 +2114,35 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         // user actually came from refocuses with its preserved state and the
         // freshly-merged params.
         if (route?.params?.returnTo === 'fieldAttendance') {
+          // Two-phase secondary/additional flow: when FA launched us in
+          // outbound mode and the user just hit Start Trip, persist a
+          // local "pending" marker so FA can render the Pending Trip card
+          // and defer the customer.visit creation until the user actually
+          // arrives at the visit location (where the GPS will be captured).
+          // Primary / return / office_to_home flows keep their immediate-
+          // save behaviour by NOT writing this marker.
+          if (activeAction === 'start' && route.params?.faMode === 'outbound') {
+            try {
+              await setPendingSecondaryTrip({
+                attendanceId: route.params.attendanceId,
+                tripId: response?.tripId,
+                startKm: Number(submitData.start_km) || 0,
+                // ref is filled in by FA after it fetches the trip details
+                // via readVehicleTrackingForTripIdsOdoo — leave empty here.
+                ref: '',
+                source: formData.source || '',
+                destination: formData.destination || '',
+                vehicleName: formData.vehicle || '',
+                driverName: formData.driver || '',
+                createdAt: new Date().toISOString(),
+              });
+              console.log('[VehicleTrackingForm] persisted pending secondary trip marker', {
+                tripId: response?.tripId, attendanceId: route.params.attendanceId,
+              });
+            } catch (e) {
+              console.warn('[VehicleTrackingForm] failed to persist pending marker:', e?.message);
+            }
+          }
           // Primary path: write the new tripId to a module-level channel that
           // the consuming screen reads on focus. Reliable regardless of how
           // React Navigation handles param propagation across screens.
