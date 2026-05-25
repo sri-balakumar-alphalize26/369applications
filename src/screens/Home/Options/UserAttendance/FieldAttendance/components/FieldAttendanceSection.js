@@ -744,6 +744,16 @@ const FieldAttendanceSection = ({
           onViewVisits={() => handleViewVisits(state.source_visits)}
           onAddFuel={() => handleAddFuel(state.source_trip.id)}
         />
+      ) : hasTripLines ? (
+        // Employee skipped the Home→Office primary and went straight to a
+        // Home→Visit secondary. The empty-state card would read as an error;
+        // a yellow info banner makes it clear this is a valid alternate flow.
+        <View style={styles.infoBanner}>
+          <MaterialIcons name="info-outline" size={18} color="#856404" />
+          <Text style={styles.infoBannerText}>
+            The employee directly went Home to Visit, so no primary trip (Home to Office) required.
+          </Text>
+        </View>
       ) : (
         <View style={styles.emptyCard}>
           <MaterialIcons name="route" size={22} color="#BDBDBD" />
@@ -1238,6 +1248,13 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed',
   },
   emptyText: { flex: 1, fontSize: 12, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium },
+  // Yellow info banner — same palette as the "Late by X" warning above.
+  infoBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FFF3CD', borderColor: '#FFE69C', borderWidth: 1,
+    borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginTop: 6,
+  },
+  infoBannerText: { flex: 1, fontSize: 12, color: '#856404', fontFamily: FONT_FAMILY.urbanistMedium },
   btnRow: { gap: 10, marginTop: 14, marginBottom: 4 },
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
