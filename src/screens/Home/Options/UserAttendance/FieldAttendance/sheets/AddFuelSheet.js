@@ -42,6 +42,7 @@ const AddFuelSheet = ({ visible, trip, onClose, onSaved }) => {
   const [odometerImageBase64, setOdometerImageBase64] = useState('');
   const [fuelInvoiceUri, setFuelInvoiceUri] = useState('');
   const [fuelInvoiceBase64, setFuelInvoiceBase64] = useState('');
+  const [previewImageUri, setPreviewImageUri] = useState(null);
   const [gpsLat, setGpsLat] = useState(null);
   const [gpsLng, setGpsLng] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -283,7 +284,9 @@ const AddFuelSheet = ({ visible, trip, onClose, onSaved }) => {
                     <Text style={styles.imageBtnText}>Odometer Image</Text>
                   </Pressable>
                   {odometerImageUri ? (
-                    <Image source={{ uri: odometerImageUri }} style={styles.thumb} />
+                    <Pressable onPress={() => setPreviewImageUri(odometerImageUri)}>
+                      <Image source={{ uri: odometerImageUri }} style={styles.thumb} />
+                    </Pressable>
                   ) : (
                     <Text style={styles.noFileText}>No image</Text>
                   )}
@@ -294,7 +297,9 @@ const AddFuelSheet = ({ visible, trip, onClose, onSaved }) => {
                     <Text style={styles.imageBtnText}>Fuel Invoice</Text>
                   </Pressable>
                   {fuelInvoiceUri ? (
-                    <Image source={{ uri: fuelInvoiceUri }} style={styles.thumb} />
+                    <Pressable onPress={() => setPreviewImageUri(fuelInvoiceUri)}>
+                      <Image source={{ uri: fuelInvoiceUri }} style={styles.thumb} />
+                    </Pressable>
                   ) : (
                     <Text style={styles.noFileText}>No invoice</Text>
                   )}
@@ -370,6 +375,27 @@ const AddFuelSheet = ({ visible, trip, onClose, onSaved }) => {
           </Camera>
         </View>
       </Modal>
+
+      {/* Full-screen image preview (lightbox). Tap anywhere to dismiss. */}
+      <Modal
+        visible={!!previewImageUri}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setPreviewImageUri(null)}
+      >
+        <Pressable style={styles.previewOverlay} onPress={() => setPreviewImageUri(null)}>
+          <Pressable
+            style={styles.previewClose}
+            onPress={() => setPreviewImageUri(null)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <MaterialCommunityIcons name="close" size={28} color="#fff" />
+          </Pressable>
+          {previewImageUri ? (
+            <Image source={{ uri: previewImageUri }} style={styles.previewImage} resizeMode="contain" />
+          ) : null}
+        </Pressable>
+      </Modal>
     </Modal>
   );
 };
@@ -397,6 +423,9 @@ const styles = StyleSheet.create({
   imageBtnText: { color: '#fff', fontSize: 11.5, fontFamily: FONT_FAMILY.urbanistBold },
   noFileText: { fontSize: 10.5, color: '#999', fontFamily: FONT_FAMILY.urbanistMedium },
   thumb: { width: 64, height: 64, borderRadius: 8, backgroundColor: '#eee' },
+  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center', alignItems: 'center' },
+  previewClose: { position: 'absolute', top: 40, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  previewImage: { width: '100%', height: '90%' },
   error: { fontSize: 12, color: '#D32F2F', fontFamily: FONT_FAMILY.urbanistBold, marginTop: 8 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 12 },
   cancelBtn: { flex: 1, paddingVertical: 11, borderRadius: 8, backgroundColor: '#EEE', alignItems: 'center' },
