@@ -570,6 +570,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     setDropdownsLoading(p => ({ ...p, purposesOfVisit: true }));
     try {
       const purposesOfVisit = await fetchPurposeOfVisitDropdown();
+      console.log('[VehicleTrackingForm] loadPurposes — fetched count:', purposesOfVisit?.length || 0, 'names:', (purposesOfVisit || []).map(p => p.name));
       setDropdowns(prev => ({ ...prev, purposesOfVisit: purposesOfVisit || [] }));
     } catch (err) {
       console.warn('Failed to load Purpose of Visit dropdown', err);
@@ -1492,6 +1493,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   };
 
   const openDropdown = (type) => {
+    const data = dropdownDataFor(type);
+    console.log('[VehicleTrackingForm] openDropdown', type, '— item count at open:', data.length, 'names:', data.map(d => d.name));
     setSelectedType({ type });
     setIsVisible(true);
     ensureDropdownLoaded(type);
@@ -3254,7 +3257,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
               </Pressable>
             </View>
             <FlatList
-              data={dropdownDataFor(selectedType?.type)}
+              data={(() => { const d = dropdownDataFor(selectedType?.type); if (isVisible) console.log('[VehicleTrackingForm] modal render — type:', selectedType?.type, 'rows:', d.length); return d; })()}
               keyExtractor={(item) => item._id?.toString() || item.name}
               renderItem={({ item }) => (
                 <TouchableOpacity

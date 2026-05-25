@@ -2,7 +2,11 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ODOO_BASE_URL from '@api/config/odooConfig';
 
-// Fetch purposes of visit from Odoo using JSON-RPC (model: vehicle.purpose)
+// Fetch purposes of visit from Odoo using JSON-RPC. The model is
+// visit.purpose (shared with customer_visit). The old vehicle.purpose
+// model + table still exist for backward-compatibility but are dead —
+// no Odoo menu writes to it. vehicle.tracking.purpose_of_visit_id
+// already references visit.purpose, so saved ids line up natively.
 export const fetchPurposeOfVisitDropdown = async () => {
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -18,7 +22,7 @@ export const fetchPurposeOfVisitDropdown = async () => {
         jsonrpc: '2.0',
         method: 'call',
         params: {
-          model: 'vehicle.purpose',
+          model: 'visit.purpose',
           method: 'search_read',
           args: [[]],
           kwargs: {
@@ -30,10 +34,11 @@ export const fetchPurposeOfVisitDropdown = async () => {
       { headers }
     );
     if (response.data.error) {
-      console.error('Odoo JSON-RPC error (vehicle.purpose):', response.data.error);
+      console.error('Odoo JSON-RPC error (visit.purpose):', response.data.error);
       throw new Error('Odoo JSON-RPC error');
     }
     const purposes = response.data.result || [];
+    console.log('[purposeOfVisitApi] visit.purpose.search_read — raw count from server:', purposes.length, 'names:', purposes.map(p => p.name));
     return purposes.map(item => ({
       _id: item.id,
       name: item.name || '',

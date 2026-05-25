@@ -341,23 +341,8 @@ const VisitForm = ({ navigation, route }) => {
           employees: employees.map(e => ({ id: e.id, label: e.name })),
           visitPurpose: purposes.map(p => ({ id: p.id, label: p.name })),
         });
-        // Prefill Visit Purpose when navigated in from FieldAttendance's
-        // "Create New Visit" CTA — the caller passes the source trip's
-        // purpose_of_visit_id, we resolve it against the purposes list and
-        // pre-select the dropdown.
-        const prefillPurposeId = route?.params?.prefillPurposeId;
-        if (prefillPurposeId) {
-          const matchPurpose = purposes.find(p => Number(p.id) === Number(prefillPurposeId));
-          if (matchPurpose) {
-            console.log('[VisitForm] prefill purpose from source trip:', matchPurpose.name);
-            setFormData(prev => ({
-              ...prev,
-              visitPurpose: { id: matchPurpose.id, label: matchPurpose.name },
-            }));
-          } else {
-            console.log('[VisitForm] prefillPurposeId', prefillPurposeId, 'not found in', purposes.length, 'purposes');
-          }
-        }
+        // Prefill of Visit Purpose lives in its own effect below — must
+        // re-run on every navigation, not just first mount.
         if (!formData.visitedBy) {
           const userName = currentUser?.related_profile?.name || currentUser?.name || '';
           const match = employees.find(e => e.name?.toLowerCase() === userName?.toLowerCase());
@@ -386,6 +371,36 @@ const VisitForm = ({ navigation, route }) => {
     } catch (e) { console.log('[VisitForm] networkStatus.subscribe failed:', e?.message); }
     return () => { if (typeof networkUnsub === 'function') networkUnsub(); };
   }, []);
+
+  // Prefill Visit Purpose from FieldAttendance's "Create New Visit" CTA.
+  // Lives in its own effect (not the mount one) because React Navigation
+  // reuses the VisitForm screen instance when navigate() targets a screen
+  // already in the stack — the mount effect doesn't re-fire on re-entry,
+  // so the previous trip's prefilled purpose would persist. Watching the
+  // route params + dropdown list makes this self-correcting.
+  useEffect(() => {
+    const prefillPurposeId = route?.params?.prefillPurposeId;
+    const prefillPurposeName = route?.params?.prefillPurposeName;
+    if (!prefillPurposeId && !prefillPurposeName) return;
+    if (!dropdowns.visitPurpose?.length) return;
+    console.log('[VisitForm] (re-entry) prefill attempt:', { prefillPurposeId, prefillPurposeName, visitPurposesLoaded: dropdowns.visitPurpose.length });
+    let matchPurpose = null;
+    if (prefillPurposeName) {
+      const want = String(prefillPurposeName).trim().toLowerCase();
+      matchPurpose = dropdowns.visitPurpose.find(p => String(p.label).trim().toLowerCase() === want);
+      if (matchPurpose) console.log('[VisitForm] (re-entry) matched by NAME:', matchPurpose.label, '(id', matchPurpose.id, ')');
+    }
+    if (!matchPurpose && prefillPurposeId && !prefillPurposeName) {
+      matchPurpose = dropdowns.visitPurpose.find(p => Number(p.id) === Number(prefillPurposeId));
+      if (matchPurpose) console.log('[VisitForm] (re-entry) matched by ID fallback:', matchPurpose.label, '(id', matchPurpose.id, ')');
+    }
+    if (matchPurpose) {
+      console.log('[VisitForm] (re-entry) applying →', { id: matchPurpose.id, label: matchPurpose.label });
+      setFormData(prev => ({ ...prev, visitPurpose: { id: matchPurpose.id, label: matchPurpose.label } }));
+    } else {
+      console.warn('[VisitForm] (re-entry) prefill FAILED — add a visit.purpose record named exactly:', prefillPurposeName, '— params:', { prefillPurposeId, prefillPurposeName });
+    }
+  }, [route?.params?.prefillPurposeId, route?.params?.prefillPurposeName, dropdowns.visitPurpose]);
 
   // Voice recording functions
   const startRecording = async () => {

@@ -466,13 +466,14 @@ const FieldAttendanceSection = ({
   const handleCreateNewVisit = (params) => {
     // Visit picker is only reachable from outbound mode.
     lastActiveSheetRef.current = 'outbound';
-    // The popup forwards the selected source trip's purpose_of_visit_id so
-    // VisitForm can prefill the Purpose dropdown — only this entry path
-    // carries that signal.
+    // The popup forwards both the id and the name of the source trip's
+    // purpose so VisitForm can prefill the Purpose dropdown — name is the
+    // reliable matcher across the two Odoo models.
     const prefillPurposeId = params?.purposeOfVisitId || null;
-    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound, prefillPurposeId:', prefillPurposeId, 'navigate → VisitForm');
+    const prefillPurposeName = params?.purposeOfVisitName || null;
+    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound', { prefillPurposeId, prefillPurposeName });
     closeAllSheets();
-    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance', prefillPurposeId });
+    navigation.navigate('VisitForm', { returnTo: 'fieldAttendance', prefillPurposeId, prefillPurposeName });
   };
 
   // ---------- Mutations ----------
