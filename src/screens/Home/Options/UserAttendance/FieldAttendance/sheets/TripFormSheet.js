@@ -219,10 +219,16 @@ const TripFormSheet = ({
       setErrorText('Start KM is required and must be greater than 0.');
       return;
     }
-    if (needsVisit && !selectedVisitId) {
-      console.warn(TAG, '  validation failed: outbound mode needs a visit');
+    // Outbound now supports a two-phase flow — saving with just the trip is
+    // allowed; FA will show a Pending card with "Enter Visits" once the
+    // user arrives at the visit location. Other modes still require a visit.
+    if (mode !== 'outbound' && needsVisit && !selectedVisitId) {
+      console.warn(TAG, '  validation failed: this mode needs a visit');
       setErrorText('Please pick a customer visit.');
       return;
+    }
+    if (mode === 'outbound' && !selectedVisitId) {
+      console.log(TAG, '  outbound Save with no visit → parent will commit as pending');
     }
     if (needsRouteRadio && !returnLegType) {
       console.warn(TAG, '  validation failed: return mode needs a leg type');
@@ -366,73 +372,21 @@ const TripFormSheet = ({
                 </>
               )}
 
-              {/* Visit picker (outbound only) — gated on selectedTrip so the
-                  field only appears AFTER a source trip is attached. Mirrors
-                  the Odoo module's "Add Additional Trip" form, where the
-                  Visit row reveals itself only once Source Trip has a value.
-                  Same Create-CTA shortcut as the trip block above. */}
+              {/* Outbound (secondary/additional) reminder banner: the
+                  visit must be created at the actual visit location so
+                  the customer.visit lat/lng reflects where the user
+                  arrived, not where the trip was filled out. The visit
+                  picker / Create-New-Visit CTA is intentionally NOT
+                  shown in the popup — the user saves the trip-only here,
+                  then taps "Enter Visits" on the FA Pending Trip Card
+                  once they reach the visit place. */}
               {needsVisit && selectedTrip ? (
-                <>
-                  <Text style={styles.label}>Customer Visit *</Text>
-                  {selectedVisit ? (
-                    /* Locked display with X to clear — same pattern as the
-                        trip field above. */
-                    <View style={styles.lockedField}>
-                      <Text style={styles.fieldVal} numberOfLines={1}>
-                        {`${selectedVisit.name || `Visit #${selectedVisit.id}`} — ${(selectedVisit.partner_id?.[1] || selectedVisit.customer || '')}`}
-                      </Text>
-                      <TouchableOpacity
-                        onPress={() => { setSelectedVisitId(null); setErrorText(''); }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        disabled={saving}
-                      >
-                        <MaterialIcons name="close" size={18} color="#888" />
-                      </TouchableOpacity>
-                    </View>
-                  ) : onCreateNewVisit ? (
-                    <TouchableOpacity
-                      style={styles.createCta}
-                      onPress={() => {
-                        // Pass the selected trip's purpose_of_visit_id AND name
-                        // so VisitForm can prefill its Purpose dropdown. Name
-                        // is the reliable key — id matches across vehicle.purpose
-                        // and visit.purpose only by accident, names usually match.
-                        const pidArr = Array.isArray(selectedTrip?.purpose_of_visit_id) ? selectedTrip.purpose_of_visit_id : null;
-                        const pid = pidArr ? pidArr[0] : selectedTrip?.purpose_of_visit_id;
-                        const pname = pidArr ? pidArr[1] : null;
-                        // Also forward sourceTripId so the parent can stash
-                        // the currently-picked trip in pendingTripId before
-                        // navigating — otherwise picker selection is lost
-                        // when the popup closes for navigation to VisitForm.
-                        const tripId = selectedTrip?.id || selectedTripId || null;
-                        console.log(TAG, 'Create New Visit tapped — forwarding purpose:', { purposeOfVisitId: pid, purposeOfVisitName: pname, sourceTripId: tripId });
-                        onCreateNewVisit({ purposeOfVisitId: pid || null, purposeOfVisitName: pname || null, sourceTripId: tripId });
-                      }}
-                      disabled={saving}
-                      activeOpacity={0.85}
-                    >
-                      <View style={styles.createCtaIcon}>
-                        <MaterialIcons name="add" size={18} color="#fff" />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.createCtaTitle}>Create New Visit</Text>
-                        <Text style={styles.createCtaSub}>Open Customer Visit form to log a new visit</Text>
-                      </View>
-                      <MaterialIcons name="chevron-right" size={22} color={FIELD_COLOR} />
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.fieldBtn}
-                      onPress={() => { setVisitPickerOpen(true); loadVisits(); }}
-                      disabled={saving}
-                    >
-                      <Text style={[styles.fieldVal, styles.placeholder]} numberOfLines={1}>
-                        Tap to select a visit…
-                      </Text>
-                      <MaterialIcons name="chevron-right" size={20} color="#888" />
-                    </TouchableOpacity>
-                  )}
-                </>
+                <View style={styles.visitReminderBanner}>
+                  <MaterialIcons name="info-outline" size={18} color="#856404" />
+                  <Text style={styles.visitReminderText}>
+                    Save the trip first. Once you reach the visit, tap "Enter Visits" on the trip card to add it with the correct location.
+                  </Text>
+                </View>
               ) : null}
 
               {errorText ? <Text style={styles.error}>{errorText}</Text> : null}
@@ -512,6 +466,18 @@ const styles = StyleSheet.create({
   },
   fromBannerText: { flex: 1, fontSize: 11, color: '#1565C0', fontFamily: FONT_FAMILY.urbanistMedium },
   label: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold, color: '#666', marginTop: 12, marginBottom: 4 },
+  // Yellow visit reminder banner — outbound only, between Source Trip and
+  // Customer Visit, reminding the user to defer visit creation until
+  // they're at the visit location.
+  visitReminderBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FFF3CD', borderColor: '#FFE69C', borderWidth: 1,
+    borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginTop: 12,
+  },
+  visitReminderText: {
+    flex: 1, fontSize: 12, color: '#856404',
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
   fieldBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: '#F5F5F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 12,

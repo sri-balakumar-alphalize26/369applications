@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
+import { getPendingSecondaryTrip } from '@utils/pendingSecondaryTrip';
 import { StyledAlertModal } from '@components/Modal';
 import { View, Text, StyleSheet, TouchableOpacity, KeyboardAvoidingView, Platform, Dimensions, Modal, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from '@components/containers';
@@ -655,6 +656,31 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       console.log('[UA-CHECKOUT]   no fieldData.attendance_id → bail');
       return;
     }
+    // Block check-out while a pending secondary trip is still waiting
+    // for its customer visit. The user must complete the trip+visit pair
+    // before they can check out.
+    (async () => {
+      const pending = await getPendingSecondaryTrip();
+      if (pending && Number(pending.attendanceId) === Number(fieldData.attendance_id)) {
+        console.log('[UA-CHECKOUT]   blocked: pending secondary trip has no visit yet', pending);
+        showAlert({
+          message: 'You have a pending trip without a customer visit. Please tap "Enter Visits" on the pending trip card and complete the visit before checking out.',
+          confirmText: 'OK',
+          cancelText: null,
+          onConfirm: hideAlert,
+          onCancel: hideAlert,
+        });
+        return;
+      }
+      // No pending block — proceed with the existing check-out flow.
+      _continueFieldCheckOut();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldData, showAlert, hideAlert]);
+
+  // Original check-out body extracted so the pending-trip guard above can
+  // short-circuit without duplicating the rest of the logic.
+  const _continueFieldCheckOut = useCallback(() => {
     // Cross-mode guard: if the open attendance was created via Office
     // (attendance_source = 'manual'), block field check-out and direct
     // the user back to Office mode. Defensive — usually fieldData would

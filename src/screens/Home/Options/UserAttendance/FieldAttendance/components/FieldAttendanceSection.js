@@ -323,22 +323,6 @@ const FieldAttendanceSection = ({
 
       if (!sheet) return;
 
-      // Two-phase secondary flow: user came back from VehicleTrackingForm
-      // after Start Trip in outbound mode. The VehicleTrackingForm just
-      // persisted a pendingSecondaryTrip marker — instead of re-opening
-      // the trip popup, let FA refresh and the marker-loading effect will
-      // render the Pending Trip Card. Skip the generic re-open below.
-      if (sheet === 'outbound' && pendingTripId) {
-        const stored = await getPendingSecondaryTrip();
-        if (stored && Number(stored.attendanceId) === Number(attendanceId)
-            && Number(stored.tripId) === Number(pendingTripId)) {
-          console.log(TAG, 'pending secondary trip persisted — staying on FA, showing Pending card');
-          setPendingSecondary(stored);
-          setAutoOpenPickerOnRestore(false);
-          return;
-        }
-      }
-
       // NOTE: the old "primary + pendingTripId → auto-attach silently" branch
       // was removed because the user wants Start Trip to redirect to the
       // popup (consistent with outbound), not skip to the bare FA page. The
@@ -541,11 +525,21 @@ const FieldAttendanceSection = ({
   // trip via createAdditionalTripOdoo (see the 'pending_attach' branch).
   const handlePendingEnterVisits = (p) => {
     if (!p?.tripId) return;
-    console.log(TAG, 'handlePendingEnterVisits — navigating to VisitForm', { tripId: p.tripId });
+    // Forward the trip's purpose_of_visit_id so VisitForm can prefill its
+    // Purpose dropdown (same name-match logic used elsewhere). Read from
+    // the hydrated trip record; fall back to null if not yet hydrated.
+    const purposeRaw = pendingTripHydrated?.purpose_of_visit_id;
+    const purposeArr = Array.isArray(purposeRaw) ? purposeRaw : null;
+    const prefillPurposeId = purposeArr ? purposeArr[0] : (purposeRaw || null);
+    const prefillPurposeName = purposeArr ? purposeArr[1] : null;
+    console.log(TAG, 'handlePendingEnterVisits — navigating to VisitForm',
+      { tripId: p.tripId, prefillPurposeId, prefillPurposeName });
     lastActiveSheetRef.current = 'pending_attach';
     navigation.navigate('VisitForm', {
       returnTo: 'fieldAttendance',
       attachToPendingTripId: p.tripId,
+      prefillPurposeId,
+      prefillPurposeName,
     });
   };
 
@@ -683,6 +677,34 @@ const FieldAttendanceSection = ({
 
   const handleSaveOutbound = async ({ tripId, visitId, startKm }) => {
     console.log(TAG, 'handleSaveOutbound start', { tripId, visitId, startKm });
+    // Two-phase secondary flow branch: when the user taps Save in the popup
+    // without picking a visit, we DON'T call createAdditionalTripOdoo (that
+    // would require a visit_id). VehicleTrackingForm already persisted the
+    // pending marker after Start Trip; here we just close the popup and
+    // surface the Pending Trip Card on FA so the user can drive to the
+    // visit location and add the visit later via "Enter Visits".
+    if (!visitId) {
+      console.log(TAG, 'handleSaveOutbound — no visit picked → committing as pending');
+      try {
+        const stored = await getPendingSecondaryTrip();
+        if (stored && Number(stored.attendanceId) === Number(attendanceId)
+            && Number(stored.tripId) === Number(tripId)) {
+          setPendingSecondary(stored);
+          console.log(TAG, 'handleSaveOutbound — pending marker promoted to UI state', stored);
+        } else {
+          console.warn(TAG, 'handleSaveOutbound — no matching pending marker found for tripId=', tripId,
+            'stored=', stored);
+        }
+        showToastMessage('Trip saved — enter customer visit when you arrive');
+        setOutboundOpen(false);
+        setPendingTripId(null);
+        setPendingVisitId(null);
+      } catch (e) {
+        console.error(TAG, 'handleSaveOutbound pending-branch threw:', e?.message);
+        showToastMessage(e?.message || 'Failed to save trip');
+      } finally { setBusy(false); }
+      return;
+    }
     setBusy(true);
     try {
       const res = await createAdditionalTripOdoo(attendanceId, { tripId, visitId, startKm });
@@ -691,7 +713,7 @@ const FieldAttendanceSection = ({
         showToastMessage(errMsg(res.error));
         return;
       }
-      console.log(TAG, 'createAdditionalTrip OK');
+      console.log(TAG, 'createAdditionalTrip OK — trip line created with visit attached');
       showToastMessage('Trip added');
       setOutboundOpen(false);
       setPendingTripId(null);
@@ -783,6 +805,17 @@ const FieldAttendanceSection = ({
 
   const handleCheckOut = async () => {
     console.log(TAG, 'handleCheckOut clicked — FORCE-opening Close Previous Trip popup');
+    // Block check-out while a pending secondary trip is still waiting for
+    // its customer visit. The user must complete the trip+visit pair
+    // (via Enter Visits on the pending card) before they can check out.
+    if (pendingSecondary) {
+      console.log(TAG, '  blocked: pending secondary trip has no visit yet', pendingSecondary);
+      showAlert({
+        message: 'You have a pending trip without a customer visit. Please tap "Enter Visits" on the pending trip card and complete the visit before checking out.',
+        confirmText: 'OK',
+      });
+      return;
+    }
     // FORCE: always open the Close Previous Trip popup when the user taps
     // Check Out. The popup itself is the confirmation step (user enters
     // End KM and taps Save & Checkout). No prior alert, no isOpen guard.
@@ -859,7 +892,7 @@ const FieldAttendanceSection = ({
   const showPrimaryTripBtn = !state.source_trip && !hasTripLines && !isCheckedOut && !blockedByPending;
   const showSecondaryBtn = !hasTripLines && !isCheckedOut && !blockedByPending;
   const showAddAdditionalOutboundBtn = hasTripLines && state.show_primary_return_button && !isCheckedOut && !blockedByPending;
-  const showViaOfficeOrDirectBtn = state.show_primary_return_button && !isCheckedOut;
+  const showViaOfficeOrDirectBtn = state.show_primary_return_button && !isCheckedOut && !blockedByPending;
   const showAddAdditionalBottomBtn = state.has_return_trip_lines && !isCheckedOut && !blockedByPending;
   const showOfficeToHomeBtn = state.show_office_to_home_button && !isCheckedOut;
   const att = state.attendance;
@@ -890,10 +923,14 @@ const FieldAttendanceSection = ({
           onViewVisits={() => handleViewVisits(state.source_visits)}
           onAddFuel={() => handleAddFuel(state.source_trip.id)}
         />
-      ) : hasTripLines ? (
+      ) : (hasTripLines || pendingSecondary) ? (
         // Employee skipped the Home→Office primary and went straight to a
         // Home→Visit secondary. The empty-state card would read as an error;
         // a yellow info banner makes it clear this is a valid alternate flow.
+        // Also fires while a secondary trip is in the pending phase
+        // (trip created, visit not yet attached) so the user doesn't see
+        // the misleading "No primary trip set up yet" between Start Trip
+        // and entering the visit.
         <View style={styles.infoBanner}>
           <MaterialIcons name="info-outline" size={18} color="#856404" />
           <Text style={styles.infoBannerText}>
