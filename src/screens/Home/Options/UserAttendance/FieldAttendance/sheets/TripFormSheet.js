@@ -107,14 +107,19 @@ const TripFormSheet = ({
   // runs and sets selectedTripId to null, then the second commit arrives
   // with initialSelectedTripId set but the open-effect doesn't re-run. This
   // standalone effect catches that second commit and syncs the selection.
+  // Including loadTrips + availableTripIds in deps so the effect re-fires
+  // with the LATEST loadTrips closure. Without these deps the captured
+  // loadTrips was the one from the previous render — when availableTripIds
+  // was empty — so its idSet ended up empty and the picker showed the
+  // "Tap to select a trip" placeholder instead of the just-created trip.
+  // This was the outbound-without-primary regression.
   useEffect(() => {
     if (visible && initialSelectedTripId) {
       console.log(TAG, 'late-sync initialSelectedTripId →', initialSelectedTripId);
       setSelectedTripId(initialSelectedTripId);
       loadTrips();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, initialSelectedTripId]);
+  }, [visible, initialSelectedTripId, availableTripIds, loadTrips]);
 
   useEffect(() => {
     if (visible && initialSelectedVisitId) {
@@ -122,8 +127,7 @@ const TripFormSheet = ({
       setSelectedVisitId(initialSelectedVisitId);
       loadVisits();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, initialSelectedVisitId]);
+  }, [visible, initialSelectedVisitId, availableVisitIds, loadVisits]);
 
   // Load full trip / visit objects only for the available_*_ids list — server
   // already filtered by used-trip exclusion and (for trips) source location.
@@ -396,8 +400,13 @@ const TripFormSheet = ({
                         const pidArr = Array.isArray(selectedTrip?.purpose_of_visit_id) ? selectedTrip.purpose_of_visit_id : null;
                         const pid = pidArr ? pidArr[0] : selectedTrip?.purpose_of_visit_id;
                         const pname = pidArr ? pidArr[1] : null;
-                        console.log(TAG, 'Create New Visit tapped — forwarding purpose:', { purposeOfVisitId: pid, purposeOfVisitName: pname, sourceTripId: selectedTrip?.id });
-                        onCreateNewVisit({ purposeOfVisitId: pid || null, purposeOfVisitName: pname || null });
+                        // Also forward sourceTripId so the parent can stash
+                        // the currently-picked trip in pendingTripId before
+                        // navigating — otherwise picker selection is lost
+                        // when the popup closes for navigation to VisitForm.
+                        const tripId = selectedTrip?.id || selectedTripId || null;
+                        console.log(TAG, 'Create New Visit tapped — forwarding purpose:', { purposeOfVisitId: pid, purposeOfVisitName: pname, sourceTripId: tripId });
+                        onCreateNewVisit({ purposeOfVisitId: pid || null, purposeOfVisitName: pname || null, sourceTripId: tripId });
                       }}
                       disabled={saving}
                       activeOpacity={0.85}
@@ -462,7 +471,10 @@ const TripFormSheet = ({
         selectedId={selectedVisitId}
         onClose={() => setVisitPickerOpen(false)}
         onSelect={(v) => { setSelectedVisitId(v?.id); setVisitPickerOpen(false); }}
-        onCreateNew={onCreateNewVisit ? () => { setVisitPickerOpen(false); onCreateNewVisit(); } : undefined}
+        onCreateNew={onCreateNewVisit ? () => {
+          setVisitPickerOpen(false);
+          onCreateNewVisit({ sourceTripId: selectedTrip?.id || selectedTripId || null });
+        } : undefined}
       />
     </Modal>
   );

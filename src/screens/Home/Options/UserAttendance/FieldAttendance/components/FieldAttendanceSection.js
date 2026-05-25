@@ -468,10 +468,14 @@ const FieldAttendanceSection = ({
     lastActiveSheetRef.current = 'outbound';
     // The popup forwards both the id and the name of the source trip's
     // purpose so VisitForm can prefill the Purpose dropdown — name is the
-    // reliable matcher across the two Odoo models.
+    // reliable matcher across the two Odoo models. It also forwards the
+    // currently-selected sourceTripId so we can stash it before navigating;
+    // otherwise picker selection is lost across the visit-create round trip.
     const prefillPurposeId = params?.purposeOfVisitId || null;
     const prefillPurposeName = params?.purposeOfVisitName || null;
-    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound', { prefillPurposeId, prefillPurposeName });
+    const sourceTripId = params?.sourceTripId || null;
+    console.log(TAG, 'handleCreateNewVisit — lastActiveSheet: outbound', { prefillPurposeId, prefillPurposeName, sourceTripId });
+    if (sourceTripId) setPendingTripId(Number(sourceTripId));
     closeAllSheets();
     navigation.navigate('VisitForm', { returnTo: 'fieldAttendance', prefillPurposeId, prefillPurposeName });
   };
@@ -735,6 +739,7 @@ const FieldAttendanceSection = ({
           readOnly={isCheckedOut}
           onOpenTrip={() => handleOpenTrip(state.source_trip.id)}
           onViewVisits={() => handleViewVisits(state.source_visits)}
+          onAddFuel={() => handleAddFuel(state.source_trip.id)}
         />
       ) : (
         <View style={styles.emptyCard}>
@@ -900,7 +905,7 @@ const FieldAttendanceSection = ({
         initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSavePrimary}
-        onClose={() => { setPrimaryOpen(false); setPendingTripId(null); }}
+        onClose={() => { setPrimaryOpen(false); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -917,7 +922,7 @@ const FieldAttendanceSection = ({
         initialSelectedVisitId={pendingVisitId}
         saving={busy}
         onSave={handleSaveOutbound}
-        onClose={() => { setOutboundOpen(false); setPendingTripId(null); setPendingVisitId(null); }}
+        onClose={() => { setOutboundOpen(false); }}
         onCreateNewTrip={handleCreateNewTrip}
         onCreateNewVisit={handleCreateNewVisit}
         onEditTrip={handleEditTripFromPicker}
@@ -934,7 +939,7 @@ const FieldAttendanceSection = ({
         initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSaveReturn}
-        onClose={() => { setReturnOpen(false); setPendingTripId(null); }}
+        onClose={() => { setReturnOpen(false); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -950,7 +955,7 @@ const FieldAttendanceSection = ({
         initialSelectedTripId={pendingTripId}
         saving={busy}
         onSave={handleSaveOfficeToHome}
-        onClose={() => { setOfficeHomeOpen(false); setPendingTripId(null); }}
+        onClose={() => { setOfficeHomeOpen(false); }}
         onCreateNewTrip={handleCreateNewTrip}
         onEditTrip={handleEditTripFromPicker}
         autoOpenPicker={autoOpenPickerOnRestore}
@@ -1029,8 +1034,13 @@ const FieldAttendanceSection = ({
 // ============================================================================
 // Sub-components
 // ============================================================================
-const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits }) => {
+const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
   const hasVisits = Array.isArray(visits) && visits.length > 0;
+  const fuelCount = Number(trip?.fuel_log_count || 0);
+  const fuelAdded = fuelCount > 0 || Number(trip?.total_fuel_litres || 0) > 0;
+  const fuelBadge = fuelAdded
+    ? (fuelCount > 0 ? `${fuelCount} fuel log${fuelCount === 1 ? '' : 's'} added` : 'Fuel added')
+    : '';
   return (
     <View style={styles.tripCard}>
       <Row k={`${label}:`} v={trip.ref || `#${trip.id}`} />
@@ -1041,6 +1051,8 @@ const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits }) =
         readOnly={readOnly}
         onOpenTrip={onOpenTrip}
         onViewVisits={hasVisits ? onViewVisits : null}
+        onAddFuel={trip?.trip_status === 'in_progress' && onAddFuel ? onAddFuel : null}
+        fuelBadge={fuelBadge}
       />
     </View>
   );
