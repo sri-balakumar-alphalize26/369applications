@@ -515,6 +515,8 @@ export const fetchTodayFieldAttendanceOdoo = async (employeeId) => {
   if (response.data?.error) {
     throw new Error(response.data.error.data?.message || 'Odoo error');
   }
+  // [FA-DIAG] Raw server verdict for the cross-midnight check-out investigation.
+  console.log('[FA-DIAG] get_today_field_attendance raw result=', JSON.stringify(response.data?.result));
   return response.data?.result || { status: 'no_trip', trip: null, visits: [], attendance_id: null };
 };
 

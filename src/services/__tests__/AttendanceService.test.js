@@ -218,6 +218,54 @@ describe('AttendanceService — getTodayAttendanceWithLateInfo', () => {
   });
 });
 
+describe('AttendanceService — getTodayAttendanceByEmployeeId', () => {
+  let mock;
+  beforeEach(() => { mock = new MockAdapter(axios); });
+  afterEach(() => { mock.restore(); });
+
+  // Reply differently to the two search_read calls: the today-bounded query
+  // contains a "00:00:00" lower bound; the date-agnostic open-record fallback
+  // does not (it filters on check_out = false with limit 1).
+  const routeByQuery = (todayResult, openResult) => {
+    mock.onPost(/\/web\/dataset\/call_kw/).reply((config) => {
+      const isTodayQuery = String(config.data).includes('00:00:00');
+      return [200, { result: isTodayQuery ? todayResult : openResult }];
+    });
+  };
+
+  test('returns the open record dated today (same-day check-in)', async () => {
+    routeByQuery(
+      [{ id: 11, employee_id: [5, 'Alice'], check_in: '2026-05-29 04:00:00', check_out: false }],
+      []
+    );
+    const result = await Service.getTodayAttendanceByEmployeeId(5, 'Alice');
+    expect(result).not.toBeNull();
+    expect(result.id).toBe(11);
+    expect(result.checkOut).toBeNull();
+  });
+
+  test('recovers a carried-over open record from a previous day (after midnight)', async () => {
+    // Today has no records, but an open check-in from the 29th never closed.
+    routeByQuery(
+      [],
+      [{ id: 99, employee_id: [5, 'Alice'], check_in: '2026-05-29 17:30:00', check_out: false }]
+    );
+    const result = await Service.getTodayAttendanceByEmployeeId(5, 'Alice');
+    expect(result).not.toBeNull();
+    expect(result.id).toBe(99);          // yesterday's open record → Check Out stays available
+    expect(result.checkOut).toBeNull();
+  });
+
+  test('returns null when no open record exists anywhere (ready for new check-in)', async () => {
+    routeByQuery(
+      [{ id: 12, employee_id: [5, 'Alice'], check_in: '2026-05-29 04:00:00', check_out: '2026-05-29 13:00:00' }],
+      []
+    );
+    const result = await Service.getTodayAttendanceByEmployeeId(5, 'Alice');
+    expect(result).toBeNull();
+  });
+});
+
 describe('AttendanceService — submitLeaveRequest', () => {
   let mock;
   beforeEach(() => { mock = new MockAdapter(axios); });

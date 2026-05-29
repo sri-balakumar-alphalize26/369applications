@@ -12,7 +12,7 @@ import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
-import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, getCurrentLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
+import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getLastOpenAttendance, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, getCurrentLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
 import {
   fetchTodayFieldAttendanceOdoo,
   createFieldAttendanceOdoo,
@@ -385,6 +385,34 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       const result = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id);
       setFieldStatus(result?.status || 'no_trip');
       setFieldData(result || null);
+
+      // -------------------------------------------------------------------
+      // [FA-DIAG] Cross-midnight diagnostic logging.
+      // Field state is decided server-side by get_today_field_attendance,
+      // which filters to TODAY's window — so after midnight a still-open
+      // record from a previous day is reported as 'eligible' (Check In)
+      // instead of 'checked_in_open' (Check Out). The server's 'eligible'
+      // response carries no dates, so we ALSO query the last open record
+      // (date-agnostic) here purely to print the truth. Logging only — does
+      // not change any behavior. Remove once the field fix is verified.
+      // -------------------------------------------------------------------
+      try {
+        console.log('[FA-DIAG] device now=', new Date().toString());
+        console.log('[FA-DIAG] server verdict → status=', result?.status,
+          'attId=', result?.attendance_id, 'checkIn=', result?.check_in, 'checkOut=', result?.check_out);
+        const openRec = await getLastOpenAttendance(verifiedEmployee.id);
+        if (openRec) {
+          console.log('[FA-DIAG] ACTUAL last OPEN record → id=', openRec.id,
+            'check_in=', openRec.check_in, 'check_out=', openRec.check_out,
+            'source=', openRec.attendance_source);
+          console.log('[FA-DIAG] → Check OUT should be shown for attendance', openRec.id,
+            '(server status was', (result?.status) + ')');
+        } else {
+          console.log('[FA-DIAG] no open record anywhere → Check In is correct');
+        }
+      } catch (diagErr) {
+        console.log('[FA-DIAG] diagnostic skipped:', diagErr?.message);
+      }
     } catch (e) {
       console.error('[FieldAttendance] fetch error:', e?.message);
       setFieldStatus('no_trip');

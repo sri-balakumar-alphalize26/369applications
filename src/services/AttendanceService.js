@@ -1199,6 +1199,46 @@ export const getTodayAttendance = async (userId) => {
   }
 };
 
+// Fetch the employee's most recent OPEN attendance (check_out is empty) with no
+// date bound. Used to recover a session that was checked in on a previous day
+// and never checked out, so the app keeps offering Check Out across midnight.
+// Returns the raw Odoo record (or null). `headers` is optional and reused by
+// callers that already authenticated to avoid a second auth round-trip.
+export const getLastOpenAttendance = async (employeeId, headers) => {
+  try {
+    const authHeaders = headers || (await getOdooAuthHeaders());
+    const response = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'hr.attendance',
+          method: 'search_read',
+          args: [[
+            ['employee_id', '=', employeeId],
+            ['check_out', '=', false],
+          ]],
+          kwargs: {
+            fields: [
+              'id', 'employee_id', 'check_in', 'check_out',
+              'attendance_source', 'is_late', 'late_minutes_display', 'deduction_amount',
+            ],
+            order: 'check_in desc',
+            limit: 1,
+          },
+        },
+      },
+      { headers: authHeaders }
+    );
+    const records = response.data?.result || [];
+    return records.length > 0 ? records[0] : null;
+  } catch (error) {
+    console.error('[Attendance] Error getting last open attendance:', error?.message);
+    return null;
+  }
+};
+
 // Get today's attendance by employee ID directly
 export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) => {
   console.log('[Attendance] Getting today attendance for employee:', employeeId);
@@ -1248,32 +1288,50 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
       );
     } catch (_) { /* ignore */ }
 
+    // Build the screen-facing object from a raw Odoo attendance record.
+    const buildFromRecord = (rec) => ({
+      id: rec.id,
+      employeeId: rec.employee_id?.[0],
+      employeeName: rec.employee_id?.[1] || employeeName,
+      checkIn: odooUtcToLocalDisplay(rec.check_in),
+      checkOut: null,
+      attendance_source: rec.attendance_source || 'manual',
+      is_late: !!rec.is_late,
+      late_minutes_display: rec.late_minutes_display || '',
+      deduction_amount: Number(rec.deduction_amount || 0),
+    });
+
     if (records.length > 0) {
       // Find the last OPEN attendance (no check_out) — supports multiple check-in/out per day
       const openRecord = records.find(r => !r.check_out);
       if (openRecord) {
         console.log('[Attendance] Found open attendance:', openRecord.id);
-        const built = {
-          id: openRecord.id,
-          employeeId: openRecord.employee_id?.[0],
-          employeeName: openRecord.employee_id?.[1] || employeeName,
-          checkIn: odooUtcToLocalDisplay(openRecord.check_in),
-          checkOut: null,
-          attendance_source: openRecord.attendance_source || 'manual',
-          is_late: !!openRecord.is_late,
-          late_minutes_display: openRecord.late_minutes_display || '',
-          deduction_amount: Number(openRecord.deduction_amount || 0),
-        };
+        const built = buildFromRecord(openRecord);
         await cachePut('todayAtt', employeeId, built);
         return built;
       }
-      // All records are closed — user can check-in again
-      console.log('[Attendance] All attendance records closed, ready for new check-in');
-      await cachePut('todayAtt', employeeId, null);
-      return null;
     }
 
-    console.log('[Attendance] No attendance found for today');
+    // No OPEN record dated today. Before declaring "ready for new check-in",
+    // look for an open record from a PREVIOUS day (e.g. checked in 11pm on the
+    // 29th, never checked out — after midnight it falls outside today's window).
+    // Mirrors Odoo's `attendance_state`: state is driven by the last record's
+    // open/closed status regardless of calendar date, so the carried-over
+    // session must still offer Check Out.
+    const carriedOver = await getLastOpenAttendance(employeeId, headers);
+    if (carriedOver) {
+      console.log('[Attendance] Found carried-over open attendance:', carriedOver.id);
+      const built = buildFromRecord(carriedOver);
+      await cachePut('todayAtt', employeeId, built);
+      return built;
+    }
+
+    if (records.length > 0) {
+      // Today's records exist but all are closed — user can check-in again
+      console.log('[Attendance] All attendance records closed, ready for new check-in');
+    } else {
+      console.log('[Attendance] No attendance found for today');
+    }
     await cachePut('todayAtt', employeeId, null);
     return null;
   } catch (error) {
@@ -1807,10 +1865,19 @@ export const getTodayAttendanceWithLateInfo = async (employeeId) => {
         params: {
           model: 'hr.attendance',
           method: 'search_read',
+          // Today's records OR any still-open record from a previous day. The
+          // open-record clause keeps a carried-over session's late banner /
+          // deduction visible after midnight (Odoo keys it off check_in, so it
+          // still reads as a late event on its check-in day). Prefix-notation
+          // domain: employee_id = X AND ( (check_in in today's window) OR
+          // (check_out is empty) ).
           args: [[
             ['employee_id', '=', employeeId],
+            '|',
+            '&',
             ['check_in', '>=', `${today} 00:00:00`],
             ['check_in', '<=', `${today} 23:59:59`],
+            ['check_out', '=', false],
           ]],
           kwargs: {
             fields: [
@@ -2786,6 +2853,7 @@ export default {
   checkOutToOdoo,
   getTodayAttendance,
   getTodayAttendanceByEmployeeId,
+  getLastOpenAttendance,
   getEmployeeIdFromUserId,
   getEmployeeByDeviceId,
   verifyEmployeePin,

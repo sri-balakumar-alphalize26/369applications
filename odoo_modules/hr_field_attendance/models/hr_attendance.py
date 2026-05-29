@@ -1108,6 +1108,36 @@ class HrAttendance(models.Model):
                 'check_out': str(existing.check_out) if existing.check_out else None,
             }
 
+        # No record dated today — but a session checked in on a PREVIOUS day may
+        # still be open (checked in late, never checked out, clock rolled past
+        # midnight). Odoo's attendance_state is driven by the last record's
+        # open/closed status, not the calendar date, so we must keep offering
+        # Check Out for that carried-over record instead of resetting to
+        # 'eligible' (Check In) — which would strand the open row and let the
+        # user create an overlapping duplicate.
+        open_att = Attendance.search([
+            ('employee_id', '=', employee.id),
+            ('check_out', '=', False),
+        ], limit=1, order='check_in desc')
+        if open_att:
+            if open_att.attendance_source == 'field':
+                return {
+                    'status': 'checked_in_open',
+                    'trip': self._serialize_trip(open_att.source_trip_id) if open_att.source_trip_id else None,
+                    'visits': [self._serialize_visit(v) for v in open_att.source_visit_ids],
+                    'attendance_id': open_att.id,
+                    'check_in': str(open_att.check_in) if open_att.check_in else None,
+                    'check_out': None,
+                }
+            return {
+                'status': 'manual_exists',
+                'trip': None,
+                'visits': [],
+                'attendance_id': open_att.id,
+                'check_in': str(open_att.check_in) if open_att.check_in else None,
+                'check_out': None,
+            }
+
         return {
             'status': 'eligible',
             'trip': None,
