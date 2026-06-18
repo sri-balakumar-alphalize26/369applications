@@ -125,6 +125,11 @@ class EasySales(models.Model):
         readonly=True,
         copy=False
     )
+    invoice_date = fields.Date(
+        related='invoice_id.invoice_date',
+        string='Invoice Date',
+        readonly=True,
+    )
     payment_ids = fields.Many2many(
         'account.payment',
         'easy_sales_payment_rel',

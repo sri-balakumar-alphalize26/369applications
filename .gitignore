@@ -34,3 +34,7 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# large media (kept locally, not in git)
+Demo Video/
+*.mp4
