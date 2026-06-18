@@ -80,15 +80,27 @@
                     </group>
 
                     <!-- Grand Totals Banner -->
+                    <field name="currency_id" invisible="1"/>
                     <group>
                         <group>
-                            <field name="grand_late_deduction" string="Total Late Deductions" readonly="1"/>
-                            <field name="grand_leave_deduction" string="Total Leave Deductions" readonly="1"/>
+                            <field name="grand_late_deduction" string="Total Late Deductions" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_leave_deduction" string="Total Leave Deductions" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
                         </group>
                         <group>
-                            <field name="grand_total_deduction" string="Grand Total Deductions" readonly="1"/>
-                            <field name="grand_wage" string="Total Wages" readonly="1"/>
-                            <field name="grand_final_amount" string="Grand Final Amount" readonly="1"/>
+                            <field name="grand_total_deduction" string="Grand Total Deductions" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_wage" string="Total Wages" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_full_salary" string="Total Full Salary" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_absence_shortfall" string="Total Absence Shortfall" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_final_amount" string="Total Present Pay" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                            <field name="grand_total_amount" string="Grand Total Amount" readonly="1"
+                                   widget="monetary" options="{'currency_field': 'currency_id'}"/>
                         </group>
                     </group>
 
@@ -99,23 +111,44 @@
                                 <list decoration-danger="total_deduction &gt; 0"
                                       decoration-success="total_deduction == 0"
                                       default_order="employee_name asc">
+                                    <field name="currency_id" column_invisible="1"/>
                                     <field name="employee_name"/>
-                                    <field name="department_name" optional="show"/>
-                                    <field name="total_working_days" string="Working Days"/>
+                                    <field name="department_name" optional="hide"/>
+                                    <field name="total_working_days" string="Month Days" optional="hide"/>
                                     <field name="total_present_days" string="Present Days"/>
+                                    <field name="absent_days" string="Absent" sum="Total"
+                                           decoration-danger="absent_days &gt; 0"/>
                                     <field name="late_days" string="Late Days"/>
                                     <field name="total_late_days_raw" string="Late (Raw)" optional="hide"/>
                                     <field name="grace_days" optional="hide"/>
                                     <field name="late_minutes" string="Late (Min)" optional="hide"/>
-                                    <field name="late_minutes_display" string="Late Time"/>
-                                    <field name="late_deduction" sum="Total"/>
-                                    <field name="paid_leave_days" sum="Total"/>
-                                    <field name="unpaid_leave_days" sum="Total"/>
-                                    <field name="leave_deduction" sum="Total"/>
-                                    <field name="wage" string="Wage" sum="Total"/>
-                                    <field name="total_deduction" sum="Grand Total"
-                                           decoration-danger="total_deduction &gt; 0"/>
-                                    <field name="final_amount" sum="Grand Total"/>
+                                    <field name="late_minutes_display" string="Late Time" optional="hide"/>
+                                    <field name="late_deduction" optional="hide"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="paid_leave_days" sum="Total" optional="hide"/>
+                                    <field name="unpaid_leave_days" sum="Total" optional="hide"/>
+                                    <field name="leave_deduction" string="Unpaid Leave Lost" sum="Total"
+                                           optional="hide"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="wage" string="Wage" sum="Total"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="per_day_rate" string="Per Day" optional="hide"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="payable_days" string="Days Paid" optional="hide"/>
+                                    <field name="total_deduction" string="Deductions" sum="Grand Total"
+                                           decoration-danger="total_deduction &gt; 0"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="full_salary" string="Full Salary" sum="Total"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="final_amount" string="Present Pay" sum="Grand Total"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="absence_shortfall" string="Absence Shortfall" sum="Total"
+                                           decoration-danger="absence_shortfall &lt; 0"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
+                                    <field name="total_amount" string="Total Amount" sum="Grand Total"
+                                           decoration-danger="total_amount &lt; 0"
+                                           decoration-bf="1"
+                                           widget="monetary" options="{'currency_field': 'currency_id'}"/>
                                     <!-- Drill-down buttons -->
                                     <button name="action_view_day_details" type="object"
                                             string="📋 Details" title="View Day-wise Details"
@@ -201,19 +234,23 @@
                             <field name="grace_days"/>
                             <field name="late_days" string="Late Days (After Grace)"/>
                             <field name="late_minutes_display" string="Total Late Time"/>
-                            <field name="late_deduction"/>
                         </group>
                     </group>
                     <group>
                         <group string="Leave Tracking">
                             <field name="paid_leave_days"/>
                             <field name="unpaid_leave_days"/>
-                            <field name="leave_deduction"/>
                         </group>
                         <group string="Salary">
-                            <field name="wage"/>
-                            <field name="total_deduction"/>
-                            <field name="final_amount"/>
+                            <field name="wage" string="Monthly Wage"/>
+                            <field name="per_day_rate"/>
+                            <field name="leave_deduction" string="Unpaid Leave Deduction"/>
+                            <field name="late_deduction" string="Late Deduction"/>
+                            <field name="total_deduction" string="Total Deductions"/>
+                            <field name="full_salary" string="Full Salary (Full Month)"/>
+                            <field name="final_amount" string="Present Pay"/>
+                            <field name="absence_shortfall" string="Absence Shortfall"/>
+                            <field name="total_amount" string="Total Amount"/>
                         </group>
                     </group>
                 </sheet>

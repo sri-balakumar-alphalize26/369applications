@@ -42,8 +42,9 @@
                                 <tr style="background: #875A7B; color: white;">
                                     <th style="padding: 4px 3px; border: 1px solid #ccc; text-align: left; white-space: nowrap;">Employee</th>
                                     <th style="padding: 4px 3px; border: 1px solid #ccc; text-align: left; white-space: nowrap;">Dept</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Work</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Days</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Pres</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Abs</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Late</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Time</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Late Ded</th>
@@ -51,8 +52,12 @@
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">UpLv</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Lv Ded</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Wage</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Rate</th>
                                     <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Tot Ded</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Final</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Full Sal</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Present</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Shortfall</th>
+                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Total</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -62,6 +67,7 @@
                                         <td style="padding: 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="line.department_name"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.total_working_days"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.total_present_days"/></td>
+                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.absent_days"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.late_days"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.late_minutes_display"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.late_deduction"/></td>
@@ -69,11 +75,21 @@
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.unpaid_leave_days"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.leave_deduction"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.wage"/></td>
+                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.per_day_rate"/></td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;" t-attf-style="#{line.total_deduction > 0 and 'color:#e74c3c;' or ''}">
                                             <t t-esc="'%.2f' % line.total_deduction"/>
                                         </td>
+                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;">
+                                            <t t-esc="'%.2f' % line.full_salary"/>
+                                        </td>
                                         <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;">
                                             <t t-esc="'%.2f' % line.final_amount"/>
+                                        </td>
+                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;" t-attf-style="#{line.absence_shortfall &lt; 0 and 'color:#e74c3c;' or ''}">
+                                            <t t-esc="'%.2f' % line.absence_shortfall"/>
+                                        </td>
+                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;" t-attf-style="#{line.total_amount &lt; 0 and 'color:#e74c3c;' or ''}">
+                                            <t t-esc="'%.2f' % line.total_amount"/>
                                         </td>
                                     </tr>
                                 </t>
@@ -83,6 +99,7 @@
                                     <td colspan="2" style="padding: 4px 3px; border: 1px solid #ddd; text-align: right;">Grand Total</td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('total_working_days'))"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('total_present_days'))"/></td>
+                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('absent_days'))"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('late_days'))"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd;"></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_late_deduction"/></td>
@@ -90,8 +107,12 @@
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%.2f' % sum(doc.summary_line_ids.mapped('unpaid_leave_days'))"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_leave_deduction"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_wage"/></td>
+                                    <td style="padding: 4px; border: 1px solid #ddd;"></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % doc.grand_total_deduction"/></td>
+                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_full_salary"/></td>
                                     <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_final_amount"/></td>
+                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % doc.grand_absence_shortfall"/></td>
+                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_total_amount"/></td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -170,18 +191,46 @@
                                 </tbody>
                             </table>
 
-                            <table style="width: 30%; margin-left: auto; font-size: 9px; border-collapse: collapse; margin-top: 5px;">
+                            <table style="width: 38%; margin-left: auto; font-size: 9px; border-collapse: collapse; margin-top: 5px;">
                                 <tr style="background: #f9f9f9;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold;">Wage</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold;">Monthly Wage</td>
                                     <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % emp_line.wage"/></td>
                                 </tr>
                                 <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; color: #e74c3c;">Total Deduction</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd;">Per Day Rate</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % emp_line.per_day_rate"/></td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Unpaid Leave Deduction</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.leave_deduction"/></td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Late Deduction</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.late_deduction"/></td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; color: #e74c3c;">Total Deductions</td>
                                     <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.total_deduction"/></td>
                                 </tr>
                                 <tr style="background: #f2f2f2;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; font-size: 10px;">Final Amount</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold;">Full Salary (Full Month)</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold;"><t t-esc="'%.2f' % emp_line.full_salary"/></td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd;">Present Days</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="emp_line.total_present_days"/></td>
+                                </tr>
+                                <tr style="background: #f2f2f2;">
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; font-size: 10px;">Present Pay</td>
                                     <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; font-size: 10px;"><t t-esc="'%.2f' % emp_line.final_amount"/></td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Absence Shortfall</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.absence_shortfall"/></td>
+                                </tr>
+                                <tr style="background: #f2f2f2;">
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; font-size: 10px;">Total Amount</td>
+                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; font-size: 10px;" t-attf-style="#{emp_line.total_amount &lt; 0 and 'color:#e74c3c;' or ''}"><t t-esc="'%.2f' % emp_line.total_amount"/></td>
                                 </tr>
                             </table>
 

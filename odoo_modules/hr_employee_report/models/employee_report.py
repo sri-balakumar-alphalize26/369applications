@@ -118,6 +118,12 @@ class EmployeeReport(models.Model):
         'hr.employee.report.detail.line', 'report_id', string='Detailed Entries',
     )
 
+    # Currency for monetary formatting
+    currency_id = fields.Many2one(
+        'res.currency', string='Currency',
+        related='company_id.currency_id', readonly=True,
+    )
+
     # ── Grand Totals (computed) ──────────────────────────────
     grand_late_deduction = fields.Float(
         compute='_compute_grand_totals', string='Total Late Deductions',
@@ -130,6 +136,18 @@ class EmployeeReport(models.Model):
     )
     grand_wage = fields.Float(
         compute='_compute_grand_totals', string='Total Wages',
+    )
+    grand_earned = fields.Float(
+        compute='_compute_grand_totals', string='Total Earned',
+    )
+    grand_full_salary = fields.Float(
+        compute='_compute_grand_totals', string='Total Full Salary',
+    )
+    grand_absence_shortfall = fields.Float(
+        compute='_compute_grand_totals', string='Total Absence Shortfall',
+    )
+    grand_total_amount = fields.Float(
+        compute='_compute_grand_totals', string='Grand Total Amount',
     )
     grand_final_amount = fields.Float(
         compute='_compute_grand_totals', string='Grand Final Amount',
@@ -147,6 +165,8 @@ class EmployeeReport(models.Model):
 
     @api.depends('summary_line_ids.late_deduction', 'summary_line_ids.leave_deduction',
                  'summary_line_ids.total_deduction', 'summary_line_ids.wage',
+                 'summary_line_ids.earned_amount', 'summary_line_ids.full_salary',
+                 'summary_line_ids.absence_shortfall', 'summary_line_ids.total_amount',
                  'summary_line_ids.final_amount')
     def _compute_grand_totals(self):
         for rec in self:
@@ -155,6 +175,10 @@ class EmployeeReport(models.Model):
             rec.grand_leave_deduction = sum(lines.mapped('leave_deduction'))
             rec.grand_total_deduction = sum(lines.mapped('total_deduction'))
             rec.grand_wage = sum(lines.mapped('wage'))
+            rec.grand_earned = sum(lines.mapped('earned_amount'))
+            rec.grand_full_salary = sum(lines.mapped('full_salary'))
+            rec.grand_absence_shortfall = sum(lines.mapped('absence_shortfall'))
+            rec.grand_total_amount = sum(lines.mapped('total_amount'))
             rec.grand_final_amount = sum(lines.mapped('final_amount'))
 
     # ── Refresh / Generate Data ──────────────────────────────
@@ -343,6 +367,13 @@ class EmployeeReport(models.Model):
                     if d_from <= lr_current <= d_to:
                         leave_date_info[lr_current] = lr
                     lr_current += timedelta(days=1)
+
+            # Leave days the employee actually applied for (paid + unpaid),
+            # captured BEFORE the auto half-day section adds 0.5s to unpaid.
+            # The "Absent" column shows this, not un-attended/future days.
+            leave_days_applied = total_paid_days + total_unpaid_days
+            # Pure unpaid LEAVE days (before auto-half) — drives Absence Shortfall.
+            unpaid_leave_applied = total_unpaid_days
 
             # ── AUTO HALF-DAY DETECTION (split shift only) ───
             # For each working day, check if only one session has attendance
@@ -630,15 +661,36 @@ class EmployeeReport(models.Model):
             except Exception:
                 emp_wage = 0.0
 
-            total_ded = total_late_deduction + total_leave_deduction
-            final_amt = emp_wage - total_ded
+            # ── MONTHLY-SALARY PAY (full month, Sundays paid) ─
+            # The monthly wage covers the whole calendar month including the
+            # weekly-off (Sunday) and public holidays — these are PAID. Sunday
+            # being unchecked in the working-days config only affects attendance
+            # / late tracking, not pay. So pay the full wage and deduct only
+            # unpaid leave + late. A fully-present employee gets the full wage.
+            import calendar as _cal
+            days_in_month = _cal.monthrange(self.date_from.year, self.date_from.month)[1]
+            per_day_rate = (emp_wage / days_in_month) if days_in_month else 0.0
+            earned_amt = round(emp_wage, 2)  # gross = full month
+            total_ded = total_late_deduction + total_leave_deduction  # late + unpaid leave
+            # Full Salary = full month net (wage minus deductions).
+            full_salary = round(emp_wage - total_ded, 2)
+            # Attendance side — two independent columns:
+            #   Present Pay      = per_day x (present days + PAID leave days)
+            #     (paid leave is payable, so it counts here)
+            #   Absence Shortfall = -(per_day x UNPAID leave days)
+            final_amt = round(per_day_rate * (total_present_days + total_paid_days), 2)
+            absence_shortfall = -round(per_day_rate * unpaid_leave_applied, 2)  # <= 0
+            # Total Amount = Present Pay - Deductions (may be negative).
+            total_amount = round(final_amt - total_ded, 2)
+            # Days actually paid (info): whole month minus unpaid-leave days.
+            payable_days = days_in_month - total_unpaid_days
 
             summary_vals.append({
                 'report_id': self.id,
                 'employee_id': emp.id,
                 'employee_name': emp_name,
                 'department_name': dept_name,
-                'total_working_days': total_working_days,
+                'total_working_days': days_in_month,  # paid basis = full month (Sundays paid)
                 'total_present_days': total_present_days,
                 'total_late_days_raw': all_late_times,
                 'grace_days': grace_days,
@@ -649,8 +701,15 @@ class EmployeeReport(models.Model):
                 'paid_leave_days': total_paid_days,
                 'unpaid_leave_days': total_unpaid_days,
                 'leave_deduction': total_leave_deduction,
+                'absent_days': leave_days_applied,
                 'wage': emp_wage,
+                'per_day_rate': round(per_day_rate, 2),
+                'payable_days': payable_days,
+                'earned_amount': earned_amt,
                 'total_deduction': total_ded,
+                'full_salary': full_salary,
+                'absence_shortfall': absence_shortfall,
+                'total_amount': total_amount,
                 'final_amount': final_amt,
             })
 
@@ -726,7 +785,7 @@ class EmployeeReport(models.Model):
         ws1.set_landscape()
         ws1.set_paper(9)
 
-        ws1.merge_range('A1:N1', 'Employee Statement Report', title_fmt)
+        ws1.merge_range('A1:R1', 'Employee Statement Report', title_fmt)
         ws1.write('A3', 'Company:', info_label)
         ws1.write('B3', self.company_id.name or '', info_value)
         ws1.write('A4', 'Period:', info_label)
@@ -734,12 +793,14 @@ class EmployeeReport(models.Model):
 
         row = 6
         summary_headers = [
-            'Employee', 'Department', 'Working\nDays', 'Present\nDays',
-            'Late Days\n(After Grace)', 'Total Late\nTime',
+            'Employee', 'Department', 'Month\nDays', 'Present\nDays',
+            'Absent\nDays', 'Late Days\n(After Grace)', 'Total Late\nTime',
             'Late\nDeduction', 'Paid Leave\nDays', 'Unpaid Leave\nDays',
-            'Leave\nDeduction', 'Monthly\nWage', 'Total\nDeduction', 'Final\nAmount',
+            'Leave\nDeduction', 'Monthly\nWage', 'Per Day\nRate',
+            'Total\nDeduction', 'Full\nSalary',
+            'Present\nPay', 'Absence\nShortfall', 'Total\nAmount',
         ]
-        col_widths = [25, 20, 10, 10, 12, 12, 14, 12, 12, 14, 14, 14, 14]
+        col_widths = [25, 20, 10, 10, 10, 12, 12, 14, 12, 12, 14, 14, 12, 14, 14, 14, 14, 14]
         for c, (hdr, w) in enumerate(zip(summary_headers, col_widths)):
             ws1.set_column(c, c, w)
             ws1.write(row, c, hdr, header_fmt)
@@ -750,30 +811,40 @@ class EmployeeReport(models.Model):
             ws1.write(row, 1, line.department_name or '', cell_fmt)
             ws1.write(row, 2, line.total_working_days, int_fmt)
             ws1.write(row, 3, line.total_present_days, int_fmt)
-            ws1.write(row, 4, line.late_days, int_fmt)
-            ws1.write(row, 5, line.late_minutes_display or '0:00', cell_fmt)
-            ws1.write(row, 6, line.late_deduction, num_fmt)
-            ws1.write(row, 7, line.paid_leave_days, num_fmt)
-            ws1.write(row, 8, line.unpaid_leave_days, num_fmt)
-            ws1.write(row, 9, line.leave_deduction, num_fmt)
-            ws1.write(row, 10, line.wage, num_fmt)
-            ws1.write(row, 11, line.total_deduction, num_fmt)
-            ws1.write(row, 12, line.final_amount, num_fmt)
+            ws1.write(row, 4, line.absent_days, num_fmt)
+            ws1.write(row, 5, line.late_days, int_fmt)
+            ws1.write(row, 6, line.late_minutes_display or '0:00', cell_fmt)
+            ws1.write(row, 7, line.late_deduction, num_fmt)
+            ws1.write(row, 8, line.paid_leave_days, num_fmt)
+            ws1.write(row, 9, line.unpaid_leave_days, num_fmt)
+            ws1.write(row, 10, line.leave_deduction, num_fmt)
+            ws1.write(row, 11, line.wage, num_fmt)
+            ws1.write(row, 12, line.per_day_rate, num_fmt)
+            ws1.write(row, 13, line.total_deduction, num_fmt)
+            ws1.write(row, 14, line.full_salary, num_fmt)
+            ws1.write(row, 15, line.final_amount, num_fmt)
+            ws1.write(row, 16, line.absence_shortfall, num_fmt)
+            ws1.write(row, 17, line.total_amount, num_fmt)
             row += 1
 
         # Totals row
         ws1.merge_range(row, 0, row, 1, 'Grand Total', total_label_fmt)
         ws1.write(row, 2, sum(self.summary_line_ids.mapped('total_working_days')), total_int_fmt)
         ws1.write(row, 3, sum(self.summary_line_ids.mapped('total_present_days')), total_int_fmt)
-        ws1.write(row, 4, sum(self.summary_line_ids.mapped('late_days')), total_int_fmt)
-        ws1.write(row, 5, '', total_int_fmt)
-        ws1.write(row, 6, self.grand_late_deduction, total_num_fmt)
-        ws1.write(row, 7, sum(self.summary_line_ids.mapped('paid_leave_days')), total_num_fmt)
-        ws1.write(row, 8, sum(self.summary_line_ids.mapped('unpaid_leave_days')), total_num_fmt)
-        ws1.write(row, 9, self.grand_leave_deduction, total_num_fmt)
-        ws1.write(row, 10, self.grand_wage, total_num_fmt)
-        ws1.write(row, 11, self.grand_total_deduction, total_num_fmt)
-        ws1.write(row, 12, self.grand_final_amount, total_num_fmt)
+        ws1.write(row, 4, sum(self.summary_line_ids.mapped('absent_days')), total_num_fmt)
+        ws1.write(row, 5, sum(self.summary_line_ids.mapped('late_days')), total_int_fmt)
+        ws1.write(row, 6, '', total_int_fmt)
+        ws1.write(row, 7, self.grand_late_deduction, total_num_fmt)
+        ws1.write(row, 8, sum(self.summary_line_ids.mapped('paid_leave_days')), total_num_fmt)
+        ws1.write(row, 9, sum(self.summary_line_ids.mapped('unpaid_leave_days')), total_num_fmt)
+        ws1.write(row, 10, self.grand_leave_deduction, total_num_fmt)
+        ws1.write(row, 11, self.grand_wage, total_num_fmt)
+        ws1.write(row, 12, '', total_num_fmt)
+        ws1.write(row, 13, self.grand_total_deduction, total_num_fmt)
+        ws1.write(row, 14, self.grand_full_salary, total_num_fmt)
+        ws1.write(row, 15, self.grand_final_amount, total_num_fmt)
+        ws1.write(row, 16, self.grand_absence_shortfall, total_num_fmt)
+        ws1.write(row, 17, self.grand_total_amount, total_num_fmt)
 
         # ═══════════════════════════════════════════════════
         #  SHEET 2: Detailed Day-wise Entries
@@ -889,10 +960,25 @@ class EmployeeReportSummaryLine(models.Model):
     unpaid_leave_days = fields.Float(string='Unpaid Leave Days', readonly=True)
     leave_deduction = fields.Float(string='Leave Deduction', readonly=True)
 
+    # Attendance shortfall
+    absent_days = fields.Float(string='Absent Days', readonly=True)
+    absence_shortfall = fields.Float(string='Absence Shortfall', readonly=True)
+
+    # Currency for monetary formatting
+    currency_id = fields.Many2one(
+        'res.currency', string='Currency',
+        related='report_id.company_id.currency_id', readonly=True,
+    )
+
     # Wage & Final
     wage = fields.Float(string='Wage', readonly=True)
+    per_day_rate = fields.Float(string='Per Day Rate', readonly=True)
+    payable_days = fields.Float(string='Days Paid', readonly=True)
+    earned_amount = fields.Float(string='Earned (Attended)', readonly=True)
     total_deduction = fields.Float(string='Total Deduction', readonly=True)
-    final_amount = fields.Float(string='Final Amount', readonly=True)
+    full_salary = fields.Float(string='Full Salary', readonly=True)   # full month: wage - deductions
+    final_amount = fields.Float(string='Final Amount', readonly=True)  # present-based: rate x present days
+    total_amount = fields.Float(string='Total Amount', readonly=True)  # present pay - deductions (signed)
 
     # ── Drill-down Actions ───────────────────────────────────
     def action_view_day_details(self):
