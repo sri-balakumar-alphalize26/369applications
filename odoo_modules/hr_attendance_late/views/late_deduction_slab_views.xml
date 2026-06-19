@@ -14,6 +14,10 @@
                 <field name="to_display" string="To (H:MM)"/>
                 <field name="deduction_amount" widget="monetary"/>
                 <field name="currency_id" column_invisible="1"/>
+                <button name="action_delete_slab" type="object"
+                        icon="fa-trash-o" title="Delete"
+                        class="text-danger"
+                        confirm="Delete this deduction slab?"/>
             </list>
         </field>
     </record>

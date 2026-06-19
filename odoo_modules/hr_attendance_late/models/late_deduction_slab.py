@@ -50,6 +50,10 @@ class LateDeductionSlab(models.Model):
     )
     active = fields.Boolean(default=True)
 
+    def action_delete_slab(self):
+        """Delete this slab row directly from the list (per-row trash button)."""
+        return self.unlink()
+
     @api.depends('from_minutes', 'to_minutes')
     def _compute_name(self):
         for rec in self:

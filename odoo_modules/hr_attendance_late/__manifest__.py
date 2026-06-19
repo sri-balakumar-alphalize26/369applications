@@ -32,11 +32,12 @@
         'views/late_waiver_views.xml',
         'views/late_summary_views.xml',
         'views/menu.xml',
+        'views/help_menu.xml',
         'reports/late_attendance_report.xml',
     ],
     'assets': {
         'web.assets_backend': [
-            'hr_attendance_late/static/src/**/*',
+            'hr_attendance_late/static/src/views/**/*',
         ],
     },
     'installable': True,

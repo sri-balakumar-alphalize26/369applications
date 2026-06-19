@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Attendance &amp; Late Tracking — User Guide</title>
+    <style>
+        :root { --brand:#875A7B; --ink:#222; --muted:#666; --line:#e3dde2; --warn:#fff3cd; --warnln:#e0c97a; }
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--ink); line-height: 1.6;
+               max-width: 960px; margin: 0 auto; padding: 24px; }
+        h1 { color: var(--brand); font-size: 28px; margin: 0 0 4px; }
+        h2 { color: var(--brand); border-bottom: 2px solid var(--brand); padding-bottom: 6px;
+             margin-top: 34px; font-size: 20px; }
+        h3 { color: #5d3f54; margin-top: 22px; font-size: 16px; }
+        .sub { color: var(--muted); margin: 0 0 18px; }
+        table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+        th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; }
+        th { background: var(--brand); color: #fff; }
+        tr:nth-child(even) td { background: #faf7f9; }
+        code, .mono { background: #f3eef2; padding: 1px 6px; border-radius: 4px; font-family: Consolas, monospace; }
+        .note { background: var(--warn); border: 1px solid var(--warnln); border-radius: 6px;
+                padding: 10px 14px; margin: 14px 0; }
+        .toc a { color: var(--brand); text-decoration: none; }
+        .toc li { margin: 3px 0; }
+        ul { margin: 8px 0; }
+        .flow { background:#f7f4f6; border:1px solid var(--line); border-radius:6px; padding:10px 14px;
+                font-family: Consolas, monospace; font-size: 13px; white-space: pre-wrap; }
+        .btnbar { position: sticky; top: 0; background: #fff; padding: 8px 0 14px; border-bottom: 1px solid var(--line); }
+        .btn { background: var(--brand); color:#fff; border:none; padding:9px 16px; border-radius:6px;
+               font-size:14px; cursor:pointer; }
+        @media print {
+            .btnbar { display: none; }
+            body { max-width: none; padding: 0; }
+            h2 { page-break-after: avoid; }
+            table, .flow, .note { page-break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="btnbar">
+        <button class="btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+    </div>
+
+    <h1>Attendance &amp; Late Tracking — User Guide</h1>
+    <p class="sub">Office hours, late detection &amp; deductions, office timezone, leave policy and the
+        employee monthly report.</p>
+
+    <h2 id="toc">Contents</h2>
+    <ol class="toc">
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#office">Office Hours &amp; Working Days (incl. Office Timezone)</a></li>
+        <li><a href="#workingdays">Working Days &amp; Half-Day Fridays</a></li>
+        <li><a href="#late">How late detection works</a></li>
+        <li><a href="#deduction">Deductions — Slab vs Hourly</a></li>
+        <li><a href="#waiver">Grace &amp; Late-Waiver flow</a></li>
+        <li><a href="#leave">Leave Policy</a></li>
+        <li><a href="#report">Employee Monthly Report</a></li>
+        <li><a href="#tz">Office-time display</a></li>
+    </ol>
+
+    <h2 id="overview">1. Overview</h2>
+    <p>Employees check in (kiosk, mobile or manual). Odoo stores every check-in in <b>UTC</b>. The system
+       converts it to the <b>Office Timezone</b>, decides if it is late against the configured start time,
+       counts it against a monthly grace, applies a deduction (slab or hourly), lets the employee add a
+       reason and request a waiver, and rolls everything up into the monthly report and final salary.</p>
+    <div class="flow">Check in → convert to Office Timezone → which session / expected start → late?
+(threshold) → which late # this month → past grace? → slab/hourly deduction → reason → waiver?
+→ month-end report → final salary.</div>
+
+    <h2 id="office">2. Office Hours &amp; Working Days</h2>
+    <p>Menu: <b>Late Tracking → Office Hours &amp; Working Days</b>. Company-wide, or per department.</p>
+    <table>
+        <tr><th>Setting</th><th>Meaning</th></tr>
+        <tr><td>Office Timezone</td><td>The timezone the office hours are defined in (e.g. <code>Asia/Muscat</code>).
+            Every check-in is converted to this timezone before being compared to the start times, so the
+            <b>server location and each user's personal timezone don't matter</b>. Resolution order:
+            <b>config timezone → employee timezone → UTC</b>.</td></tr>
+        <tr><td>Shift Type</td><td><b>Single</b> = one period (late checked on first check-in). <b>Split</b> =
+            two sessions (late checked on the first check-in of <i>each</i> session).</td></tr>
+        <tr><td>Session 1 / 2 Start &amp; End</td><td>The work period start/end times in 24h, in the Office Timezone.</td></tr>
+        <tr><td>Late Threshold (min)</td><td>Grace window — arriving within this many minutes of the start is not late.</td></tr>
+        <tr><td>Grace Late Times/Month</td><td>Number of free late occurrences per month <b>per session</b> before deductions apply.</td></tr>
+        <tr><td>Deduction Mode</td><td><b>Fixed (Slab)</b> or <b>Hourly Wage</b> — see section 5.</td></tr>
+        <tr><td>Working Days</td><td>Mon–Sun checkboxes that count as work days.</td></tr>
+        <tr><td>Half-Day Friday Settings</td><td>See section 3.</td></tr>
+    </table>
+    <p>The <b>Recompute Late Records</b> button (top of the form) refreshes stored late &amp; leave
+       deductions for the last 3 months after any change.</p>
+
+    <h2 id="workingdays">3. Working Days &amp; Half-Day Fridays</h2>
+    <p>Working days for a month = the checked weekdays (minus public holidays). A <b>half-day Friday</b>
+       (a Friday in a configured position, e.g. <code>2,4,5</code> = 2nd/4th/5th Friday) counts as
+       <b>0.5</b> — even if Friday itself is unchecked.</p>
+    <div class="note"><b>Example — June (Friday off, positions 2,4,5):</b> 26 full days + 0.5 (2nd Fri) +
+        0.5 (4th Fri) = <b>27</b> working days. July (5 Fridays) → 26 + 1.5 = <b>27.5</b>. It recalculates
+        per month automatically.</div>
+
+    <h2 id="late">4. How late detection works</h2>
+    <ul>
+        <li>The UTC check-in is converted to the Office Timezone.</li>
+        <li>The session is determined; the expected start is the session's start (or the half-day-Friday start).</li>
+        <li>If the local check-in is later than <b>start + Late Threshold</b>, the record is marked
+            <b>Is Late</b> with the <b>Late Minutes</b> measured from the start time.</li>
+    </ul>
+    <div class="note"><b>Example (Office TZ Asia/Muscat):</b> a check-in stored 04:10 UTC = 08:10 Muscat;
+        with start 08:00 → <b>10 min late</b>.</div>
+
+    <h2 id="deduction">5. Deductions — Slab vs Hourly</h2>
+    <p>Set by <b>Deduction Mode</b>. Both apply only <b>after grace</b> and are <b>0 if waived</b>.</p>
+    <h3>Fixed (Slab-based)</h3>
+    <p>Menu: <b>Late Tracking → Deduction Slabs</b>. The late minutes choose which slab applies and that
+       slab's <b>flat amount</b> is deducted (not per-minute). A slab matches when
+       <code>From ≤ late_minutes ≤ To</code> (<code>To = 0</code> means unlimited).</p>
+    <table>
+        <tr><th>From</th><th>To</th><th>Deduction</th><th>e.g. 25 min</th><th>e.g. 90 min</th></tr>
+        <tr><td>1</td><td>30</td><td>50</td><td>→ 50</td><td></td></tr>
+        <tr><td>31</td><td>60</td><td>100</td><td></td><td></td></tr>
+        <tr><td>61</td><td>0 (61+)</td><td>200</td><td></td><td>→ 200</td></tr>
+    </table>
+    <h3>Hourly Wage</h3>
+    <p>Scales with how late you are, from the employee's salary:</p>
+    <div class="flow">hourly_rate = monthly wage ÷ working days in month ÷ daily work hours
+deduction   = hourly_rate × ceil(late_minutes ÷ 60)   (every started hour = 1 hour)</div>
+    <div class="note"><b>No-wage fallback (Hourly mode):</b> if an employee has no wage set, the hourly
+        amount is 0, so the system falls back to the matching <b>slab</b> amount. With no slab, the
+        deduction is simply 0. Keep a basic slab as a safety net for unwaged employees.</div>
+
+    <h2 id="waiver">6. Grace &amp; Late-Waiver flow</h2>
+    <ul>
+        <li><b>Grace:</b> the first N late occurrences per month (per session) are free (deduction 0); a
+            reason is still requested.</li>
+        <li><b>Enter Late Reason:</b> on a late attendance, the employee clicks <i>Enter Late Reason</i> and types why.</li>
+        <li><b>Waiver:</b> Menu <b>Late Tracking → Late Waiver Requests</b>. The employee picks the late
+            attendance, gives a reason, and submits. A manager <b>Approves</b> (sets the record to Waived,
+            deduction → 0) or <b>Rejects</b>.</li>
+    </ul>
+
+    <h2 id="leave">7. Leave Policy</h2>
+    <p>Menu: <b>Leave Requests</b> + <b>Leave Policy Configuration</b>.</p>
+    <ul>
+        <li>A leave is <b>paid only</b> when an <i>enabled</i> paid-leave policy with remaining quota grants
+            it; otherwise (no policy, or paid leave off) it is <b>unpaid</b>.</li>
+        <li>Unpaid-leave deduction = <code>wage ÷ working days in month × unpaid days</code> (when
+            unpaid deduction is enabled). The daily rate is rounded so amounts match the report.</li>
+    </ul>
+
+    <h2 id="report">8. Employee Monthly Report</h2>
+    <p>Menu: <b>Employee Report</b>. Pick month/year and employees, Generate, then <b>Refresh</b>.</p>
+    <ul>
+        <li><b>Working Days</b> (half-day-Friday aware) and <b>Present Days</b> (half-day weighted).</li>
+        <li><b>Final Amount is earnings-based:</b> you earn one day's pay (<code>wage ÷ working days</code>)
+            for each day worked (present days + paid leave); late arrivals reduce it; absent / unpaid days
+            simply aren't earned. So 0 present → 0 final, full attendance → full wage.</li>
+        <li><b>Leave Deduction</b> shown separately; <b>Total Deduction = Wage − Final</b>.</li>
+        <li>Days with no attendance and no leave show as <b>Not Entered</b>; future days are not shown.</li>
+        <li>Export to <b>PDF</b> and <b>Excel</b>; columns are selectable from the list's options menu.</li>
+    </ul>
+
+    <h2 id="tz">9. Office-time display</h2>
+    <p>Standard Odoo date columns always show the logged-in user's timezone. To show <b>office time</b>
+       everywhere, the attendance lists/kanban/form, the Late Waiver, the Employee Report (day-wise + PDF
+       + Excel), the Field Attendance list and the Late Attendance PDF all show dedicated
+       <b>Office-Time</b> values (and the built-in columns on lists are hidden). The late logic and the
+       Office-Time display are always anchored to the <b>Office Timezone</b>, regardless of the viewer.</p>
+
+    <p class="sub" style="margin-top:40px">Tip: use the <b>Print / Save as PDF</b> button at the top to
+       keep an offline copy. To add more documents, drop PDFs/HTML into
+       <code>hr_attendance_late/static/src/docs/</code> and link them the same way.</p>
+
+</body>
+</html>
