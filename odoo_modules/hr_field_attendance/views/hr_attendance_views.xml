@@ -968,8 +968,10 @@
         <field name="arch" type="xml">
             <list string="Field Attendance">
                 <field name="employee_id"/>
-                <field name="check_in"/>
-                <field name="check_out"/>
+                <field name="check_in" column_invisible="1"/>
+                <field name="check_out" column_invisible="1"/>
+                <field name="check_in_office_time" string="Check In (Office TZ)"/>
+                <field name="check_out_office_time" string="Check Out (Office TZ)"/>
                 <field name="daily_total_hours" widget="float_time" string="Hours"/>
                 <field name="source_trip_id" string="Trip"/>
                 <field name="all_trips_display" string="All Trips" optional="show"/>

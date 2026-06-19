@@ -34,6 +34,11 @@
         'views/menu.xml',
         'reports/late_attendance_report.xml',
     ],
+    'assets': {
+        'web.assets_backend': [
+            'hr_attendance_late/static/src/**/*',
+        ],
+    },
     'installable': True,
     'application': False,
     'license': 'LGPL-3',

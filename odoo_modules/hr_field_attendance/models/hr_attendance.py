@@ -951,9 +951,13 @@ class HrAttendance(models.Model):
     # --- Field-attendance RPCs (used by the mobile app) ---------------------
 
     def _employee_today_window(self, employee):
-        """Return (utc_today_start, utc_today_end, local_date) for the
-        employee's local timezone."""
-        tz = pytz.timezone(employee.tz or self.env.user.tz or 'UTC')
+        """Return (utc_today_start, utc_today_end, local_date) for the office
+        timezone (Office Hours config) — falling back to the employee's tz, then
+        the user's, then UTC. Anchoring to the config tz keeps the "today" day
+        boundary consistent with late detection (e.g. Oman) regardless of where
+        the server runs or whether the employee has a personal tz set."""
+        config_data = self.env['hr.attendance.late.config'].get_config_for_employee(employee.id)
+        tz = pytz.timezone(config_data.get('timezone') or employee.tz or self.env.user.tz or 'UTC')
         local_now = datetime.now(tz)
         day_start_local = tz.localize(datetime.combine(local_now.date(), time.min))
         day_end_local = day_start_local + timedelta(days=1)

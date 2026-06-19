@@ -51,7 +51,7 @@
                         <ul>
                             <li>Each employee gets the configured paid leave days per year.</li>
                             <li>When an employee exceeds their paid leave quota, the leave becomes unpaid.</li>
-                            <li>Unpaid leave deduction = Employee Monthly Wage ÷ Calendar Days in Month.</li>
+                            <li>Unpaid leave deduction = Employee Monthly Wage ÷ Working Days in Month.</li>
                             <li>Half day unpaid = half the daily rate.</li>
                             <li>Admin can change these settings at any time.</li>
                         </ul>

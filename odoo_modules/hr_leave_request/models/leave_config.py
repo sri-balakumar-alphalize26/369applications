@@ -35,7 +35,7 @@ class LeaveConfig(models.Model):
         string='Enable Unpaid Leave Deduction',
         default=True,
         help='When enabled, unpaid leave deduction is calculated as: '
-             'Employee Monthly Wage ÷ Calendar Days in Month. '
+             'Employee Monthly Wage ÷ Working Days in Month. '
              'Half day = half of that daily rate.',
     )
 

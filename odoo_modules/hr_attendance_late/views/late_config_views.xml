@@ -26,12 +26,18 @@
         <field name="model">hr.attendance.late.config</field>
         <field name="arch" type="xml">
             <form string="Late Tracking Configuration">
+                <header>
+                    <button name="action_recompute_records" type="object"
+                            string="Recompute Late Records" class="btn-primary"/>
+                </header>
                 <sheet>
                     <group>
                         <group string="Scope">
                             <field name="company_id"/>
                             <field name="department_id"
                                    placeholder="Leave empty for company-wide"/>
+                            <field name="timezone"
+                                   placeholder="e.g. Asia/Muscat (empty = employee's tz)"/>
                         </group>
                         <group string="Late Settings">
                             <field name="late_threshold_minutes"/>
@@ -97,7 +103,7 @@
                         </group>
                     </group>
 
-                    <div class="text-muted mt-3">
+                    <div class="alert alert-warning mt-3" role="alert">
                         <p><b>How it works:</b></p>
                         <ul>
                             <li><b>Single Shift:</b> One work period per day. Late is checked on first check-in.</li>
@@ -114,6 +120,10 @@
                             Each started hour of lateness = 1 hour deduction.
                             E.g., wage 30000, 26 working days, 10 hrs → hourly rate = 115.38.
                             Late 45min = 115.38 deducted. Late 65min = 230.77 deducted.</li>
+                            <li><b>No-wage fallback (Hourly mode):</b> If an employee has <b>no wage</b> set,
+                            the hourly amount comes out 0, so the system falls back to the <b>Deduction Slab</b>
+                            amount. With no slab configured, such an employee's late deduction is simply 0
+                            (no charge). Keep a basic slab as a safety net for unwaged employees.</li>
                         </ul>
                     </div>
                 </sheet>

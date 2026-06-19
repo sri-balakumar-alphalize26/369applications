@@ -7,6 +7,7 @@ import { ProductsScreen, SplashScreen } from "@screens";
 import { OptionsScreen } from "@screens/Home/Options";
 import { CustomersPage1Screen, CustomersPage2Screen, CustomerCategoryScreen, LeadsListScreen, CreateCustomerScreen } from "@screens/Home/Options/Customers";
 import { VehicleTrackingScreen, VehicleTrackingForm } from "@screens/Home/Options/VehicleTracking";
+import DestinationMapPicker from "@screens/Home/Options/VehicleTracking/DestinationMapPicker";
 import { VehicleMaintenanceScreen, VehicleMaintenanceForm } from "@screens/Home/Options/VehicleMaintenance";
 import { VehicleLocationScreen, VehicleLocationForm } from "@screens/Home/Options/VehicleLocation";
 import { StaffTrackingScreen, StaffTrackingForm, StaffTrackingDetails, UserLiveLocation, MyLocation } from "@screens/Home/Options/StaffTracking";
@@ -286,6 +287,12 @@ const StackNavigator = () => {
       <Stack.Screen
         name="VehicleTrackingForm"
         component={VehicleTrackingForm}
+        options={{ headerShown: false }}
+      />
+      {/* Destination Map Picker (full-screen OSM picker for trip destination) */}
+      <Stack.Screen
+        name="DestinationMapPicker"
+        component={DestinationMapPicker}
         options={{ headerShown: false }}
       />
 

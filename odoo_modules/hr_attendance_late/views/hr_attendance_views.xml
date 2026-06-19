@@ -7,7 +7,16 @@
         <field name="model">hr.attendance</field>
         <field name="inherit_id" ref="hr_attendance.view_attendance_tree"/>
         <field name="arch" type="xml">
+            <!-- Hide the built-in (user-tz) columns; show only Office-TZ times -->
+            <xpath expr="//field[@name='check_in']" position="attributes">
+                <attribute name="column_invisible">1</attribute>
+            </xpath>
+            <xpath expr="//field[@name='check_out']" position="attributes">
+                <attribute name="column_invisible">1</attribute>
+            </xpath>
             <xpath expr="//field[@name='check_out']" position="after">
+                <field name="check_in_office_time" string="Check In (Office TZ)" optional="show"/>
+                <field name="check_out_office_time" string="Check Out (Office TZ)" optional="show"/>
                 <field name="is_late"/>
                 <field name="late_minutes" optional="hide"/>
                 <field name="late_minutes_display" string="Late Time"/>
@@ -44,6 +53,9 @@
                         <field name="is_first_checkin_of_day" invisible="1"/>
                         <field name="is_second_checkin_of_day" invisible="1"/>
                         <field name="checkin_session" string="Session" readonly="1"/>
+                        <field name="check_in_office_time" readonly="1"/>
+                        <field name="check_out_office_time" readonly="1"
+                               invisible="not check_out"/>
                         <field name="expected_start_time" widget="float_time"/>
                         <field name="is_late" readonly="1"/>
                         <field name="late_minutes" readonly="1"/>
@@ -140,6 +152,45 @@
         <field name="domain">[('is_late', '=', True), ('late_sequence', '>', 0)]</field>
         <field name="search_view_id" ref="late_attendance_search_view"/>
         <field name="context">{'search_default_late_only': 1}</field>
+    </record>
+
+    <!-- Management list (Management menu) — add Office-Time columns -->
+    <record id="view_attendance_tree_management_office_tz" model="ir.ui.view">
+        <field name="name">hr.attendance.list.management.office.tz</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.view_attendance_tree_management"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='check_in']" position="attributes">
+                <attribute name="column_invisible">1</attribute>
+            </xpath>
+            <xpath expr="//field[@name='check_out']" position="attributes">
+                <attribute name="column_invisible">1</attribute>
+            </xpath>
+            <xpath expr="//field[@name='check_out']" position="after">
+                <field name="check_in_office_time" string="Check In (Office TZ)" optional="show"/>
+                <field name="check_out_office_time" string="Check Out (Office TZ)" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Overview dashboard kanban — show Office-Time on the card -->
+    <record id="view_hr_attendance_kanban_office_tz" model="ir.ui.view">
+        <field name="name">hr.attendance.kanban.office.tz</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.view_hr_attendance_kanban"/>
+        <field name="arch" type="xml">
+            <xpath expr="//kanban/field[@name='check_out']" position="after">
+                <field name="check_in_office_time"/>
+                <field name="check_out_office_time"/>
+            </xpath>
+            <!-- Replace the built-in (user-tz) period line with the Office-time line -->
+            <xpath expr="//t[@t-name='card']/div" position="replace">
+                <div class="text-muted small">
+                    <i class="fa fa-clock-o me-1" title="Office Time"/>
+                    <field name="check_in_office_time"/> - <field name="check_out_office_time"/>
+                </div>
+            </xpath>
+        </field>
     </record>
 
 </odoo>

@@ -1,5 +1,6 @@
 from odoo import models, fields, api, _
 from odoo.exceptions import ValidationError
+from odoo.tools import format_duration
 from datetime import timedelta
 import logging
 import pytz
@@ -80,6 +81,17 @@ class HrAttendance(models.Model):
         string='Daily Total Hours',
         compute='_compute_daily_total_hours',
     )
+    check_in_office_time = fields.Char(
+        string='Check In (Office Time)',
+        compute='_compute_office_time',
+        help='Check-in shown in the office timezone (Office Hours config), so it '
+             'reads the same for everyone regardless of the viewer\'s timezone.',
+    )
+    check_out_office_time = fields.Char(
+        string='Check Out (Office Time)',
+        compute='_compute_office_time',
+        help='Check-out shown in the office timezone (Office Hours config).',
+    )
 
     # --- Computed fields ---
 
@@ -87,6 +99,47 @@ class HrAttendance(models.Model):
     def _compute_late_minutes_display(self):
         for rec in self:
             rec.late_minutes_display = minutes_to_hm(rec.late_minutes)
+
+    @api.depends('employee_id', 'check_in', 'check_out')
+    def _compute_display_name(self):
+        """Show the attendance name (used in m2o dropdowns, breadcrumbs, etc.) in
+        the OFFICE timezone (config → employee tz → UTC) instead of the viewer's
+        browser timezone, so check-in/out read as office time everywhere."""
+        Config = self.env['hr.attendance.late.config']
+        for att in self:
+            if not att.check_in:
+                att.display_name = _("New")
+                continue
+            tz_name = 'UTC'
+            if att.employee_id:
+                cfg = Config.get_config_for_employee(att.employee_id.id)
+                tz_name = cfg.get('timezone') or att.employee_id.tz or 'UTC'
+            tz = pytz.timezone(tz_name)
+            ci = pytz.utc.localize(att.check_in).astimezone(tz).strftime('%I:%M %p')
+            if not att.check_out:
+                att.display_name = _("From %s", ci)
+            else:
+                co = pytz.utc.localize(att.check_out).astimezone(tz).strftime('%I:%M %p')
+                att.display_name = "%s (%s-%s)" % (format_duration(att.worked_hours), ci, co)
+
+    @api.depends('check_in', 'check_out', 'employee_id')
+    def _compute_office_time(self):
+        Config = self.env['hr.attendance.late.config']
+        for rec in self:
+            tz_name = 'UTC'
+            if rec.employee_id:
+                config_data = Config.get_config_for_employee(rec.employee_id.id)
+                tz_name = config_data.get('timezone') or rec.employee_id.tz or 'UTC'
+            tz = pytz.timezone(tz_name)
+
+            def _fmt(dt):
+                if not dt:
+                    return ''
+                local = pytz.utc.localize(dt).astimezone(tz)
+                return local.strftime('%d %b %Y, %I:%M %p')
+
+            rec.check_in_office_time = _fmt(rec.check_in)
+            rec.check_out_office_time = _fmt(rec.check_out)
 
     # --- Self-healing recompute on create / write ---
     #
@@ -161,12 +214,15 @@ class HrAttendance(models.Model):
             if not rec.check_in or not rec.employee_id:
                 continue
 
-            tz = pytz.timezone(rec.employee_id.tz or 'UTC')
+            config_data = Config.get_config_for_employee(rec.employee_id.id)
+            # Office Timezone (config) wins, then the employee's own tz, then UTC —
+            # so office hours are read in the office's locale (e.g. Oman) regardless
+            # of where the server runs or whether the employee has a tz set.
+            tz = pytz.timezone(config_data.get('timezone') or rec.employee_id.tz or 'UTC')
             local_dt = pytz.utc.localize(rec.check_in).astimezone(tz)
             day_start = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             utc_start = day_start.astimezone(pytz.utc).replace(tzinfo=None)
 
-            config_data = Config.get_config_for_employee(rec.employee_id.id)
             shift_type = config_data.get('shift_type', 'single')
             session2_start = config_data.get('office_start_hour_2', 14.0)
             local_hour = local_dt.hour + local_dt.minute / 60.0
@@ -218,7 +274,7 @@ class HrAttendance(models.Model):
             config_data = Config.get_config_for_employee(rec.employee_id.id)
             threshold = config_data.get('late_threshold_minutes', 15)
 
-            tz = pytz.timezone(rec.employee_id.tz or 'UTC')
+            tz = pytz.timezone(config_data.get('timezone') or rec.employee_id.tz or 'UTC')
             local_dt = pytz.utc.localize(rec.check_in).astimezone(tz)
             check_date = local_dt.date()
 
@@ -437,7 +493,8 @@ class HrAttendance(models.Model):
             if rec.check_out:
                 continue
 
-            tz = pytz.timezone(rec.employee_id.tz or 'UTC')
+            config_data = self.env['hr.attendance.late.config'].get_config_for_employee(rec.employee_id.id)
+            tz = pytz.timezone(config_data.get('timezone') or rec.employee_id.tz or 'UTC')
             local_dt = pytz.utc.localize(rec.check_in).astimezone(tz)
             day_start = local_dt.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end = day_start + timedelta(days=1)

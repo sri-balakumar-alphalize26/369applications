@@ -29,6 +29,19 @@ class VehicleTracking(models.Model):
     source_id = fields.Many2one('vehicle.location', string='Source Location')
     destination_id = fields.Many2one('vehicle.location', string='Destination Location')
 
+    # Transient inputs (not stored) — the mobile app sends a captured place as a
+    # name + coordinates (source from the driver's current GPS, destination from
+    # the in-app map picker) instead of a pre-configured location id. create()/
+    # write() resolve these into real vehicle.location records and set
+    # source_id / destination_id, so every downstream feature that relies on
+    # those Many2ones keeps working. See _resolve_location_inputs below.
+    source_name = fields.Char(string='Source Name (input)', store=False)
+    source_latitude = fields.Float(string='Source Latitude (input)', store=False, digits=(16, 8))
+    source_longitude = fields.Float(string='Source Longitude (input)', store=False, digits=(16, 8))
+    destination_name = fields.Char(string='Destination Name (input)', store=False)
+    destination_latitude = fields.Float(string='Destination Latitude (input)', store=False, digits=(16, 8))
+    destination_longitude = fields.Float(string='Destination Longitude (input)', store=False, digits=(16, 8))
+
     start_km = fields.Integer(string='Start Km', default=0)
     end_km = fields.Integer(string='End Km', default=0)
     km_travelled = fields.Integer(string='KM Travelled', compute='_compute_km_travelled', store=True)
@@ -345,9 +358,32 @@ class VehicleTracking(models.Model):
             self.invoice_match = False
             self.invoice_message = "Invoice number doesn't match ✗"
 
+    def _resolve_location_inputs(self, vals):
+        """Turn app-sent place name+coords into source_id / destination_id.
+
+        Mutates `vals` in place: when the mobile app sends source_/destination_
+        name + latitude + longitude (instead of an id), find-or-create the
+        matching vehicle.location and set the corresponding Many2one. The
+        transient keys are always stripped so they never reach the ORM (they are
+        non-stored fields with no column). An explicit *_id in vals always wins.
+        """
+        Location = self.env['vehicle.location']
+        for prefix, id_field in (('source', 'source_id'), ('destination', 'destination_id')):
+            name = vals.pop('%s_name' % prefix, None)
+            lat = vals.pop('%s_latitude' % prefix, None)
+            lng = vals.pop('%s_longitude' % prefix, None)
+            if vals.get(id_field):
+                continue
+            if lat in (None, False, '') or lng in (None, False, ''):
+                continue
+            location = Location.find_or_create_from_coords(name, lat, lng)
+            if location:
+                vals[id_field] = location.id
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
+            self._resolve_location_inputs(vals)
             # Assign sequence — and skip past any ref that already exists on
             # another record (defensive: a previously-reset sequence could
             # otherwise hand out a duplicate VT-0001).
@@ -378,6 +414,9 @@ class VehicleTracking(models.Model):
     _LIFECYCLE_FIELDS = {'start_trip', 'end_trip', 'trip_cancel', 'state', 'end_time'}
 
     def write(self, vals):
+        # Resolve app-sent place name+coords into source_id/destination_id first,
+        # stripping the transient keys before the lock guard inspects vals.
+        self._resolve_location_inputs(vals)
         # Lock guard: once a trip is ended or cancelled it becomes immutable.
         # Only lifecycle transitions (Reset to Draft, etc.) are allowed.
         for rec in self:

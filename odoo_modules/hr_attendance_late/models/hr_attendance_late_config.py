@@ -1,5 +1,10 @@
 from odoo import models, fields, api, _
 import math
+import pytz
+
+
+def _tz_get(self):
+    return [(tz, tz) for tz in sorted(pytz.all_timezones)]
 
 
 class AttendanceLateConfig(models.Model):
@@ -17,6 +22,13 @@ class AttendanceLateConfig(models.Model):
         'hr.department',
         string='Department',
         help='Leave empty for company-wide setting. Set to apply only to this department.',
+    )
+    timezone = fields.Selection(
+        _tz_get, string='Office Timezone',
+        help="Timezone the office hours are defined in (e.g. Asia/Muscat). Each "
+             "check-in is converted to this timezone before being compared to the "
+             "start times — so the server's location doesn't matter. Leave empty to "
+             "use each employee's own timezone.",
     )
 
     # --- Shift Type ---
@@ -206,17 +218,29 @@ class AttendanceLateConfig(models.Model):
         return True
 
     def get_working_days_in_month(self, year, month, company_id):
-        """Calculate total working days in a given month based on config and holidays."""
+        """Calculate total working days in a given month based on config and holidays.
+
+        Half-day Fridays (Fridays in a configured half-day position) count as
+        0.5 — even when Friday is unchecked as a working day — so the figure
+        matches the report and drives a correct hourly-deduction denominator.
+        """
         self.ensure_one()
         import calendar
         from datetime import date as dt_date
         working_days_list = self.get_working_days_list()
+        half_day_positions = self.get_half_day_friday_positions()
         Holiday = self.env['hr.public.holiday']
 
-        total = 0
+        total = 0.0
         days_in_month = calendar.monthrange(year, month)[1]
+        friday_count = 0
         for day_num in range(1, days_in_month + 1):
             d = dt_date(year, month, day_num)
+            if d.weekday() == 4:
+                friday_count += 1
+                if self.half_day_friday_enabled and friday_count in half_day_positions:
+                    total += 0.5
+                    continue
             if d.weekday() in working_days_list:
                 if not Holiday.is_public_holiday(d, company_id):
                     total += 1
@@ -287,6 +311,7 @@ class AttendanceLateConfig(models.Model):
             'half_day_start_hour': 17.0,
             'half_day_end_hour': 21.0,
             'working_days': [0, 1, 2, 3, 4, 5],
+            'timezone': False,
         }
         if not employee.exists():
             return defaults
@@ -321,6 +346,7 @@ class AttendanceLateConfig(models.Model):
             'half_day_start_hour': config.half_day_start_hour,
             'half_day_end_hour': config.half_day_end_hour,
             'working_days': config.get_working_days_list(),
+            'timezone': config.timezone,
             # Keep backward compat
             'grace_late_days': config.grace_late_times,
         }
@@ -345,6 +371,22 @@ class AttendanceLateConfig(models.Model):
         return config or self.browse()
 
     # --- Recompute hooks ---
+
+    def action_recompute_records(self):
+        """Manually refresh stored late + leave deductions for this config's scope.
+        Reuses _recompute_affected_attendances, which the leave module extends to
+        also recompute leave-request deductions."""
+        self._recompute_affected_attendances()
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Recomputed',
+                'message': 'Late and leave deductions recomputed for the last 3 months.',
+                'type': 'success',
+                'sticky': False,
+            },
+        }
 
     def _recompute_affected_attendances(self):
         """Force-recompute stored late-tracking fields on attendance records
@@ -398,7 +440,7 @@ class AttendanceLateConfig(models.Model):
             'grace_late_times', 'deduction_mode', 'daily_work_hours',
             'half_day_friday_enabled', 'half_day_friday_positions',
             'half_day_start_hour', 'half_day_end_hour', 'company_id',
-            'department_id', 'active',
+            'department_id', 'active', 'timezone',
         }
         if recompute_fields & set(vals.keys()):
             self._recompute_affected_attendances()

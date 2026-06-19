@@ -40,7 +40,7 @@
                                     <td><t t-esc="doc.employee_id.name"/></td>
                                     <td><t t-esc="doc.employee_id.department_id.name or '-'"/></td>
                                     <td><t t-esc="doc.date"/></td>
-                                    <td><t t-esc="doc.check_in" t-options="{'widget': 'datetime'}"/></td>
+                                    <td><t t-esc="doc.check_in_office_time"/></td>
                                     <td>
                                         <t t-esc="'%02d:%02d' % (int(doc.expected_start_time), int((doc.expected_start_time % 1) * 60))"/>
                                     </td>

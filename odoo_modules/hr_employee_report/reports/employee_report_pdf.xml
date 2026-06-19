@@ -15,104 +15,83 @@
         <t t-call="web.html_container">
             <t t-foreach="docs" t-as="doc">
                 <t t-call="web.external_layout">
-                    <div class="page" style="font-family: Arial, sans-serif;">
+                    <div class="page" style="font-family: 'Times New Roman', Times, serif; color: #222;">
 
-                        <!-- Title - centered, with enough top margin to clear header -->
-                        <div style="text-align: center; margin-top: 15px; margin-bottom: 8px;">
-                            <span style="color: #875A7B; font-size: 18px; font-weight: bold;">
+                        <!-- Title -->
+                        <div style="text-align: center; margin-top: 4px; margin-bottom: 10px;">
+                            <span style="color: #875A7B; font-size: 20px; font-weight: bold; letter-spacing: 0.5px;">
                                 Employee Monthly Report
                             </span>
                         </div>
 
-                        <table style="width: 100%; margin-bottom: 10px; font-size: 11px;">
+                        <table style="width: 100%; margin-bottom: 12px; font-size: 12px; border-top: 2px solid #875A7B; border-bottom: 1px solid #875A7B;">
                             <tr>
-                                <td style="width: 50%;"><b>Company:</b> <t t-esc="doc.company_id.name"/></td>
-                                <td style="width: 50%; text-align: right;">
+                                <td style="width: 50%; padding: 5px 4px;"><b>Company:</b> <t t-esc="doc.company_id.name"/></td>
+                                <td style="width: 50%; text-align: right; padding: 5px 4px;">
                                     <b>From:</b> <t t-esc="doc.date_from" t-options="{'widget': 'date'}"/>
-                                    <span style="margin: 0 10px;">|</span>
+                                    <span style="margin: 0 10px; color: #875A7B;">|</span>
                                     <b>To:</b> <t t-esc="doc.date_to" t-options="{'widget': 'date'}"/>
                                 </td>
                             </tr>
                         </table>
 
-                        <h3 style="color: #333; margin: 5px 0; font-size: 13px;">Employee Summary</h3>
+                        <h3 style="color: #875A7B; margin: 6px 0; font-size: 14px; font-weight: bold;">Employee Summary</h3>
 
-                        <table style="width: 100%; border-collapse: collapse; font-size: 7.5px; margin-bottom: 15px; letter-spacing: normal; word-spacing: normal;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 9px; margin-bottom: 16px;">
                             <thead>
                                 <tr style="background: #875A7B; color: white;">
-                                    <th style="padding: 4px 3px; border: 1px solid #ccc; text-align: left; white-space: nowrap;">Employee</th>
-                                    <th style="padding: 4px 3px; border: 1px solid #ccc; text-align: left; white-space: nowrap;">Dept</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Days</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Pres</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Abs</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Late</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">Time</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Late Ded</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">PdLv</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: center; white-space: nowrap;">UpLv</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Lv Ded</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Wage</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Rate</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Tot Ded</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Full Sal</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Present</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Shortfall</th>
-                                    <th style="padding: 4px 2px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Total</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: left; white-space: nowrap;">Employee</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: left; white-space: nowrap;">Dept</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">Work</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">Pres</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">Late</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">Time</th>
+                                    <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Late Ded</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">PdLv</th>
+                                    <th style="padding: 5px 4px; border: 1px solid #875A7B; text-align: center; white-space: nowrap;">UpLv</th>
+                                    <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Lv Ded</th>
+                                    <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Wage</th>
+                                    <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Tot Ded</th>
+                                    <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Final</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <t t-foreach="doc.summary_line_ids" t-as="line">
-                                    <tr t-attf-style="background: #{line_index % 2 == 0 and '#fff' or '#f9f9f9'};">
-                                        <td style="padding: 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="line.employee_name"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="line.department_name"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.total_working_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.total_present_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.absent_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.late_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.late_minutes_display"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.late_deduction"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.paid_leave_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.unpaid_leave_days"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.leave_deduction"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.wage"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % line.per_day_rate"/></td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;" t-attf-style="#{line.total_deduction > 0 and 'color:#e74c3c;' or ''}">
+                                    <tr t-attf-style="background: #{line_index % 2 == 0 and '#ffffff' or '#f6f2f5'};">
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="line.employee_name"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="line.department_name"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.total_working_days"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.total_present_days"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center;"><t t-esc="line.late_days"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center; white-space: nowrap;"><t t-esc="line.late_minutes_display"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % line.late_deduction"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.paid_leave_days"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % line.unpaid_leave_days"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % line.leave_deduction"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % line.wage"/></td>
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; white-space: nowrap;" t-attf-style="#{line.total_deduction > 0 and 'color:#e74c3c;' or ''}">
                                             <t t-esc="'%.2f' % line.total_deduction"/>
                                         </td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;">
-                                            <t t-esc="'%.2f' % line.full_salary"/>
-                                        </td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;">
+                                        <td style="padding: 4px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; white-space: nowrap;">
                                             <t t-esc="'%.2f' % line.final_amount"/>
-                                        </td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right;" t-attf-style="#{line.absence_shortfall &lt; 0 and 'color:#e74c3c;' or ''}">
-                                            <t t-esc="'%.2f' % line.absence_shortfall"/>
-                                        </td>
-                                        <td style="padding: 3px; border: 1px solid #ddd; text-align: right; font-weight: bold;" t-attf-style="#{line.total_amount &lt; 0 and 'color:#e74c3c;' or ''}">
-                                            <t t-esc="'%.2f' % line.total_amount"/>
                                         </td>
                                     </tr>
                                 </t>
                             </tbody>
                             <tfoot>
-                                <tr style="background: #f2f2f2; font-weight: bold;">
-                                    <td colspan="2" style="padding: 4px 3px; border: 1px solid #ddd; text-align: right;">Grand Total</td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('total_working_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('total_present_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('absent_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('late_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd;"></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_late_deduction"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%.2f' % sum(doc.summary_line_ids.mapped('paid_leave_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: center;"><t t-esc="'%.2f' % sum(doc.summary_line_ids.mapped('unpaid_leave_days'))"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_leave_deduction"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_wage"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd;"></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % doc.grand_total_deduction"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_full_salary"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_final_amount"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % doc.grand_absence_shortfall"/></td>
-                                    <td style="padding: 4px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % doc.grand_total_amount"/></td>
+                                <tr style="background: #ece4ea; font-weight: bold;">
+                                    <td colspan="2" style="padding: 5px 6px; border: 1px solid #ccc; text-align: right;">Grand Total</td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('total_working_days'))"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('total_present_days'))"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: center;"><t t-esc="sum(doc.summary_line_ids.mapped('late_days'))"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc;"></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % doc.grand_late_deduction"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('paid_leave_days'))"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: center;"><t t-esc="'%g' % sum(doc.summary_line_ids.mapped('unpaid_leave_days'))"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % doc.grand_leave_deduction"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % doc.grand_wage"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: right; color: #e74c3c; white-space: nowrap;"><t t-esc="'%.2f' % doc.grand_total_deduction"/></td>
+                                    <td style="padding: 5px 6px; border: 1px solid #ccc; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % doc.grand_final_amount"/></td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -122,68 +101,70 @@
 
                 <t t-foreach="doc.summary_line_ids" t-as="emp_line">
                     <t t-call="web.external_layout">
-                        <div class="page" style="font-family: Arial, sans-serif;">
+                        <div class="page" style="font-family: 'Times New Roman', Times, serif; color: #222;">
 
-                            <!-- Employee name - centered, with enough top margin to clear header -->
-                            <div style="text-align: center; margin-top: 15px; margin-bottom: 10px; padding: 8px 0; border-bottom: 2px solid #875A7B;">
-                                <span style="color: #875A7B; font-size: 16px; font-weight: bold;">
+                            <!-- Employee name -->
+                            <div style="text-align: center; margin-top: 4px; margin-bottom: 12px; padding: 8px 0; border-bottom: 2px solid #875A7B;">
+                                <span style="color: #875A7B; font-size: 17px; font-weight: bold;">
                                     <t t-esc="emp_line.employee_name"/>
                                 </span>
                                 <t t-if="emp_line.department_name">
                                     <br/>
-                                    <span style="font-size: 11px; color: #666;">
+                                    <span style="font-size: 12px; color: #666;">
                                         <t t-esc="emp_line.department_name"/>
                                     </span>
                                 </t>
                             </div>
 
-                            <table style="width: 100%; border-collapse: collapse; font-size: 7.5px; letter-spacing: normal; word-spacing: normal;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 9px;">
                                 <thead>
                                     <tr style="background: #875A7B; color: white;">
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Date</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Type</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Description</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Check In</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Late</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc;">Late Reason</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">Leave Type</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; white-space: nowrap;">P/U</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc;">Leave Reason</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Late Ded</th>
-                                        <th style="padding: 3px; border: 1px solid #ccc; text-align: right; white-space: nowrap;">Lv Ded</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Date</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Type</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B;">Description</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Check In</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Check Out</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Late</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B;">Late Reason</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">Leave Type</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B; white-space: nowrap;">P/U</th>
+                                        <th style="padding: 5px 4px; border: 1px solid #875A7B;">Leave Reason</th>
+                                        <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Late Ded</th>
+                                        <th style="padding: 5px 6px; border: 1px solid #875A7B; text-align: right; white-space: nowrap;">Lv Ded</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <t t-set="emp_details" t-value="doc.detail_line_ids.filtered(lambda d: d.employee_id.id == emp_line.employee_id.id).sorted(key=lambda d: d.entry_date)"/>
                                     <t t-foreach="emp_details" t-as="dl">
-                                        <t t-set="bg" t-value="'#fff'"/>
+                                        <t t-set="bg" t-value="'#ffffff'"/>
                                         <t t-if="dl.day_type == 'holiday'" t-set="bg" t-value="'#f0f0f0'"/>
                                         <t t-if="dl.day_type == 'absent'" t-set="bg" t-value="'#ffeaea'"/>
                                         <t t-if="dl.day_type == 'late'" t-set="bg" t-value="'#fff8e1'"/>
                                         <t t-if="dl.day_type == 'leave'" t-set="bg" t-value="'#e8f5e9'"/>
 
                                         <tr t-attf-style="background: #{bg};">
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.entry_date" t-options="{'widget': 'date'}"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;">
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.entry_date" t-options="{'widget': 'date'}"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;">
                                                 <span t-if="dl.day_type == 'present'" style="color: #2196F3;">Present</span>
                                                 <span t-if="dl.day_type == 'late'" style="color: #FF9800;">Late</span>
                                                 <span t-if="dl.day_type == 'leave'" style="color: #4CAF50;">Leave</span>
-                                                <span t-if="dl.day_type == 'absent'" style="color: #f44336;">Absent</span>
+                                                <span t-if="dl.day_type == 'absent'" style="color: #9E9E9E;">Not Entered</span>
                                                 <span t-if="dl.day_type == 'holiday'" style="color: #9E9E9E;">Holiday</span>
                                             </td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.description"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.check_in_time"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.late_minutes_display"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd;"><t t-esc="dl.late_reason"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;">
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd;"><t t-esc="dl.description"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.check_in_time"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.check_out_time"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.late_minutes_display"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd;"><t t-esc="dl.late_reason"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;">
                                                 <t t-if="dl.leave_type"><t t-esc="dict(dl._fields['leave_type'].selection).get(dl.leave_type, '')"/></t>
                                             </td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.leave_paid_type"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd;"><t t-esc="dl.leave_reason"/></td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; text-align: right; white-space: nowrap;" t-attf-style="#{dl.late_deduction > 0 and 'color:#e74c3c; font-weight:bold;' or ''}">
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd; white-space: nowrap;"><t t-esc="dl.leave_paid_type"/></td>
+                                            <td style="padding: 3px 4px; border: 1px solid #ddd;"><t t-esc="dl.leave_reason"/></td>
+                                            <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; white-space: nowrap;" t-attf-style="#{dl.late_deduction > 0 and 'color:#e74c3c; font-weight:bold;' or ''}">
                                                 <t t-if="dl.late_deduction > 0" t-esc="'%.2f' % dl.late_deduction"/>
                                             </td>
-                                            <td style="padding: 2px 3px; border: 1px solid #ddd; text-align: right; white-space: nowrap;" t-attf-style="#{dl.leave_deduction > 0 and 'color:#e74c3c; font-weight:bold;' or ''}">
+                                            <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; white-space: nowrap;" t-attf-style="#{dl.leave_deduction > 0 and 'color:#e74c3c; font-weight:bold;' or ''}">
                                                 <t t-if="dl.leave_deduction > 0" t-esc="'%.2f' % dl.leave_deduction"/>
                                             </td>
                                         </tr>
@@ -191,46 +172,18 @@
                                 </tbody>
                             </table>
 
-                            <table style="width: 38%; margin-left: auto; font-size: 9px; border-collapse: collapse; margin-top: 5px;">
-                                <tr style="background: #f9f9f9;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold;">Monthly Wage</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % emp_line.wage"/></td>
+                            <table style="width: 32%; margin-left: auto; font-size: 10px; border-collapse: collapse; margin-top: 10px;">
+                                <tr style="background: #f6f2f5;">
+                                    <td style="padding: 5px 8px; border: 1px solid #ddd; font-weight: bold;">Wage</td>
+                                    <td style="padding: 5px 8px; border: 1px solid #ddd; text-align: right; white-space: nowrap;"><t t-esc="'%.2f' % emp_line.wage"/></td>
                                 </tr>
                                 <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd;">Per Day Rate</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="'%.2f' % emp_line.per_day_rate"/></td>
+                                    <td style="padding: 5px 8px; border: 1px solid #ddd; font-weight: bold; color: #e74c3c;">Total Deduction</td>
+                                    <td style="padding: 5px 8px; border: 1px solid #ddd; text-align: right; color: #e74c3c; white-space: nowrap;"><t t-esc="'%.2f' % emp_line.total_deduction"/></td>
                                 </tr>
-                                <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Unpaid Leave Deduction</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.leave_deduction"/></td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Late Deduction</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.late_deduction"/></td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; color: #e74c3c;">Total Deductions</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.total_deduction"/></td>
-                                </tr>
-                                <tr style="background: #f2f2f2;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold;">Full Salary (Full Month)</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold;"><t t-esc="'%.2f' % emp_line.full_salary"/></td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd;">Present Days</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right;"><t t-esc="emp_line.total_present_days"/></td>
-                                </tr>
-                                <tr style="background: #f2f2f2;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; font-size: 10px;">Present Pay</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; font-size: 10px;"><t t-esc="'%.2f' % emp_line.final_amount"/></td>
-                                </tr>
-                                <tr>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; color: #e74c3c;">Absence Shortfall</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; color: #e74c3c;"><t t-esc="'%.2f' % emp_line.absence_shortfall"/></td>
-                                </tr>
-                                <tr style="background: #f2f2f2;">
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; font-weight: bold; font-size: 10px;">Total Amount</td>
-                                    <td style="padding: 3px 6px; border: 1px solid #ddd; text-align: right; font-weight: bold; font-size: 10px;" t-attf-style="#{emp_line.total_amount &lt; 0 and 'color:#e74c3c;' or ''}"><t t-esc="'%.2f' % emp_line.total_amount"/></td>
+                                <tr style="background: #ece4ea;">
+                                    <td style="padding: 5px 8px; border: 1px solid #ccc; font-weight: bold; font-size: 11px;">Final Amount</td>
+                                    <td style="padding: 5px 8px; border: 1px solid #ccc; text-align: right; font-weight: bold; font-size: 11px; white-space: nowrap;"><t t-esc="'%.2f' % emp_line.final_amount"/></td>
                                 </tr>
                             </table>
 

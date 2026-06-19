@@ -17,7 +17,7 @@
         - REST API for mobile app integration
         - Integrated with Attendance module
     """,
-    "depends": ["base", "web", "hr", "hr_attendance"],
+    "depends": ["base", "web", "hr", "hr_attendance", "hr_attendance_late"],
     "data": [
         "security/leave_groups.xml",
         "security/ir.model.access.csv",

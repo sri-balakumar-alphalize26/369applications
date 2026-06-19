@@ -6,7 +6,7 @@
         <field name="name">hr.late.deduction.slab.tree</field>
         <field name="model">hr.late.deduction.slab</field>
         <field name="arch" type="xml">
-            <list string="Deduction Slabs" editable="bottom">
+            <list string="Deduction Slabs" editable="bottom" js_class="deduction_slab_list">
                 <field name="company_id" column_invisible="1"/>
                 <field name="from_minutes"/>
                 <field name="from_display" string="From (H:MM)"/>
@@ -25,6 +25,17 @@
         <field name="arch" type="xml">
             <form string="Deduction Slab">
                 <sheet>
+                    <div class="alert alert-warning" role="status">
+                        <b>When are these slabs used?</b>
+                        <ul class="mb-0">
+                            <li>If the Office Hours config <b>Deduction Mode = Fixed Amount (Slab-based)</b> →
+                                these slab amounts are used for every late deduction.</li>
+                            <li>If <b>Deduction Mode = Hourly Wage</b> → these slabs are <b>NOT</b> used…
+                                <b>except as a fallback for unwaged employees</b>: if an employee has no wage,
+                                the hourly amount is 0, so the system falls back to the matching slab amount
+                                (with no slab, their deduction would be 0).</li>
+                        </ul>
+                    </div>
                     <group>
                         <group>
                             <field name="company_id"/>
@@ -48,6 +59,14 @@
         <field name="name">Deduction Slabs</field>
         <field name="res_model">hr.late.deduction.slab</field>
         <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Add a late-deduction slab</p>
+            <p>
+                These slabs are used when the Office Hours config <b>Deduction Mode = Fixed Amount (Slab-based)</b>.
+                In <b>Hourly Wage</b> mode they are not used — except as a <b>fallback for employees with no wage</b>
+                (whose hourly amount would otherwise be 0).
+            </p>
+        </field>
     </record>
 
 </odoo>

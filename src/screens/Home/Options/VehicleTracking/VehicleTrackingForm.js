@@ -1709,6 +1709,70 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     }
   };
 
+  // Source = the driver's CURRENT location. Used on mount for new trips and by
+  // the "Use current location" button. Captures coords + a reverse-geocoded
+  // name into formData.source / sourceCoords, so the trip's source is wherever
+  // the driver physically is. Because source = current position, the source
+  // match check is trivially satisfied (0 m). Odoo find-or-creates the matching
+  // vehicle.location from the name+coords we send at save time.
+  const setSourceFromCurrentLocation = async () => {
+    try {
+      showToastMessage('Getting your current location…', 'info');
+      const loc = await getCurrentLocation('Source');
+      if (!loc || loc.source === 'fallback') {
+        showToastMessage('Could not get your location. Turn on GPS and retry.', 'error');
+        return;
+      }
+      setSourceCoords({ latitude: loc.latitude, longitude: loc.longitude });
+      setSourceMatched(true);
+      setSourceDistance(0);
+      let name = '';
+      try {
+        const rg = await Location.reverseGeocodeAsync({ latitude: loc.latitude, longitude: loc.longitude });
+        if (rg && rg.length > 0) {
+          const a = rg[0];
+          name = [a.name, a.street, a.city, a.region].filter(Boolean).join(', ');
+        }
+      } catch (_) { /* fall back to coord string below */ }
+      if (!name) name = `${loc.latitude.toFixed(5)}, ${loc.longitude.toFixed(5)}`;
+      handleInputChange('source', name);
+      showToastMessage('Current location set as source', 'success');
+    } catch (e) {
+      console.error('[VehicleTrackingForm] setSourceFromCurrentLocation failed:', e);
+      showToastMessage('Could not set current location', 'error');
+    }
+  };
+
+  // Destination = a place picked on the full-screen OSM map. Opens the picker,
+  // seeding it with the best center we have (already-picked dest → current
+  // location → source). The picker hands {name, latitude, longitude} back via
+  // onPicked, which fills formData.destination + destCoords (the latter feeds
+  // the OpenRouteService estimate effect).
+  const openDestinationPicker = () => {
+    navigation.navigate('DestinationMapPicker', {
+      initialLatitude: destCoords?.latitude ?? currentCoords?.latitude ?? sourceCoords?.latitude,
+      initialLongitude: destCoords?.longitude ?? currentCoords?.longitude ?? sourceCoords?.longitude,
+      initialName: formData.destination || '',
+      onPicked: ({ name, latitude, longitude }) => {
+        handleInputChange('destination', name);
+        setDestCoords({ latitude, longitude });
+      },
+    });
+  };
+
+  // New trips: auto-capture the driver's current location as the source on
+  // mount. Skipped for edit mode (keep the saved source), for FieldAttendance
+  // continuations where the source is locked to the previous trip's
+  // destination, and for already started/ended/cancelled trips (read-only).
+  useEffect(() => {
+    const td = route?.params?.tripData;
+    if (td && (td.start_trip || td.end_trip || td.trip_cancel)) return;
+    if (isEditMode) return;
+    if (sourceLocked) return;
+    setSourceFromCurrentLocation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Dispatcher: when a button sets `pendingSubmit`, run handleSubmit AFTER React
   // commits the latest formData. This breaks the stale-closure race that was
   // preventing End Trip from working (handleSubmit captured at tap-time saw
@@ -1791,20 +1855,11 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         tyre_checking: checklistSnake.tyre_checking,
         daily_checks: checklistSnake.daily_checks,
         date: formatDateOdoo(formData.date),
-        destination_id: (() => {
-          const selectedDestination = (dropdowns.destinations || []).find(d => d.name === formData.destination);
-          if (selectedDestination?._id) return selectedDestination._id;
-          // Fallback: when editing, preserve the previously-saved id rather
-          // than nulling the field if the dropdown lookup didn't match.
-          if (isEditMode && existingTripData?.destination_id) return m2oId(existingTripData.destination_id);
-          return null;
-        })(),
-        source_id: (() => {
-          const selectedSource = (dropdowns.sourceLocations || []).find(s => s.name === formData.source);
-          if (selectedSource?._id) return selectedSource._id;
-          if (isEditMode && existingTripData?.source_id) return m2oId(existingTripData.source_id);
-          return null;
-        })(),
+        // Source/destination are sent as captured name + coordinates (source =
+        // current GPS, destination = map pick). Odoo's create/write find-or-
+        // creates the matching vehicle.location and sets source_id/destination_id,
+        // so distance estimate, GPS verification, trip-chaining and reports keep
+        // working. The resolution block below `submitData` builds these keys.
         driver_id: driver_id,
         end_km: parseInt(formData.endKM) || 0,
         end_latitude: formData.endLatitude ? String(formData.endLatitude) : '',
@@ -1845,6 +1900,26 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         current_odometer: formData.currentOdometer ? String(formData.currentOdometer) : '',
         odometer_image: formData.odometerImageUri ? String(formData.odometerImageUri) : '',
       };
+
+      // --- Source / Destination resolution ---
+      // Prefer the freshly-captured coords (source = current GPS, destination =
+      // map pick). Odoo find-or-creates the vehicle.location from name+coords.
+      // Fall back to the previously-saved id only when we have no coords (edit
+      // mode where coords couldn't be recovered) so the link isn't nulled.
+      if (sourceCoords && Number.isFinite(sourceCoords.latitude) && Number.isFinite(sourceCoords.longitude)) {
+        submitData.source_name = formData.source || '';
+        submitData.source_latitude = sourceCoords.latitude;
+        submitData.source_longitude = sourceCoords.longitude;
+      } else if (isEditMode && existingTripData?.source_id) {
+        submitData.source_id = m2oId(existingTripData.source_id);
+      }
+      if (destCoords && Number.isFinite(destCoords.latitude) && Number.isFinite(destCoords.longitude)) {
+        submitData.destination_name = formData.destination || '';
+        submitData.destination_latitude = destCoords.latitude;
+        submitData.destination_longitude = destCoords.longitude;
+      } else if (isEditMode && existingTripData?.destination_id) {
+        submitData.destination_id = m2oId(existingTripData.destination_id);
+      }
 
 
       // Add trip ID if editing existing trip (only id, no is_update/isUpdate/tripId)
@@ -2579,57 +2654,32 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           <Text style={styles.sectionTitle}>Route Details</Text>
         </View>
         <View style={styles.sectionGroup}>
-          {/* Started Location — always read-only, but once the trip has been
-              started the value is also locked-by-data (no further GPS or
-              reverse-geocode updates flow into it). Add a lock icon + the
-              same blue-grey tint we use on the other locked fields (Vehicle,
-              Date, Source) so the user can see the state at a glance. */}
-          <FormInput
-            label="Started Location:"
-            value={currentLocationName || 'Fetching location...'}
-            editable={false}
-            dropIcon={tripStartedFlag ? 'lock' : undefined}
-            style={{ backgroundColor: tripStartedFlag ? '#F0F4F8' : '#f5f5f5' }}
-          />
-
-          {/* Source — locked when entered via FieldAttendance's Create-New CTA
-              so it can't drift from the previous trip's destination. Normal
-              dropdown when opened from anywhere else (incl. primary-trip mode,
-              where prefillSourceId is null). */}
+          {/* Source — the driver's current GPS location (auto-fetched on open;
+              tap to refresh). Locked when entered via FieldAttendance's
+              Create-New CTA so it can't drift from the previous trip's
+              destination. No "Source Match" check is needed any more: source =
+              where the driver is, so it's always a match. The old "Started
+              Location" row was removed too — it duplicated this value. */}
           <FormInput
             label="Source:"
             value={formData.source}
-            onPress={(isFieldDisabled('source') || sourceLocked) ? null : () => openDropdown('source')}
+            placeholder="Tap to use current location"
+            onPress={(isFieldDisabled('source') || sourceLocked) ? null : setSourceFromCurrentLocation}
             error={errors.source}
-            dropIcon={sourceLocked ? 'lock' : 'chevron-down'}
+            dropIcon={sourceLocked ? 'lock' : 'crosshairs-gps'}
             required
             editable={false}
             style={[getFieldStyle('source'), sourceLocked && { backgroundColor: '#EEF2F7' }]}
           />
-          {/* Source Match Indicator */}
-          {initialTripState === 'not_started' && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 8 }}>
-              <Text style={{ fontSize: 13, fontFamily: FONT_FAMILY.urbanistMedium, marginRight: 8 }}>Source Match:</Text>
-              {sourceMatched === null ? (
-                <Text style={{ color: COLORS.gray }}>Not verified</Text>
-              ) : sourceMatched === true ? (
-                <Text style={{ color: COLORS.green }}>✓ Verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
-              ) : (
-                <Text style={{ color: '#B00020' }}>✗ Not verified ({sourceDistance ? Math.round(sourceDistance) + ' m' : ''})</Text>
-              )}
-              <Pressable onPress={verifySource} style={{ marginLeft: 12 }}>
-                <Text style={{ color: COLORS.primaryThemeColor }}>Verify</Text>
-              </Pressable>
-            </View>
-          )}
 
-          {/* Destination */}
+          {/* Destination — picked on the full-screen OSM map (no Google key) */}
           <FormInput
             label="Destination:"
             value={formData.destination}
-            onPress={isFieldDisabled('destination') ? null : () => openDropdown('destination')}
+            placeholder="Tap to select on map"
+            onPress={isFieldDisabled('destination') ? null : openDestinationPicker}
             error={errors.destination}
-            dropIcon="chevron-down"
+            dropIcon="map-marker"
             required
             editable={false}
             style={getFieldStyle('destination')}

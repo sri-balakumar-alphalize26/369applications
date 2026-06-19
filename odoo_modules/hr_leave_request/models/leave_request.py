@@ -159,17 +159,61 @@ class LeaveRequest(models.Model):
     def _compute_paid_status(self):
         Config = self.env['hr.leave.config']
         for rec in self:
-            rec.is_paid = True
-            rec.paid_days = rec.number_of_days
+            # Default a leave to UNPAID. It only becomes paid when an *enabled*
+            # paid-leave policy with remaining quota grants it (handled below).
+            # This makes both "no policy configured" and "paid leave off" unpaid,
+            # instead of silently treating leaves as paid.
+            rec.is_paid = False
+            rec.paid_days = 0.0
             rec.unpaid_days = 0.0
             rec.deduction_amount = 0.0
 
             if not rec.hr_employee_id or not rec.from_date or rec.state in ('rejected', 'cancelled'):
                 continue
 
+            # Real, active leave → fully-unpaid baseline.
+            rec.unpaid_days = rec.number_of_days
+
             company_id = rec.hr_employee_id.company_id.id
             config = Config.search([('company_id', '=', company_id)], limit=1)
+
+            # Daily-rate denominator = working days in the leave's month
+            # (half-day-Friday aware), so a full month of unpaid leave wipes the
+            # wage exactly and matches the employee report. Falls back to calendar
+            # days only when no attendance config / no working days are defined.
+            late_config = self.env['hr.attendance.late.config'].get_config_record_for_employee(
+                rec.hr_employee_id.id
+            )
+            daily_basis = late_config.get_working_days_in_month(
+                rec.from_date.year, rec.from_date.month, company_id
+            ) if late_config else 0
+            if daily_basis <= 0:
+                daily_basis = calendar.monthrange(
+                    rec.from_date.year, rec.from_date.month
+                )[1]
+
+            def _unpaid_deduction(unpaid_days, _rec=rec, _config=config, _basis=daily_basis):
+                # Salary-based unpaid deduction: wage ÷ working days × unpaid days.
+                # Deduct by default — only a SAVED policy with the box UNticked
+                # turns it off. (No policy at all still deducts, since unpaid
+                # leave means the day isn't paid.)
+                if _config and not _config.unpaid_leave_deduction_enabled:
+                    return 0.0
+                try:
+                    emp_wage = _rec.hr_employee_id.contract_wage or 0.0
+                except Exception:
+                    emp_wage = 0.0
+                if emp_wage > 0 and _basis > 0:
+                    # Round the daily rate to currency precision first, then per
+                    # record, so it matches the report (185.19 × days).
+                    daily_rate = round(emp_wage / _basis, 2)
+                    return round(unpaid_days * daily_rate, 2)
+                return 0.0
+
             if not config or not config.paid_leave_enabled:
+                # No policy at all, or Paid Leave switched OFF → fully unpaid
+                # (deducted at the salary-based rate when deduction is enabled).
+                rec.deduction_amount = _unpaid_deduction(rec.unpaid_days)
                 continue
 
             year = rec.from_date.year
@@ -221,26 +265,12 @@ class LeaveRequest(models.Model):
                 rec.unpaid_days = 0.0
                 rec.deduction_amount = 0.0
             else:
-                # Partially or fully unpaid — split the days
+                # Partially or fully unpaid — split the days; the over-quota part
+                # is unpaid and deducted at the salary-based rate.
                 rec.paid_days = remaining
                 rec.unpaid_days = rec.number_of_days - remaining
                 rec.is_paid = rec.unpaid_days == 0
-                if config.unpaid_leave_deduction_enabled:
-                    # Salary-based: wage ÷ calendar days in month × unpaid days
-                    try:
-                        emp_wage = rec.hr_employee_id.contract_wage or 0.0
-                    except Exception:
-                        emp_wage = 0.0
-                    days_in_month = calendar.monthrange(
-                        rec.from_date.year, rec.from_date.month
-                    )[1]
-                    if emp_wage > 0 and days_in_month > 0:
-                        daily_rate = emp_wage / days_in_month
-                        rec.deduction_amount = round(rec.unpaid_days * daily_rate, 2)
-                    else:
-                        rec.deduction_amount = 0.0
-                else:
-                    rec.deduction_amount = 0.0
+                rec.deduction_amount = _unpaid_deduction(rec.unpaid_days)
 
     # --- Constraints ---
 

@@ -103,6 +103,10 @@ class EmployeeReport(models.Model):
     date_from = fields.Date(string='From', required=True)
     date_to = fields.Date(string='To', required=True)
     company_id = fields.Many2one('res.company', string='Company')
+    currency_id = fields.Many2one(
+        'res.currency', string='Currency',
+        related='company_id.currency_id', readonly=True,
+    )
     employee_select = fields.Selection([
         ('all', 'All Employees'),
         ('selected', 'Selected Employees'),
@@ -118,12 +122,6 @@ class EmployeeReport(models.Model):
         'hr.employee.report.detail.line', 'report_id', string='Detailed Entries',
     )
 
-    # Currency for monetary formatting
-    currency_id = fields.Many2one(
-        'res.currency', string='Currency',
-        related='company_id.currency_id', readonly=True,
-    )
-
     # ── Grand Totals (computed) ──────────────────────────────
     grand_late_deduction = fields.Float(
         compute='_compute_grand_totals', string='Total Late Deductions',
@@ -136,18 +134,6 @@ class EmployeeReport(models.Model):
     )
     grand_wage = fields.Float(
         compute='_compute_grand_totals', string='Total Wages',
-    )
-    grand_earned = fields.Float(
-        compute='_compute_grand_totals', string='Total Earned',
-    )
-    grand_full_salary = fields.Float(
-        compute='_compute_grand_totals', string='Total Full Salary',
-    )
-    grand_absence_shortfall = fields.Float(
-        compute='_compute_grand_totals', string='Total Absence Shortfall',
-    )
-    grand_total_amount = fields.Float(
-        compute='_compute_grand_totals', string='Grand Total Amount',
     )
     grand_final_amount = fields.Float(
         compute='_compute_grand_totals', string='Grand Final Amount',
@@ -165,8 +151,6 @@ class EmployeeReport(models.Model):
 
     @api.depends('summary_line_ids.late_deduction', 'summary_line_ids.leave_deduction',
                  'summary_line_ids.total_deduction', 'summary_line_ids.wage',
-                 'summary_line_ids.earned_amount', 'summary_line_ids.full_salary',
-                 'summary_line_ids.absence_shortfall', 'summary_line_ids.total_amount',
                  'summary_line_ids.final_amount')
     def _compute_grand_totals(self):
         for rec in self:
@@ -175,10 +159,6 @@ class EmployeeReport(models.Model):
             rec.grand_leave_deduction = sum(lines.mapped('leave_deduction'))
             rec.grand_total_deduction = sum(lines.mapped('total_deduction'))
             rec.grand_wage = sum(lines.mapped('wage'))
-            rec.grand_earned = sum(lines.mapped('earned_amount'))
-            rec.grand_full_salary = sum(lines.mapped('full_salary'))
-            rec.grand_absence_shortfall = sum(lines.mapped('absence_shortfall'))
-            rec.grand_total_amount = sum(lines.mapped('total_amount'))
             rec.grand_final_amount = sum(lines.mapped('final_amount'))
 
     # ── Refresh / Generate Data ──────────────────────────────
@@ -255,8 +235,13 @@ class EmployeeReport(models.Model):
                     return _Slab.get_deduction_for_minutes(late_minutes, company_id=_emp.company_id.id)
 
             def calc_leave_deduction_live(leave_record, _emp=emp):
-                """Calculate leave deduction live using salary-based formula — never trust stale stored value."""
-                import calendar as _cal
+                """Calculate leave deduction live using salary-based formula — never trust stale stored value.
+
+                Daily rate = wage ÷ working days in the month (the same
+                `total_working_days` figure this report computes, half-day-Friday
+                aware). This makes a full month of unpaid leave wipe the wage
+                exactly, and keeps the report consistent with the absence rate.
+                """
                 if leave_record.unpaid_days <= 0:
                     return 0.0
                 leave_cfg = self.env['hr.leave.config'].search(
@@ -268,18 +253,30 @@ class EmployeeReport(models.Model):
                     _wage = _emp.contract_wage or 0.0
                 except Exception:
                     _wage = 0.0
-                if _wage <= 0:
+                if _wage <= 0 or total_working_days <= 0:
                     return 0.0
-                _from = leave_record.from_date
-                _days_in_month = _cal.monthrange(_from.year, _from.month)[1]
-                daily_rate = _wage / _days_in_month
+                # Round the daily rate to currency precision FIRST, then per
+                # record — so one day = wage/working-days rounded to 2dp (e.g.
+                # 185.19) and N days = that × N (185.19×5 = 925.95). This matches
+                # the leave request's stored deduction_amount exactly.
+                daily_rate = round(_wage / total_working_days, 2)
                 return round(leave_record.unpaid_days * daily_rate, 2)
 
+
             # ── Calculate working days in the month ──────────
-            total_working_days = 0
+            # A half-day Friday (Friday in a configured half-day position)
+            # counts as 0.5 working day even when Friday itself is unchecked
+            # as a working day. Full working days (the checked weekdays that
+            # aren't holidays) count 1. The two branches are mutually
+            # exclusive so a half-day Friday is never also counted as a full
+            # day. Example: June with Friday off + positions "2,4,5" →
+            # 26 full days + 0.5 + 0.5 = 27.
+            total_working_days = 0.0
             current_date = d_from
             while current_date <= d_to:
-                if current_date.weekday() in working_days_list:
+                if Config.is_half_day_friday(current_date, emp.id):
+                    total_working_days += 0.5
+                elif current_date.weekday() in working_days_list:
                     if not Holiday.is_public_holiday(current_date, emp.company_id.id):
                         total_working_days += 1
                 current_date += timedelta(days=1)
@@ -297,7 +294,11 @@ class EmployeeReport(models.Model):
                 if att.date:
                     present_dates.add(att.date)
 
-            total_present_days = len(present_dates)
+            # Present on a half-day Friday counts 0.5 so the "Present Days"
+            # figure stays consistent with the half-day-weighted working days.
+            total_present_days = 0.0
+            for _d in present_dates:
+                total_present_days += 0.5 if Config.is_half_day_friday(_d, emp.id) else 1
 
             # ── LATE DATA (count TIMES not days) ────────────
             # Use late_sequence > 0 as the canonical "first late check-in of
@@ -330,12 +331,20 @@ class EmployeeReport(models.Model):
                 late_date_info[att.date].append(att)
                 late_dates_seen.add(att.date)
                 total_late_minutes += att.late_minutes
-                # Per-record deduction is already grace-aware. Records inside
-                # grace have deduction_amount = 0; records past grace carry
-                # the slab/hourly amount; waived records also = 0.
-                if att.deduction_amount > 0:
+                # Recompute the deduction live — working days / deduction mode /
+                # slabs may have changed since the stored value was computed, and
+                # in Hourly mode the rate depends on working days. Apply grace +
+                # waiver exactly like the detail lines so the summary total always
+                # matches the day-wise breakdown (and a single Refresh suffices —
+                # no separate "Recompute Late Records" step needed).
+                if att.is_waived:
+                    continue
+                if att.late_sequence and att.late_sequence <= grace_days:
+                    continue
+                live_ded = calc_deduction_live(att.late_minutes, att.date)
+                if live_ded > 0:
                     late_times_after_grace += 1
-                    total_late_deduction += att.deduction_amount
+                    total_late_deduction += live_ded
 
             # ── LEAVE DATA ───────────────────────────────────
             leave_records = self.env['hr.leave.request'].search([
@@ -345,9 +354,18 @@ class EmployeeReport(models.Model):
                 ('from_date', '<=', str(d_to)),
             ], order='from_date asc')
 
+            # Leave Policy changes (e.g. unchecking Paid Leave) are NOT
+            # dependencies of `_compute_paid_status`, so the stored
+            # paid_days/unpaid_days can be stale. Force a fresh recompute so
+            # the report always reflects the current policy — same
+            # "never trust stale stored value" stance used for late deductions.
+            if leave_records:
+                leave_records._compute_paid_status()
+
             total_paid_days = 0.0
             total_unpaid_days = 0.0
             total_leave_deduction = 0.0
+            total_leave_only_ded = 0.0  # unpaid-LEAVE deductions only (no absence)
             leave_date_info = {}  # date -> leave record
 
             type_labels = dict(
@@ -357,7 +375,9 @@ class EmployeeReport(models.Model):
             for lr in leave_records:
                 total_paid_days += lr.paid_days
                 total_unpaid_days += lr.unpaid_days
-                total_leave_deduction += calc_leave_deduction_live(lr)
+                _lr_ded = calc_leave_deduction_live(lr)
+                total_leave_deduction += _lr_ded
+                total_leave_only_ded += _lr_ded  # leave-request deductions only
 
                 # Map leave to each day it covers
                 lr_start = lr.from_date
@@ -368,13 +388,6 @@ class EmployeeReport(models.Model):
                         leave_date_info[lr_current] = lr
                     lr_current += timedelta(days=1)
 
-            # Leave days the employee actually applied for (paid + unpaid),
-            # captured BEFORE the auto half-day section adds 0.5s to unpaid.
-            # The "Absent" column shows this, not un-attended/future days.
-            leave_days_applied = total_paid_days + total_unpaid_days
-            # Pure unpaid LEAVE days (before auto-half) — drives Absence Shortfall.
-            unpaid_leave_applied = total_unpaid_days
-
             # ── AUTO HALF-DAY DETECTION (split shift only) ───
             # For each working day, check if only one session has attendance
             # S1 present + S2 absent = auto half-day PM
@@ -384,7 +397,8 @@ class EmployeeReport(models.Model):
             if shift_type == 'split':
                 session1_end = config_data.get('office_end_hour', 14.0)
                 import pytz as _pytz
-                _tz = _pytz.timezone(emp.tz or 'UTC')
+                # Office Timezone (config) wins, like the late computes.
+                _tz = _pytz.timezone(config_data.get('timezone') or emp.tz or 'UTC')
                 # Group attendance by date and session
                 att_by_date = {}
                 for att in all_attendance:
@@ -404,14 +418,12 @@ class EmployeeReport(models.Model):
                 def _half_day_deduction(check_date):
                     if not _leave_config or not _leave_config.unpaid_leave_deduction_enabled:
                         return 0.0
-                    import calendar as _cal
                     try:
                         _wage = emp.contract_wage or 0.0
                     except Exception:
                         _wage = 0.0
-                    _days_in_month = _cal.monthrange(check_date.year, check_date.month)[1]
-                    if _wage > 0 and _days_in_month > 0:
-                        return round(_wage / _days_in_month / 2.0, 2)
+                    if _wage > 0 and total_working_days > 0:
+                        return round(round(_wage / total_working_days, 2) / 2.0, 2)
                     return 0.0
 
                 # Today's date in the employee's timezone (the day-in-progress
@@ -459,12 +471,27 @@ class EmployeeReport(models.Model):
                     total_leave_deduction += _info['deduction']
 
             # ── BUILD DAY-WISE DETAIL LINES ──────────────────
+            # Today (user timezone) — days after this haven't happened yet, so a
+            # working day with no data is "not arrived", not absent/not-entered.
+            report_today = fields.Date.context_today(self)
+            # Office timezone for displaying check-in/out (config → employee → UTC),
+            # so the report reads the same office time for everyone.
+            import pytz as _pytz
+            report_tz = _pytz.timezone(config_data.get('timezone') or emp.tz or 'UTC')
+
+            def _office_time(dt):
+                return _pytz.utc.localize(dt).astimezone(report_tz).strftime('%I:%M %p') if dt else ''
+
             current_date = d_from
             day_seq = 0
             while current_date <= d_to:
                 is_working = current_date.weekday() in working_days_list
                 is_holiday = Holiday.is_public_holiday(current_date, emp.company_id.id)
                 is_half_day_fri = Config.is_half_day_friday(current_date, emp.id)
+                # A half-day Friday is an expected (half) working day even though
+                # Friday itself is unchecked, so it must be treated as absent when
+                # nobody checks in — otherwise it would be silently dropped.
+                is_expected = is_working or is_half_day_fri
 
                 # Determine what happened on this day
                 has_leave = current_date in leave_date_info
@@ -472,7 +499,7 @@ class EmployeeReport(models.Model):
                 is_present = current_date in present_dates
 
                 # Skip non-working days (weekends) unless they have data
-                if not is_working and not is_holiday and not has_leave and not is_present:
+                if not is_expected and not is_holiday and not has_leave and not is_present:
                     current_date += timedelta(days=1)
                     continue
 
@@ -512,16 +539,15 @@ class EmployeeReport(models.Model):
 
                     # If employee also came late on this leave day, show first late
                     check_in_str = ''
+                    check_out_str = ''
                     late_min = 0
                     late_min_disp = ''
                     late_reas = ''
                     late_ded = 0.0
                     if has_late:
                         att = late_date_info[current_date][0]  # first late of the day
-                        if att.check_in:
-                            check_in_str = fields.Datetime.context_timestamp(
-                                att, att.check_in
-                            ).strftime('%I:%M %p')
+                        check_in_str = _office_time(att.check_in)
+                        check_out_str = _office_time(att.check_out)
                         late_min = att.late_minutes
                         late_min_disp = minutes_to_hm(att.late_minutes)
                         late_reas = att.late_reason or ''
@@ -539,6 +565,7 @@ class EmployeeReport(models.Model):
                         'day_type': 'leave',
                         'description': f"{leave_label}" + (" (Half Day)" if lr.is_half_day else ""),
                         'check_in_time': check_in_str,
+                        'check_out_time': check_out_str,
                         'late_minutes': late_min,
                         'late_minutes_display': late_min_disp,
                         'late_reason': late_reas,
@@ -553,11 +580,8 @@ class EmployeeReport(models.Model):
                     # Create one detail line per late occurrence on this day
                     late_atts = late_date_info[current_date]
                     for att in late_atts:
-                        check_in_str = ''
-                        if att.check_in:
-                            check_in_str = fields.Datetime.context_timestamp(
-                                att, att.check_in
-                            ).strftime('%I:%M %p')
+                        check_in_str = _office_time(att.check_in)
+                        check_out_str = _office_time(att.check_out)
                         is_waived = att.is_waived
                         effective_deduction = 0.0 if is_waived else calc_deduction_live(att.late_minutes, att.date)
 
@@ -580,6 +604,7 @@ class EmployeeReport(models.Model):
                             'day_type': 'late',
                             'description': ' '.join(desc_parts),
                             'check_in_time': check_in_str,
+                            'check_out_time': check_out_str,
                             'late_minutes': att.late_minutes,
                             'late_minutes_display': minutes_to_hm(att.late_minutes),
                             'late_reason': att.late_reason or '',
@@ -597,11 +622,8 @@ class EmployeeReport(models.Model):
                         if att.date == current_date and att.is_first_checkin_of_day:
                             first_att = att
                             break
-                    check_in_str = ''
-                    if first_att and first_att.check_in:
-                        check_in_str = fields.Datetime.context_timestamp(
-                            first_att, first_att.check_in
-                        ).strftime('%I:%M %p')
+                    check_in_str = _office_time(first_att.check_in) if first_att else ''
+                    check_out_str = _office_time(first_att.check_out) if first_att else ''
 
                     # Check if this is an auto-detected half day (split shift missing one session)
                     auto_hd = auto_half_day_info.get(current_date)
@@ -620,6 +642,7 @@ class EmployeeReport(models.Model):
                         'description': (auto_hd_label if is_auto_half else 'Present') +
                                        (' (Half Day)' if is_half_day_fri else ''),
                         'check_in_time': check_in_str,
+                        'check_out_time': check_out_str,
                         'late_minutes': 0,
                         'late_minutes_display': '',
                         'late_reason': '',
@@ -630,8 +653,16 @@ class EmployeeReport(models.Model):
                         'leave_deduction': auto_hd_ded,
                         'is_half_day': is_half_day_fri or is_auto_half,
                     })
-                elif is_working and not is_holiday:
-                    # Absent — working day but no attendance and no leave
+                elif is_expected and not is_holiday:
+                    # Expected working day with no attendance and no leave.
+                    # Future days haven't arrived yet → don't show them at all.
+                    if current_date > report_today:
+                        current_date += timedelta(days=1)
+                        continue
+                    # Past/today working day with nothing entered → "Not Entered"
+                    # (data-entry pending). In the earnings model it simply isn't
+                    # earned, so it's already reflected in Final / Total Deduction;
+                    # the "Leave Deduction" column stays for leave requests only.
                     detail_vals.append({
                         'report_id': self.id,
                         'employee_id': emp.id,
@@ -639,7 +670,7 @@ class EmployeeReport(models.Model):
                         'department_name': dept_name,
                         'entry_date': current_date,
                         'day_type': 'absent',
-                        'description': 'Absent',
+                        'description': 'Not Entered' + (' (Half Day)' if is_half_day_fri else ''),
                         'check_in_time': '',
                         'late_minutes': 0,
                         'late_minutes_display': '',
@@ -661,55 +692,49 @@ class EmployeeReport(models.Model):
             except Exception:
                 emp_wage = 0.0
 
-            # ── MONTHLY-SALARY PAY (full month, Sundays paid) ─
-            # The monthly wage covers the whole calendar month including the
-            # weekly-off (Sunday) and public holidays — these are PAID. Sunday
-            # being unchecked in the working-days config only affects attendance
-            # / late tracking, not pay. So pay the full wage and deduct only
-            # unpaid leave + late. A fully-present employee gets the full wage.
-            import calendar as _cal
-            days_in_month = _cal.monthrange(self.date_from.year, self.date_from.month)[1]
-            per_day_rate = (emp_wage / days_in_month) if days_in_month else 0.0
-            earned_amt = round(emp_wage, 2)  # gross = full month
-            total_ded = total_late_deduction + total_leave_deduction  # late + unpaid leave
-            # Full Salary = full month net (wage minus deductions).
-            full_salary = round(emp_wage - total_ded, 2)
-            # Attendance side — two independent columns:
-            #   Present Pay      = per_day x (present days + PAID leave days)
-            #     (paid leave is payable, so it counts here)
-            #   Absence Shortfall = -(per_day x UNPAID leave days)
-            final_amt = round(per_day_rate * (total_present_days + total_paid_days), 2)
-            absence_shortfall = -round(per_day_rate * unpaid_leave_applied, 2)  # <= 0
-            # Total Amount = Present Pay - Deductions (may be negative).
-            total_amount = round(final_amt - total_ded, 2)
-            # Days actually paid (info): whole month minus unpaid-leave days.
-            payable_days = days_in_month - total_unpaid_days
+            # ── EARNINGS-BASED FINAL AMOUNT ──────────────────
+            # Final = pay actually earned − late deductions. The employee earns
+            # one day's wage (wage ÷ working days) for every day worked: present
+            # days (half-day-Friday weighted) plus any PAID leave. Absent days and
+            # unpaid leave are simply not earned; split-shift auto half-days (only
+            # one session worked) earn half. Late arrivals reduce the earned pay.
+            #   1 present day on a 5000/27 wage → 185.19 earned − late → Final.
+            # Daily rate is rounded to currency precision (185.19) and used for
+            # every multiple, so report figures match a manual 185.19×N calc and
+            # the leave-request deductions exactly.
+            daily_rate = round(emp_wage / total_working_days, 2) if total_working_days > 0 else 0.0
+            auto_half_count = len(auto_half_day_info)
+            earned_days = max(0.0, total_present_days + total_paid_days - 0.5 * auto_half_count)
+            earned = round(daily_rate * earned_days, 2)
+            # Rounding the rate up can make a full month's earnings exceed the wage
+            # by a few paise — cap so 100% attendance pays exactly the wage.
+            if earned > emp_wage:
+                earned = emp_wage
+            final_amt = round(max(0.0, earned - total_late_deduction), 2)
+            # Show the unpaid-LEAVE deduction on its own column. Total Deduction is
+            # then everything else not received (absent days + late). So the three
+            # reconcile to the wage:  Total Deduction + Leave Deduction + Final = Wage.
+            leave_ded = round(total_leave_only_ded, 2)
+            total_ded = round(max(0.0, emp_wage - final_amt - leave_ded), 2)
 
             summary_vals.append({
                 'report_id': self.id,
                 'employee_id': emp.id,
                 'employee_name': emp_name,
                 'department_name': dept_name,
-                'total_working_days': days_in_month,  # paid basis = full month (Sundays paid)
+                'total_working_days': total_working_days,
                 'total_present_days': total_present_days,
                 'total_late_days_raw': all_late_times,
                 'grace_days': grace_days,
                 'late_days': late_times_after_grace,
                 'late_minutes': total_late_minutes,
                 'late_minutes_display': minutes_to_hm(total_late_minutes),
-                'late_deduction': total_late_deduction,
+                'late_deduction': round(total_late_deduction, 2),
                 'paid_leave_days': total_paid_days,
                 'unpaid_leave_days': total_unpaid_days,
-                'leave_deduction': total_leave_deduction,
-                'absent_days': leave_days_applied,
+                'leave_deduction': leave_ded,
                 'wage': emp_wage,
-                'per_day_rate': round(per_day_rate, 2),
-                'payable_days': payable_days,
-                'earned_amount': earned_amt,
                 'total_deduction': total_ded,
-                'full_salary': full_salary,
-                'absence_shortfall': absence_shortfall,
-                'total_amount': total_amount,
                 'final_amount': final_amt,
             })
 
@@ -785,7 +810,7 @@ class EmployeeReport(models.Model):
         ws1.set_landscape()
         ws1.set_paper(9)
 
-        ws1.merge_range('A1:R1', 'Employee Statement Report', title_fmt)
+        ws1.merge_range('A1:M1', 'Employee Statement Report', title_fmt)
         ws1.write('A3', 'Company:', info_label)
         ws1.write('B3', self.company_id.name or '', info_value)
         ws1.write('A4', 'Period:', info_label)
@@ -793,14 +818,12 @@ class EmployeeReport(models.Model):
 
         row = 6
         summary_headers = [
-            'Employee', 'Department', 'Month\nDays', 'Present\nDays',
-            'Absent\nDays', 'Late Days\n(After Grace)', 'Total Late\nTime',
+            'Employee', 'Department', 'Working\nDays', 'Present\nDays',
+            'Late Days\n(After Grace)', 'Total Late\nTime',
             'Late\nDeduction', 'Paid Leave\nDays', 'Unpaid Leave\nDays',
-            'Leave\nDeduction', 'Monthly\nWage', 'Per Day\nRate',
-            'Total\nDeduction', 'Full\nSalary',
-            'Present\nPay', 'Absence\nShortfall', 'Total\nAmount',
+            'Leave\nDeduction', 'Monthly\nWage', 'Total\nDeduction', 'Final\nAmount',
         ]
-        col_widths = [25, 20, 10, 10, 10, 12, 12, 14, 12, 12, 14, 14, 12, 14, 14, 14, 14, 14]
+        col_widths = [25, 20, 10, 10, 12, 12, 14, 12, 12, 14, 14, 14, 14]
         for c, (hdr, w) in enumerate(zip(summary_headers, col_widths)):
             ws1.set_column(c, c, w)
             ws1.write(row, c, hdr, header_fmt)
@@ -811,40 +834,30 @@ class EmployeeReport(models.Model):
             ws1.write(row, 1, line.department_name or '', cell_fmt)
             ws1.write(row, 2, line.total_working_days, int_fmt)
             ws1.write(row, 3, line.total_present_days, int_fmt)
-            ws1.write(row, 4, line.absent_days, num_fmt)
-            ws1.write(row, 5, line.late_days, int_fmt)
-            ws1.write(row, 6, line.late_minutes_display or '0:00', cell_fmt)
-            ws1.write(row, 7, line.late_deduction, num_fmt)
-            ws1.write(row, 8, line.paid_leave_days, num_fmt)
-            ws1.write(row, 9, line.unpaid_leave_days, num_fmt)
-            ws1.write(row, 10, line.leave_deduction, num_fmt)
-            ws1.write(row, 11, line.wage, num_fmt)
-            ws1.write(row, 12, line.per_day_rate, num_fmt)
-            ws1.write(row, 13, line.total_deduction, num_fmt)
-            ws1.write(row, 14, line.full_salary, num_fmt)
-            ws1.write(row, 15, line.final_amount, num_fmt)
-            ws1.write(row, 16, line.absence_shortfall, num_fmt)
-            ws1.write(row, 17, line.total_amount, num_fmt)
+            ws1.write(row, 4, line.late_days, int_fmt)
+            ws1.write(row, 5, line.late_minutes_display or '0:00', cell_fmt)
+            ws1.write(row, 6, line.late_deduction, num_fmt)
+            ws1.write(row, 7, line.paid_leave_days, num_fmt)
+            ws1.write(row, 8, line.unpaid_leave_days, num_fmt)
+            ws1.write(row, 9, line.leave_deduction, num_fmt)
+            ws1.write(row, 10, line.wage, num_fmt)
+            ws1.write(row, 11, line.total_deduction, num_fmt)
+            ws1.write(row, 12, line.final_amount, num_fmt)
             row += 1
 
         # Totals row
         ws1.merge_range(row, 0, row, 1, 'Grand Total', total_label_fmt)
         ws1.write(row, 2, sum(self.summary_line_ids.mapped('total_working_days')), total_int_fmt)
         ws1.write(row, 3, sum(self.summary_line_ids.mapped('total_present_days')), total_int_fmt)
-        ws1.write(row, 4, sum(self.summary_line_ids.mapped('absent_days')), total_num_fmt)
-        ws1.write(row, 5, sum(self.summary_line_ids.mapped('late_days')), total_int_fmt)
-        ws1.write(row, 6, '', total_int_fmt)
-        ws1.write(row, 7, self.grand_late_deduction, total_num_fmt)
-        ws1.write(row, 8, sum(self.summary_line_ids.mapped('paid_leave_days')), total_num_fmt)
-        ws1.write(row, 9, sum(self.summary_line_ids.mapped('unpaid_leave_days')), total_num_fmt)
-        ws1.write(row, 10, self.grand_leave_deduction, total_num_fmt)
-        ws1.write(row, 11, self.grand_wage, total_num_fmt)
-        ws1.write(row, 12, '', total_num_fmt)
-        ws1.write(row, 13, self.grand_total_deduction, total_num_fmt)
-        ws1.write(row, 14, self.grand_full_salary, total_num_fmt)
-        ws1.write(row, 15, self.grand_final_amount, total_num_fmt)
-        ws1.write(row, 16, self.grand_absence_shortfall, total_num_fmt)
-        ws1.write(row, 17, self.grand_total_amount, total_num_fmt)
+        ws1.write(row, 4, sum(self.summary_line_ids.mapped('late_days')), total_int_fmt)
+        ws1.write(row, 5, '', total_int_fmt)
+        ws1.write(row, 6, self.grand_late_deduction, total_num_fmt)
+        ws1.write(row, 7, sum(self.summary_line_ids.mapped('paid_leave_days')), total_num_fmt)
+        ws1.write(row, 8, sum(self.summary_line_ids.mapped('unpaid_leave_days')), total_num_fmt)
+        ws1.write(row, 9, self.grand_leave_deduction, total_num_fmt)
+        ws1.write(row, 10, self.grand_wage, total_num_fmt)
+        ws1.write(row, 11, self.grand_total_deduction, total_num_fmt)
+        ws1.write(row, 12, self.grand_final_amount, total_num_fmt)
 
         # ═══════════════════════════════════════════════════
         #  SHEET 2: Detailed Day-wise Entries
@@ -853,18 +866,18 @@ class EmployeeReport(models.Model):
         ws2.set_landscape()
         ws2.set_paper(9)
 
-        ws2.merge_range('A1:L1', 'Detailed Day-wise Entries', title_fmt)
+        ws2.merge_range('A1:N1', 'Detailed Day-wise Entries', title_fmt)
         ws2.write('A3', 'Period:', info_label)
         ws2.write('B3', f"{month_names.get(self.month, '')} {self.year}", info_value)
 
         row = 4
         detail_headers = [
             'Date', 'Employee', 'Department', 'Day Type', 'Description',
-            'Check In', 'Late Time', 'Late Reason',
+            'Check In', 'Check Out', 'Late Time', 'Late Reason',
             'Leave Type', 'Leave (Paid/Unpaid)', 'Leave Reason',
             'Late Ded.', 'Leave Ded.',
         ]
-        detail_widths = [12, 22, 18, 10, 25, 12, 10, 20, 12, 14, 20, 12, 12]
+        detail_widths = [12, 22, 18, 10, 25, 12, 12, 10, 20, 12, 14, 20, 12, 12]
         for c, (hdr, w) in enumerate(zip(detail_headers, detail_widths)):
             ws2.set_column(c, c, w)
             ws2.write(row, c, hdr, header_fmt)
@@ -880,20 +893,21 @@ class EmployeeReport(models.Model):
             ws2.write(row, 3, dict(dl._fields['day_type'].selection).get(dl.day_type, ''), cell_fmt)
             ws2.write(row, 4, dl.description or '', cell_fmt)
             ws2.write(row, 5, dl.check_in_time or '', cell_fmt)
-            ws2.write(row, 6, dl.late_minutes_display or '', cell_fmt)
-            ws2.write(row, 7, dl.late_reason or '', cell_fmt)
+            ws2.write(row, 6, dl.check_out_time or '', cell_fmt)
+            ws2.write(row, 7, dl.late_minutes_display or '', cell_fmt)
+            ws2.write(row, 8, dl.late_reason or '', cell_fmt)
             leave_label = dict(self.env['hr.leave.request']._fields['leave_type'].selection).get(dl.leave_type, '') if dl.leave_type else ''
-            ws2.write(row, 8, leave_label, cell_fmt)
-            ws2.write(row, 9, dl.leave_paid_type or '', cell_fmt)
-            ws2.write(row, 10, dl.leave_reason or '', cell_fmt)
-            ws2.write(row, 11, dl.late_deduction, num_fmt)
-            ws2.write(row, 12, dl.leave_deduction, num_fmt)
+            ws2.write(row, 9, leave_label, cell_fmt)
+            ws2.write(row, 10, dl.leave_paid_type or '', cell_fmt)
+            ws2.write(row, 11, dl.leave_reason or '', cell_fmt)
+            ws2.write(row, 12, dl.late_deduction, num_fmt)
+            ws2.write(row, 13, dl.leave_deduction, num_fmt)
             row += 1
 
         # Totals
-        ws2.merge_range(row, 0, row, 10, 'Grand Total Deductions', total_label_fmt)
-        ws2.write(row, 11, sum(self.detail_line_ids.mapped('late_deduction')), total_num_fmt)
-        ws2.write(row, 12, sum(self.detail_line_ids.mapped('leave_deduction')), total_num_fmt)
+        ws2.merge_range(row, 0, row, 11, 'Grand Total Deductions', total_label_fmt)
+        ws2.write(row, 12, sum(self.detail_line_ids.mapped('late_deduction')), total_num_fmt)
+        ws2.write(row, 13, sum(self.detail_line_ids.mapped('leave_deduction')), total_num_fmt)
 
         wb.close()
 
@@ -939,13 +953,16 @@ class EmployeeReportSummaryLine(models.Model):
         'hr.employee.report', string='Report',
         required=True, ondelete='cascade', index=True,
     )
+    currency_id = fields.Many2one(
+        'res.currency', related='report_id.company_id.currency_id', readonly=True,
+    )
     employee_id = fields.Many2one('hr.employee', string='Employee', readonly=True)
     employee_name = fields.Char(string='Employee', readonly=True)
     department_name = fields.Char(string='Department', readonly=True)
 
-    # Attendance
-    total_working_days = fields.Integer(string='Working Days', readonly=True)
-    total_present_days = fields.Integer(string='Present Days', readonly=True)
+    # Attendance (Float — half-day Fridays count as 0.5)
+    total_working_days = fields.Float(string='Working Days', readonly=True)
+    total_present_days = fields.Float(string='Present Days', readonly=True)
 
     # Late tracking
     late_days = fields.Integer(string='Late Days (After Grace)', readonly=True)
@@ -960,25 +977,10 @@ class EmployeeReportSummaryLine(models.Model):
     unpaid_leave_days = fields.Float(string='Unpaid Leave Days', readonly=True)
     leave_deduction = fields.Float(string='Leave Deduction', readonly=True)
 
-    # Attendance shortfall
-    absent_days = fields.Float(string='Absent Days', readonly=True)
-    absence_shortfall = fields.Float(string='Absence Shortfall', readonly=True)
-
-    # Currency for monetary formatting
-    currency_id = fields.Many2one(
-        'res.currency', string='Currency',
-        related='report_id.company_id.currency_id', readonly=True,
-    )
-
     # Wage & Final
     wage = fields.Float(string='Wage', readonly=True)
-    per_day_rate = fields.Float(string='Per Day Rate', readonly=True)
-    payable_days = fields.Float(string='Days Paid', readonly=True)
-    earned_amount = fields.Float(string='Earned (Attended)', readonly=True)
     total_deduction = fields.Float(string='Total Deduction', readonly=True)
-    full_salary = fields.Float(string='Full Salary', readonly=True)   # full month: wage - deductions
-    final_amount = fields.Float(string='Final Amount', readonly=True)  # present-based: rate x present days
-    total_amount = fields.Float(string='Total Amount', readonly=True)  # present pay - deductions (signed)
+    final_amount = fields.Float(string='Final Amount', readonly=True)
 
     # ── Drill-down Actions ───────────────────────────────────
     def action_view_day_details(self):
@@ -1065,6 +1067,9 @@ class EmployeeReportDetailLine(models.Model):
         'hr.employee.report', string='Report',
         required=True, ondelete='cascade', index=True,
     )
+    currency_id = fields.Many2one(
+        'res.currency', related='report_id.company_id.currency_id', readonly=True,
+    )
     employee_id = fields.Many2one('hr.employee', string='Employee', readonly=True)
     employee_name = fields.Char(string='Employee', readonly=True)
     department_name = fields.Char(string='Department', readonly=True)
@@ -1074,12 +1079,13 @@ class EmployeeReportDetailLine(models.Model):
         ('present', 'Present'),
         ('late', 'Late'),
         ('leave', 'Leave'),
-        ('absent', 'Absent'),
+        ('absent', 'Not Entered'),
         ('holiday', 'Holiday'),
     ], string='Day Type', readonly=True)
 
     description = fields.Char(string='Description', readonly=True)
     check_in_time = fields.Char(string='Check In Time', readonly=True)
+    check_out_time = fields.Char(string='Check Out Time', readonly=True)
     is_half_day = fields.Boolean(string='Half Day', readonly=True)
 
     # Late info

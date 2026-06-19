@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="hr_attendance_late.DeductionSlabListView" t-inherit="web.ListView" t-inherit-mode="primary">
+        <xpath expr="//t[@t-component='props.Renderer']" position="before">
+            <div class="alert alert-warning m-3" role="alert">
+                <b>When are these slabs used?</b>
+                <ul class="mb-0">
+                    <li>Office Hours config <b>Deduction Mode = Fixed Amount (Slab-based)</b> →
+                        these slab amounts are used for every late deduction.</li>
+                    <li><b>Deduction Mode = Hourly Wage</b> → these slabs are <b>NOT</b> used,
+                        <b>except as a fallback for employees with no wage</b>
+                        (whose hourly amount would otherwise be 0).</li>
+                </ul>
+            </div>
+        </xpath>
+    </t>
+
+</templates>

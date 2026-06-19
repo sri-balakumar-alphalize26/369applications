@@ -13,7 +13,8 @@
                   decoration-muted="state == 'draft'">
                 <field name="employee_id"/>
                 <field name="late_date"/>
-                <field name="check_in_time" string="Check In"/>
+                <field name="check_in_time" string="Check In (Office)"/>
+                <field name="check_out_time" string="Check Out (Office)"/>
                 <field name="late_minutes_display" string="Late Time"/>
                 <field name="original_deduction" string="Deduction"/>
                 <field name="original_late_reason" string="Late Reason"/>
@@ -73,7 +74,8 @@
                                    readonly="state != 'draft'"
                                    options="{'no_create': True}"/>
                             <field name="late_date"/>
-                            <field name="check_in_time" string="Check In Time"/>
+                            <field name="check_in_time" string="Check In (Office Time)"/>
+                            <field name="check_out_time" string="Check Out (Office Time)"/>
                             <field name="late_minutes_display" string="Late Duration"/>
                             <field name="original_deduction" string="Deduction Amount"/>
                             <field name="original_late_reason" string="Late Reason (Employee)"/>

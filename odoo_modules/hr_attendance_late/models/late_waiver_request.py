@@ -56,8 +56,12 @@ class LateWaiverRequest(models.Model):
         help='The reason the employee entered when they checked in late.',
     )
     check_in_time = fields.Char(
-        string='Check In Time',
-        compute='_compute_check_in_time',
+        string='Check In (Office Time)',
+        compute='_compute_office_times',
+    )
+    check_out_time = fields.Char(
+        string='Check Out (Office Time)',
+        compute='_compute_office_times',
     )
     reason = fields.Text(
         string='Reason for Waiver',
@@ -120,14 +124,27 @@ class LateWaiverRequest(models.Model):
             else:
                 rec.original_deduction = 0.0
 
-    def _compute_check_in_time(self):
+    @api.depends('attendance_id', 'attendance_id.check_in', 'attendance_id.check_out')
+    def _compute_office_times(self):
+        """Check-in/out shown in the office timezone (config → employee tz → UTC),
+        so the time reads the same for everyone regardless of the viewer."""
+        import pytz
+        Config = self.env['hr.attendance.late.config']
         for rec in self:
-            if rec.attendance_id and rec.attendance_id.check_in:
-                rec.check_in_time = fields.Datetime.context_timestamp(
-                    rec, rec.attendance_id.check_in
-                ).strftime('%I:%M %p')
-            else:
-                rec.check_in_time = ''
+            rec.check_in_time = ''
+            rec.check_out_time = ''
+            att = rec.attendance_id
+            if not att:
+                continue
+            tz_name = 'UTC'
+            if att.employee_id:
+                cfg = Config.get_config_for_employee(att.employee_id.id)
+                tz_name = cfg.get('timezone') or att.employee_id.tz or 'UTC'
+            tz = pytz.timezone(tz_name)
+            if att.check_in:
+                rec.check_in_time = pytz.utc.localize(att.check_in).astimezone(tz).strftime('%I:%M %p')
+            if att.check_out:
+                rec.check_out_time = pytz.utc.localize(att.check_out).astimezone(tz).strftime('%I:%M %p')
 
     # --- Constraints ---
 
