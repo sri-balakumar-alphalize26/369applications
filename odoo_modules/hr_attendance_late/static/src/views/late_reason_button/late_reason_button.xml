@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="hr_attendance_late.LateReasonButton">
+        <button t-if="isVisible" type="button"
+                class="btn btn-warning"
+                t-on-click="onClick">
+            <i class="fa fa-clock-o me-1"/>Enter Late Reason
+        </button>
+    </t>
+
+    <t t-name="hr_attendance_late.LateReasonDialog">
+        <Dialog title="props.title" size="'md'">
+            <div class="alert alert-warning mb-3" role="alert">
+                <h4 class="mb-2"><i class="fa fa-clock-o me-1"/>Late Check-in Detected</h4>
+                <p class="mb-1">
+                    <strong t-esc="props.info.employeeName"/>
+                    is
+                    <strong t-esc="props.info.lateDisplay"/>
+                    late for
+                    <strong t-esc="props.info.session"/>.
+                </p>
+                <p class="mb-0 text-muted">
+                    Expected start: <t t-esc="props.info.expectedStart"/>
+                    &#8226; Late # in month: <t t-esc="props.info.lateSequence"/>
+                    &#8226; Deduction: <t t-esc="props.info.deduction"/>
+                </p>
+            </div>
+            <div>
+                <label class="form-label fw-bold">Late Reason</label>
+                <textarea class="form-control" rows="4"
+                          t-model="state.reason"
+                          placeholder="Please describe why you were late (e.g. traffic delay, family emergency, medical appointment)..."/>
+            </div>
+            <t t-set-slot="footer">
+                <button class="btn btn-primary" t-on-click="onSave" t-att-disabled="!canSave">
+                    Save Reason
+                </button>
+                <button class="btn btn-secondary" t-on-click="() => props.close()">
+                    Cancel
+                </button>
+            </t>
+        </Dialog>
+    </t>
+
+</templates>

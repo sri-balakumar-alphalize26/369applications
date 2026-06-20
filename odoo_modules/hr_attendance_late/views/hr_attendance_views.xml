@@ -63,13 +63,7 @@
                         <field name="is_half_day" readonly="1"/>
                     </group>
                     <group>
-                        <button name="action_open_late_reason_wizard"
-                                type="object"
-                                string="Enter Late Reason"
-                                class="btn-warning"
-                                icon="fa-clock-o"
-                                colspan="2"
-                                invisible="(not is_late and late_minutes &lt;= 0) or late_reason or is_waived"/>
+                        <widget name="late_reason_button" colspan="2"/>
                         <field name="late_reason"
                                placeholder="Click 'Enter Late Reason' button above to fill via popup, or type here..."/>
                         <field name="late_sequence" string="Late # in Month" readonly="1"/>

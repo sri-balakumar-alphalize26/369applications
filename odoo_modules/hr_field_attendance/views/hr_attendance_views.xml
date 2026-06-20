@@ -980,7 +980,7 @@
                 <field name="is_late"/>
                 <field name="late_minutes_display" string="Late Time"/>
                 <field name="deduction_amount"/>
-                <field name="late_reason" optional="hide"/>
+                <field name="late_reason" optional="show"/>
                 <field name="is_waived" string="Waived" optional="hide"/>
             </list>
         </field>

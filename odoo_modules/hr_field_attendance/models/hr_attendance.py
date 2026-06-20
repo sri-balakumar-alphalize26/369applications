@@ -1238,7 +1238,10 @@ class HrAttendance(models.Model):
         # the view's `invisible="has_source_visits"` gate on the editable
         # list variant).
 
-        new_record = Attendance.create(vals)
+        # skip_late_reason_required: the mobile flow creates the row first and
+        # then shows its own late-reason popup (needs_late_reason below), so the
+        # backend "reason required to save" constraint must not block the create.
+        new_record = Attendance.with_context(skip_late_reason_required=True).create(vals)
         new_record.flush_recordset()
         return {
             'success': True,
@@ -1611,7 +1614,9 @@ class HrAttendance(models.Model):
             # cap enforced by the view).
         }
 
-        new_record = Attendance.create(vals)
+        # skip_late_reason_required: mobile creates the row first, then prompts
+        # for the reason (needs_late_reason below) — see start_field_attendance.
+        new_record = Attendance.with_context(skip_late_reason_required=True).create(vals)
         new_record.flush_recordset()
         return {
             'success': True,

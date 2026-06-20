@@ -1,5 +1,5 @@
 from odoo import models, fields, api, _
-from odoo.exceptions import ValidationError
+from odoo.exceptions import ValidationError, UserError
 from odoo.tools import format_duration
 from datetime import timedelta
 import logging
@@ -171,6 +171,10 @@ class HrAttendance(models.Model):
             recs.flush_recordset()
             recs._compute_deduction_amount()
             recs.flush_recordset()
+        except (ValidationError, UserError):
+            # Validation popups (e.g. "enter the late reason", no-reentry) must
+            # bubble up to the user and roll back the save, not be swallowed.
+            raise
         except Exception:
             _logger.exception("[late-deduction] post-create recompute failed")
         return recs
@@ -189,6 +193,8 @@ class HrAttendance(models.Model):
                 self.flush_recordset()
                 self._compute_deduction_amount()
                 self.flush_recordset()
+            except (ValidationError, UserError):
+                raise
             except Exception:
                 _logger.exception("[late-deduction] post-write recompute failed")
         return res
@@ -462,15 +468,37 @@ class HrAttendance(models.Model):
 
     # --- Constraints ---
 
-    # NOTE: The previous `_check_late_reason_required` ValidationError
-    # constraint was removed because it broke the mobile-app flow: the app
-    # saves the attendance first, then opens the "You're Late" popup for the
-    # user to type a reason, then writes the reason via `submitLateReason`.
-    # The constraint blocked step 1 — the create RPC failed because
-    # `late_reason` was empty, and the user only saw a generic OK-only error
-    # alert instead of the proper popup. The Odoo backend still has the
-    # yellow "Enter Late Reason" button on the attendance form for HR
-    # managers to fill reasons via the wizard; that UI is sufficient.
+    # Trigger on check_in / late_reason / is_waived but NOT on is_late: is_late
+    # is a stored compute that depends on check_in, so it only ever flips to
+    # True when check_in is (re)written — already a trigger here. Leaving is_late
+    # out keeps a plain `-u` upgrade recompute (which may re-evaluate is_late on
+    # historical reason-less rows) from aborting on this constraint.
+    @api.constrains('late_reason', 'is_waived', 'check_in')
+    def _check_late_reason_required(self):
+        """Backend-only: a late check-in cannot be saved without a Late Reason.
+
+        Bypassed (context flag) for the non-interactive entry points that
+        cannot collect a reason at save time and instead enforce it through
+        their own post-check-in popup: the mobile RPC creates
+        (`skip_late_reason_required`), the standard kiosk/self check-in widget
+        (see the `hr.employee._attendance_action_change` override in
+        hr_employee.py), and data imports (`import_file`). A waived record
+        (`is_waived`) is exempt — the waiver replaces the reason.
+
+        This deliberately re-introduces the previously-removed
+        `_check_late_reason_required` constraint, but scoped to the interactive
+        Odoo backend (form Save button + inline list edits) so it no longer
+        breaks the mobile "create first, then prompt" flow.
+        """
+        if self.env.context.get('skip_late_reason_required') or self.env.context.get('import_file'):
+            return
+        for rec in self:
+            if not rec.check_in:
+                continue
+            if rec.is_late and not rec.is_waived and not (rec.late_reason and rec.late_reason.strip()):
+                raise ValidationError(_(
+                    "This is a late check-in. Please enter the Late Reason before saving."
+                ))
 
     # --- Single-session-per-day enforcement ---
 
@@ -580,6 +608,75 @@ class HrAttendance(models.Model):
         }
 
     # --- API methods ---
+
+    @api.model
+    def preview_late_info(self, employee_id, check_in):
+        """No-save PREVIEW of the late metrics for a hypothetical check-in.
+
+        `late_sequence` (Late # in month) and `deduction_amount` are STORED
+        computed fields whose values depend on a DB count of the employee's
+        other late records — so they only get real values after the record is
+        saved (in the post-create recompute). On a brand-new, unsaved record
+        they are still 0, which made the backend "Enter Late Reason" popup show
+        "Late # in month: 0 / Deduction: 0.00".
+
+        This method recomputes those numbers on an in-memory `new()` record
+        (no write to the database) so the popup can show the correct values
+        BEFORE the user saves. `check_in` is the UTC datetime string sent by
+        the web client (serializeDateTime). Returns {} when not applicable.
+        """
+        if not employee_id or not check_in:
+            return {}
+        employee = self.env['hr.employee'].browse(employee_id)
+        if not employee.exists():
+            return {}
+
+        check_in_dt = fields.Datetime.to_datetime(check_in)
+        rec = self.new({'employee_id': employee_id, 'check_in': check_in_dt})
+        rec._compute_is_first_checkin_of_day()
+        rec._compute_late_info()
+        rec._compute_late_minutes_display()
+
+        info = {
+            'is_late': bool(rec.is_late),
+            'late_minutes': int(rec.late_minutes or 0),
+            'late_minutes_display': rec.late_minutes_display or '',
+            'expected_start_time': float(rec.expected_start_time or 0.0),
+            'checkin_session': rec.checkin_session or '1',
+            'late_sequence': 0,
+            'deduction_amount': 0.0,
+        }
+        if not rec.is_late:
+            return info
+
+        # Preview the month sequence the same way _compute_late_sequence does:
+        # count the FIRST late check-in of each (date, session) bucket this
+        # month up to this date. A hypothetical new check-in becomes the next
+        # number — unless a late check-in already exists for this date+session,
+        # in which case it is a same-day duplicate and earns 0 (no deduction).
+        session = rec.checkin_session or '1'
+        rec_date = rec.date or check_in_dt.date()
+        month_start = rec_date.replace(day=1)
+        late_records = self.search([
+            ('employee_id', '=', employee_id),
+            ('is_late', '=', True),
+            ('date', '>=', month_start),
+            ('date', '<=', rec_date),
+            ('checkin_session', '=', session),
+        ], order='check_in asc')
+
+        seen_dates = []
+        for att in late_records:
+            if att.date not in seen_dates:
+                seen_dates.append(att.date)
+
+        seq = 0 if rec_date in seen_dates else len(seen_dates) + 1
+        rec.late_sequence = seq
+        rec._compute_deduction_amount()
+
+        info['late_sequence'] = seq
+        info['deduction_amount'] = float(rec.deduction_amount or 0.0)
+        return info
 
     @api.model
     def get_late_attendance_report(self, employee_id=None, department_id=None,
