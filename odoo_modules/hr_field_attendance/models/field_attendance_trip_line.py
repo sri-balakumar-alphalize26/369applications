@@ -103,6 +103,16 @@ class FieldAttendanceTripLine(models.Model):
         string='Start KM',
     )
 
+    # Seed value for a NEW trip's Start Km (odometer continuity): the End Km of
+    # this attendance's previous trip. Related to hr.attendance — mirrors how
+    # attendance_available_trip_ids is exposed — so it resolves reliably on the
+    # new (unsaved) trip-line record via default_attendance_id. Referenced as
+    # `default_start_km` in the trip_id picker context so the "Create Source
+    # Trip" form pre-fills Start Km without the user picking a vehicle first.
+    attendance_previous_trip_end_km = fields.Integer(
+        related='attendance_id.previous_trip_end_km', readonly=True,
+    )
+
     # Marks a trip line as a Return-Home leg (Visit -> Office, Office -> Home,
     # or Visit -> Home direct). Excluded from the Additional Trips kanban and
     # surfaced in a dedicated Return Home section instead.

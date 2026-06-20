@@ -185,6 +185,21 @@ class HrAttendance(models.Model):
         string='Available Trips',
         compute='_compute_available_trip_ids',
     )
+    # End Km of this attendance's previous trip — seeds the next trip's Start Km
+    # (odometer continuity). Surfaced to field.attendance.trip.line via a related
+    # field, then fed as `default_start_km` in the trip picker context.
+    previous_trip_end_km = fields.Integer(
+        string='Previous Trip End Km',
+        compute='_compute_previous_trip_end_km',
+    )
+
+    @api.depends(
+        'source_trip_id', 'source_trip_id.end_km',
+        'trip_line_ids', 'trip_line_ids.trip_id', 'trip_line_ids.trip_id.end_km',
+    )
+    def _compute_previous_trip_end_km(self):
+        for rec in self:
+            rec.previous_trip_end_km = rec._previous_trip_end_km()
     # Trip totals — surfaced on the Field Attendance form so HR sees
     # km_travelled / duration / fuel litres / fuel amount at a glance.
     # Defensive non-related computes (same pattern as visited_stops_display)
@@ -582,6 +597,22 @@ class HrAttendance(models.Model):
         if self.source_trip_id and self.source_trip_id.destination_id:
             return self.source_trip_id.destination_id.id
         return False
+
+    def _previous_trip_end_km(self, only_outbound=False, only_via_office_first=False):
+        """End Km to seed the next trip's Start Km (odometer continuity within a
+        person's day). Returns the End Km of the most recent ENDED trip on this
+        attendance — across the primary source trip AND every trip line — so it
+        still works when the immediately-previous trip isn't ended yet but an
+        earlier trip on the day was. Returns 0 when no trip has been ended."""
+        self.ensure_one()
+        trips = self.trip_line_ids.mapped('trip_id')
+        if self.source_trip_id:
+            trips |= self.source_trip_id
+        ended = trips.filtered(lambda t: t.end_trip and t.end_km)
+        if not ended:
+            return 0
+        last = ended.sorted(key=lambda t: (t.end_time or t.create_date, t.id))[-1]
+        return last.end_km
 
     def _last_trip_line(self, only_outbound=False, only_via_office_first=False):
         """Return the most recently added trip line on this attendance.

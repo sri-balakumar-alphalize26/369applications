@@ -496,11 +496,12 @@
                                     </div>
                                     <group>
                                         <group>
+                                            <field name="attendance_previous_trip_end_km" invisible="1"/>
                                             <field name="trip_id"
                                                    required="1"
                                                    readonly="trip_ended"
                                                    domain="[('trip_status', '=', 'draft'), ('id', 'in', parent.available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
-                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'default_start_km': attendance_previous_trip_end_km, 'from_trip_picker': True}"/>
                                             <field name="source_location" readonly="1"
                                                    invisible="not trip_id"/>
                                             <field name="destination_location" readonly="1"
@@ -671,7 +672,7 @@
                                             <field name="trip_id"
                                                    readonly="trip_ended"
                                                    domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
-                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'default_start_km': attendance_previous_trip_end_km, 'from_trip_picker': True}"/>
                                             <div class="text-muted small mt-1" colspan="2"
                                                  invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
                                                 No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
@@ -755,11 +756,12 @@
                     <group>
                         <group>
                             <field name="attendance_available_trip_ids" invisible="1"/>
+                            <field name="attendance_previous_trip_end_km" invisible="1"/>
                             <field name="trip_id"
                                    required="1"
                                    readonly="trip_ended"
                                    domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'default_start_km': attendance_previous_trip_end_km, 'from_trip_picker': True}"/>
                             <div class="text-muted small mt-1" colspan="2"
                                  invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
                                 No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
@@ -855,10 +857,11 @@
                     <group>
                         <group>
                             <field name="attendance_available_trip_ids" invisible="1"/>
+                            <field name="attendance_previous_trip_end_km" invisible="1"/>
                             <field name="trip_id"
                                    readonly="trip_ended"
                                    domain="[('trip_status', '=', 'draft'), ('id', 'in', attendance_available_trip_ids)] + ([('source_id', '=', context['previous_trip_destination_id'])] if context.get('previous_trip_destination_id') else [])"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'from_trip_picker': True}"/>
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'default_source_id': context.get('previous_trip_destination_id'), 'default_start_km': attendance_previous_trip_end_km, 'from_trip_picker': True}"/>
                             <div class="text-muted small mt-1" colspan="2"
                                  invisible="trip_id or not context.get('previous_trip_destination_id') or attendance_available_trip_ids">
                                 No draft trip starts at the previous destination. Pre-register the next trip in <strong>Vehicle Tracking</strong> with its Source set to your current location, then come back here.
@@ -924,7 +927,7 @@
                             <field name="source_trip_id"
                                    readonly="source_trip_ended"
                                    domain="['|', '&amp;', ('trip_status', '=', 'draft'), ('id', 'in', available_trip_ids), ('id', '=', source_trip_id)]"
-                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True}"/>
+                                   context="{'list_view_ref': 'hr_field_attendance.view_vehicle_tracking_picker', 'hide_ended_trips': True, 'redirect_to_primary_setup_attendance_id': id}"/>
                             <field name="source_trip_source_location" readonly="1"
                                    invisible="not source_trip_id"/>
                             <field name="source_trip_destination_location" readonly="1"

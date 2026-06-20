@@ -23,6 +23,12 @@
     <field name="res_model">vehicle.tracking</field>
     <field name="view_mode">list,form</field>
     <field name="search_view_id" ref="vehicle_tracking.view_vehicle_tracking_search"/>
+    <!-- Pin to the operational list/form so this never falls through to the
+         comparison list view (which shows Estimated KM / Variance instead of
+         Trip Status / Start Km / End Km). -->
+    <field name="view_ids" eval="[(5, 0, 0),
+        (0, 0, {'view_mode': 'list', 'view_id': ref('view_vehicle_tracking_list')}),
+        (0, 0, {'view_mode': 'form', 'view_id': ref('view_vehicle_tracking_form')})]"/>
     <field name="help" type="html">
       <p>Create and track vehicle trips here.</p>
     </field>

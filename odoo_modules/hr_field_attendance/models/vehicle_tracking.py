@@ -141,6 +141,39 @@ class VehicleTracking(models.Model):
                     )
         return res
 
+    def action_start_trip(self):
+        """Field-attendance override of Start Trip.
+
+        When the trip was created inline from the Setup Primary Trip dialog
+        (Source Trip dropdown -> Create...), the dialog passes
+        `redirect_to_primary_setup_attendance_id` in context. The base
+        action_start_trip returns None (refresh-in-place), which left the user
+        stuck on the Create Source Trip form. Here we start the trip, link it
+        to the attendance, and reopen the Setup Primary Trip dialog with the
+        new (now started) trip pre-selected so the user can finish GPS/Location
+        and Save."""
+        res = super().action_start_trip()
+        primary_att_id = self.env.context.get('redirect_to_primary_setup_attendance_id')
+        if primary_att_id:
+            att = self.env['hr.attendance'].browse(primary_att_id)
+            if att.exists():
+                if not att.source_trip_id:
+                    att.source_trip_id = self.id
+                return att.action_edit_primary_trip()
+        return res
+
+    def action_discard_custom(self):
+        """When discarding a trip opened from the Setup Primary Trip inline
+        "Create..." flow, return to that dialog instead of the Vehicle
+        Tracking list (the parent's default)."""
+        self.ensure_one()
+        primary_att_id = self.env.context.get('redirect_to_primary_setup_attendance_id')
+        if primary_att_id:
+            att = self.env['hr.attendance'].browse(primary_att_id)
+            if att.exists():
+                return att.action_edit_primary_trip()
+        return super().action_discard_custom()
+
     def action_custom_save(self):
         """Field-attendance override of the vehicle.tracking custom Save
         button. When the form was opened via the "Close Previous Trip"
@@ -155,6 +188,20 @@ class VehicleTracking(models.Model):
         list.
         """
         self.ensure_one()
+        # Setup-Primary-Trip inline-create flow: when the trip was created from
+        # the Source Trip dropdown's "Create..." inside the Setup Primary Trip
+        # dialog, Save must return to that dialog (with this trip selected), NOT
+        # to the Vehicle Tracking list that the parent action_custom_save opens.
+        primary_att_id = self.env.context.get('redirect_to_primary_setup_attendance_id')
+        if primary_att_id:
+            att = self.env['hr.attendance'].browse(primary_att_id)
+            if att.exists():
+                if self.ref == 'New':
+                    self.ref = self.env['ir.sequence'].next_by_code(
+                        'vehicle.tracking.seq') or 'New'
+                if not att.source_trip_id:
+                    att.source_trip_id = self.id
+                return att.action_edit_primary_trip()
         in_disclaimer = self.env.context.get('show_end_disclaimer')
         ready_to_end = (
             self.start_trip and not self.end_trip and not self.trip_cancel

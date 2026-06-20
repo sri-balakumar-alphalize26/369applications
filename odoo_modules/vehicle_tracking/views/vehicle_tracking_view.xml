@@ -204,6 +204,7 @@
         <field name="end_km"/>
         <field name="km_travelled" sum="km_travelled"/>
         <field name="visited_stop_count" string="Stops" optional="show"/>
+        <field name="start_time_office"/>
         <field name="end_time_office"/>
         <field name="duration" sum="duration"/>
         <field name="amount"/>
@@ -228,7 +229,7 @@
     <field name="name">vehicle.tracking.comparison.list</field>
     <field name="model">vehicle.tracking</field>
     <field name="arch" type="xml">
-      <list string="Trip Comparison">
+      <list string="Trip Comparison" create="false">
         <field name="ref"/>
         <field name="date"/>
         <field name="vehicle_id"/>
