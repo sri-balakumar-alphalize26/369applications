@@ -1,17 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <!-- Open the bundled HTML user guide in a new browser tab -->
-    <record id="action_open_user_guide" model="ir.actions.act_url">
-        <field name="name">User Guide</field>
-        <field name="url">/hr_attendance_late/static/src/docs/user_guide.html</field>
-        <field name="target">new</field>
+    <!-- Help card popup (OWL client action) -->
+    <record id="action_attendance_help_guide" model="ir.actions.client">
+        <field name="name">Help &amp; User Guide</field>
+        <field name="tag">attendance_help_guide</field>
     </record>
 
-    <menuitem id="menu_attendance_user_guide"
-              name="User Guide"
+    <menuitem id="menu_attendance_help"
+              name="Help"
               parent="hr_attendance.menu_hr_attendance_root"
-              action="action_open_user_guide"
+              action="action_attendance_help_guide"
               sequence="98"/>
 
 </odoo>

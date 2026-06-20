@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="hr_attendance_late.HelpGuideDialog">
+        <Dialog title="'Help &amp; User Guide'" size="'lg'">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <t t-if="state.loaded and !state.docs.length">
+                    <p class="text-muted" style="text-align:center;padding:24px;">
+                        No help documents yet. Add them in <b>Configuration → Help Documents</b>.
+                    </p>
+                </t>
+                <t t-foreach="state.docs" t-as="doc" t-key="doc.id">
+                    <div style="border:1px solid #e4e7f0;border-radius:10px;padding:14px 16px;background:#f6f8ff;">
+                        <div style="font-size:15px;margin-bottom:3px;">
+                            <span t-esc="doc.icon"/>
+                            <b t-esc="doc.name"/>
+                        </div>
+                        <div class="text-muted" style="font-size:13px;margin-bottom:10px;"
+                             t-esc="doc.description"/>
+                        <button class="btn btn-primary btn-sm"
+                                t-on-click="() => this.openGuide(doc.id)">
+                            📖 Open guide
+                        </button>
+                    </div>
+                </t>
+            </div>
+            <t t-set-slot="footer">
+                <button class="btn btn-secondary" t-on-click="() => props.close()">Close</button>
+            </t>
+        </Dialog>
+    </t>
+
+</templates>

@@ -1,0 +1,36 @@
+<style>
+  .g{line-height:1.6;color:#222;}
+  .g h1{color:#875A7B;font-size:24px;margin:0 0 6px;}
+  .g h2{color:#875A7B;border-bottom:2px solid #875A7B;padding-bottom:5px;margin-top:26px;font-size:19px;}
+  .g table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;}
+  .g th,.g td{border:1px solid #e3dde2;padding:7px 10px;text-align:left;vertical-align:top;}
+  .g th{background:#875A7B;color:#fff;}
+  .g tr:nth-child(even) td{background:#faf7f9;}
+  .g code{background:#f3eef2;padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;}
+  .g .note{background:#fff3cd;border:1px solid #e0c97a;border-radius:6px;padding:10px 14px;margin:12px 0;}
+</style>
+<div class="g">
+  <h1>HR Field Attendance</h1>
+  <p>Attendance for field staff, built from vehicle trips and customer visits &mdash; not just office check-ins.</p>
+
+  <h2>1. What it adds</h2>
+  <ul>
+    <li>An <code>attendance_source = field</code> flag on the attendance record.</li>
+    <li>A <b>Source Trip</b> and <b>Source Visits</b> (links to vehicle trips &amp; customer visits), with multi-trip support.</li>
+    <li><b>GPS location</b> captured from the first visit, and an auto-derived <b>Visited Stops</b> display.</li>
+    <li>Trip totals: KM travelled, duration, fuel litres &amp; amount.</li>
+  </ul>
+
+  <h2>2. Mobile app</h2>
+  <ul>
+    <li>The app uses <code>get_today_field_attendance</code> / <code>create_field_attendance</code> to check in from the field and link the trip/visits.</li>
+    <li>"Today's" window is computed in the <b>Office Timezone</b>, so a late-night check-in lands on the correct day.</li>
+  </ul>
+
+  <h2>3. Late tracking is shared</h2>
+  <p>Field check-ins are ordinary attendance records, so <b>late detection, deductions and waivers work exactly like office attendance</b> &mdash; anchored to the Office Timezone. They appear in the Employee Report too.</p>
+  <div class="note">The Field Attendance list shows the office-time <b>Check In</b> / <b>Check Out</b>, plus trip, visits, location, late time and deduction.</div>
+
+  <h2>4. Menu</h2>
+  <p>Menu: <b>Field Attendance</b> &mdash; a dedicated list with search filters (My Records, Late Only, With Deduction, Waived).</p>
+</div>

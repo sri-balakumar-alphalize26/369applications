@@ -1,0 +1,50 @@
+<style>
+  .g{line-height:1.6;color:#222;}
+  .g h1{color:#875A7B;font-size:24px;margin:0 0 6px;}
+  .g h2{color:#875A7B;border-bottom:2px solid #875A7B;padding-bottom:5px;margin-top:26px;font-size:19px;}
+  .g table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;}
+  .g th,.g td{border:1px solid #e3dde2;padding:7px 10px;text-align:left;vertical-align:top;}
+  .g th{background:#875A7B;color:#fff;}
+  .g tr:nth-child(even) td{background:#faf7f9;}
+  .g code{background:#f3eef2;padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;}
+  .g .note{background:#fff3cd;border:1px solid #e0c97a;border-radius:6px;padding:10px 14px;margin:12px 0;}
+  .g .flow{background:#f7f4f6;border:1px solid #e3dde2;border-radius:6px;padding:10px 14px;font-family:Consolas,monospace;font-size:13px;white-space:pre-wrap;}
+</style>
+<div class="g">
+  <h1>Employee Monthly Report</h1>
+  <p>Working days, present days, late/leave deductions and the final salary &mdash; per employee, per month.</p>
+
+  <h2>1. Generating</h2>
+  <p>Menu: <b>Employee Report</b>. Pick the <b>month/year</b>, company and employees, click <b>Generate</b>, then <b>Refresh</b> any time to recompute from the latest config and attendances.</p>
+
+  <h2>2. Days</h2>
+  <ul>
+    <li><b>Working Days</b> &mdash; checked weekdays + half-day Fridays (0.5 each), minus holidays; recalculated per month (e.g. June = 27, July = 27.5).</li>
+    <li><b>Present Days</b> &mdash; days actually attended (a half-day-Friday attendance counts 0.5).</li>
+    <li>A working day with no attendance and no leave shows as <b>Not Entered</b>; <b>future days are not shown</b>.</li>
+  </ul>
+
+  <h2>3. Salary &mdash; earnings based</h2>
+  <p>You earn one day's pay for each day worked; absent / unpaid days simply aren't earned.</p>
+  <div class="flow">daily rate = wage / working days in month
+earned     = (present days + paid-leave days) &times; daily rate
+Final      = max(0, earned &minus; late deductions)
+Total Deduction = Wage &minus; Final</div>
+  <div class="note">So <b>0 present &rarr; Final 0</b>, and <b>full attendance &rarr; full wage</b> (minus any late). The daily rate is rounded to currency precision so amounts match the leave requests.</div>
+
+  <h2>4. Columns</h2>
+  <table>
+    <tr><th>Column</th><th>Meaning</th></tr>
+    <tr><td>Late Days / Late Time / Late Deduction</td><td>Late occurrences past grace, total late time, and the deduction.</td></tr>
+    <tr><td>Paid / Unpaid Leave Days</td><td>Leave split by the policy (paid only if an enabled policy grants it).</td></tr>
+    <tr><td>Leave Deduction</td><td>Unpaid leave &times; daily rate (shown separately).</td></tr>
+    <tr><td>Wage / Total Deduction / Final Amount</td><td>Total Deduction + Final = Wage.</td></tr>
+  </table>
+  <p>List columns are selectable from the list's options (sliders) menu; deduction cells are red, Final is bold/green.</p>
+
+  <h2>5. Day-wise details &amp; export</h2>
+  <ul>
+    <li>The <b>Day-wise Details</b> tab lists each day (Present / Late / Leave / Not Entered / Holiday) with the office-time <b>Check In</b> and <b>Check Out</b>.</li>
+    <li>Export to <b>PDF</b> and <b>Excel</b> &mdash; both match the on-screen figures.</li>
+  </ul>
+</div>

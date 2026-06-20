@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="view_help_document_list" model="ir.ui.view">
+        <field name="name">attendance.help.document.list</field>
+        <field name="model">attendance.help.document</field>
+        <field name="arch" type="xml">
+            <list string="Help Documents">
+                <field name="sequence" widget="handle"/>
+                <field name="icon"/>
+                <field name="name"/>
+                <field name="description"/>
+                <field name="pdf_filename" string="PDF"/>
+                <field name="active" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_help_document_form" model="ir.ui.view">
+        <field name="name">attendance.help.document.form</field>
+        <field name="model">attendance.help.document</field>
+        <field name="arch" type="xml">
+            <form string="Help Document">
+                <sheet>
+                    <div class="alert alert-info" role="status">
+                        Upload a <b>PDF</b> (and optionally write HTML content). It appears as a card in the
+                        <b>Help</b> menu; "Open guide" shows it in the browser and "Open in PDF doc" opens the full PDF.
+                    </div>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="description"/>
+                            <field name="icon"/>
+                        </group>
+                        <group>
+                            <field name="sequence"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+                    <group string="PDF">
+                        <field name="pdf_file" widget="binary" filename="pdf_filename"/>
+                        <field name="pdf_filename" invisible="1"/>
+                        <field name="pdf_static_path"
+                               placeholder="/hr_attendance_late/static/src/docs/your.pdf (for bundled PDFs)"/>
+                    </group>
+                    <group string="HTML Content (optional — shown instead of the PDF on 'Open guide')">
+                        <field name="html_content" nolabel="1" widget="html"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_help_document" model="ir.actions.act_window">
+        <field name="name">Help Documents</field>
+        <field name="res_model">attendance.help.document</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_help_document"
+              name="Help Documents"
+              parent="hr_attendance.menu_hr_attendance_configuration"
+              action="action_help_document"
+              sequence="50"/>
+
+</odoo>

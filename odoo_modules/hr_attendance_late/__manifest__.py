@@ -23,6 +23,7 @@
     'data': [
         'security/ir.model.access.csv',
         'data/late_config_data.xml',
+        'data/help_document_data.xml',
         'wizard/late_reason_wizard_views.xml',
         'wizard/checkout_confirm_wizard_views.xml',
         'views/late_deduction_slab_views.xml',
@@ -31,6 +32,7 @@
         'views/public_holiday_views.xml',
         'views/late_waiver_views.xml',
         'views/late_summary_views.xml',
+        'views/help_document_views.xml',
         'views/menu.xml',
         'views/help_menu.xml',
         'reports/late_attendance_report.xml',
@@ -38,6 +40,7 @@
     'assets': {
         'web.assets_backend': [
             'hr_attendance_late/static/src/views/**/*',
+            'hr_attendance_late/static/src/help_guide/**/*',
         ],
     },
     'installable': True,

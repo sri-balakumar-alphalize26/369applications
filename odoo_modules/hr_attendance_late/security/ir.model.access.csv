@@ -12,3 +12,5 @@ access_late_waiver_manager,hr.late.waiver.request.manager,model_hr_late_waiver_r
 access_late_waiver_user,hr.late.waiver.request.user,model_hr_late_waiver_request,base.group_user,1,1,1,0
 access_late_reason_wizard_user,hr.attendance.late.reason.wizard.user,model_hr_attendance_late_reason_wizard,base.group_user,1,1,1,1
 access_checkout_confirm_wizard_user,hr.attendance.checkout.confirm.wizard.user,model_hr_attendance_checkout_confirm_wizard,base.group_user,1,1,1,1
+access_help_document_manager,attendance.help.document.manager,model_attendance_help_document,hr.group_hr_manager,1,1,1,1
+access_help_document_user,attendance.help.document.user,model_attendance_help_document,base.group_user,1,0,0,0
