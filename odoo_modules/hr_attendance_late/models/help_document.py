@@ -32,10 +32,13 @@ class AttendanceHelpDocument(models.Model):
     @api.depends('pdf_file', 'pdf_filename', 'pdf_static_path')
     def _compute_pdf_url(self):
         for rec in self:
-            if rec.pdf_static_path:
-                rec.pdf_url = rec.pdf_static_path
-            elif rec.pdf_file:
+            # Uploaded PDF wins over the bundled static path, so uploading a new
+            # PDF actually changes what "Open in PDF doc" opens. Static path is
+            # the fallback for shipped docs with no upload.
+            if rec.pdf_file:
                 rec.pdf_url = '/web/content/attendance.help.document/%s/pdf_file/%s?download=false' % (
                     rec.id, rec.pdf_filename or 'document.pdf')
+            elif rec.pdf_static_path:
+                rec.pdf_url = rec.pdf_static_path
             else:
                 rec.pdf_url = False
