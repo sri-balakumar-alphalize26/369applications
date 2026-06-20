@@ -150,7 +150,7 @@
             <list string="Pick a Visit">
                 <field name="source_trip_id" string="Source Trip"/>
                 <field name="partner_id" string="Customer"/>
-                <field name="date_time" string="Date / Time"/>
+                <field name="date_time_office" string="Date / Time"/>
                 <field name="location_name" string="Location"/>
                 <field name="latitude" string="Lat"/>
                 <field name="longitude" string="Lng"/>
@@ -413,7 +413,7 @@
                                 <field name="destination_location"/>
                                 <field name="visit_id"/>
                                 <field name="visit_partner_id"/>
-                                <field name="visit_date_time"/>
+                                <field name="visit_date_time_office"/>
                                 <field name="visit_location_name"/>
                                 <field name="visit_latitude"/>
                                 <field name="visit_longitude"/>
@@ -449,7 +449,7 @@
                                                         <div style="line-height:1.7;">
                                                             <div><strong>Visit: </strong><field name="visit_id"/></div>
                                                             <div><strong>Customer: </strong><field name="visit_partner_id"/></div>
-                                                            <div><strong>Date / Time: </strong><field name="visit_date_time"/></div>
+                                                            <div><strong>Date / Time: </strong><field name="visit_date_time_office"/></div>
                                                             <div><strong>Visit Location: </strong><field name="visit_location_name"/></div>
                                                             <div><strong>Visit Latitude: </strong><field name="visit_latitude"/></div>
                                                             <div><strong>Visit Longitude: </strong><field name="visit_longitude"/></div>
@@ -538,7 +538,7 @@
                                                    context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True, 'from_visit_picker': True}"
                                                    options="{'no_quick_create': True}"/>
                                             <field name="visit_partner_id" invisible="not visit_id"/>
-                                            <field name="visit_date_time" invisible="not visit_id"/>
+                                            <field name="visit_date_time_office" invisible="not visit_id"/>
                                             <field name="visit_location_name" invisible="not visit_id"/>
                                         </group>
                                         <group>
@@ -802,7 +802,7 @@
                                    context="{'list_view_ref': 'hr_field_attendance.view_customer_visit_picker', 'hide_done_visits': True, 'from_visit_picker': True}"
                                    options="{'no_quick_create': True}"/>
                             <field name="visit_partner_id" invisible="not visit_id"/>
-                            <field name="visit_date_time" invisible="not visit_id"/>
+                            <field name="visit_date_time_office" invisible="not visit_id"/>
                             <field name="visit_location_name" invisible="not visit_id"/>
                         </group>
                         <group>

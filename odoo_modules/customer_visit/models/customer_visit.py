@@ -17,6 +17,9 @@ class CustomerVisit(models.Model):
     employee_id = fields.Many2one('hr.employee', string='Visited By', index=True, tracking=True)
     partner_id = fields.Many2one('res.partner', string='Customer', required=True, index=True, tracking=True)
     date_time = fields.Datetime(string='Date and Time', default=fields.Datetime.now, tracking=True)
+    # Office-timezone display string (shown in views instead of the raw
+    # date_time Datetime, which always renders in the viewer's tz).
+    date_time_office = fields.Char(string='Date and Time', compute='_compute_date_time_office')
     purpose_id = fields.Many2one('visit.purpose', string='Visit Purpose', tracking=True)
     visit_duration = fields.Selection([
         ('0_15', '0 to 15 minutes'),
@@ -70,6 +73,13 @@ class CustomerVisit(models.Model):
             'view_mode': 'form',
             'target': 'new',
         }
+
+    @api.depends('date_time', 'employee_id')
+    def _compute_date_time_office(self):
+        Config = self.env['hr.attendance.late.config']
+        for rec in self:
+            rec.date_time_office = Config.format_datetime_office(
+                rec.date_time, rec.employee_id.id)
 
     @api.depends('voice_note', 'voice_note_filename')
     def _compute_voice_note_player(self):

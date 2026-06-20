@@ -53,6 +53,11 @@ class VehicleTracking(models.Model):
 
     start_time = fields.Datetime(string='Start Time', default=fields.Datetime.now)
     end_time = fields.Datetime(string='End Time')
+    # Office-timezone display strings (shown in views instead of the raw
+    # Datetime fields, which always render in the viewer's tz). Trips have no
+    # clean employee link, so they use the company-wide Office Timezone.
+    start_time_office = fields.Char(string='Start Time', compute='_compute_time_office')
+    end_time_office = fields.Char(string='End Time', compute='_compute_time_office')
     duration = fields.Float(string='Duration (Hrs)', compute='_compute_duration', store=True)
     invoice_number = fields.Char(string='Invoice Number')
     invoice_match = fields.Boolean(string="Invoice Match", readonly=True)
@@ -197,6 +202,13 @@ class VehicleTracking(models.Model):
                 rec.duration = round(delta.total_seconds() / 3600, 2)
             else:
                 rec.duration = 0.0
+
+    @api.depends('start_time', 'end_time')
+    def _compute_time_office(self):
+        Config = self.env['hr.attendance.late.config']
+        for rec in self:
+            rec.start_time_office = Config.format_datetime_office(rec.start_time)
+            rec.end_time_office = Config.format_datetime_office(rec.end_time)
 
     @api.depends('km_travelled', 'estimated_km')
     def _compute_km_variance(self):

@@ -135,6 +135,13 @@ class FieldAttendanceTripLine(models.Model):
         related='visit_id.date_time', readonly=True,
         string='Visit Date / Time',
     )
+    # Office-timezone display string for the visit time — shown in the field
+    # attendance views instead of visit_date_time (a raw Datetime that renders
+    # in the viewer's tz). Reuses customer.visit.date_time_office.
+    visit_date_time_office = fields.Char(
+        related='visit_id.date_time_office', readonly=True,
+        string='Date / Time',
+    )
     visit_location_name = fields.Char(
         related='visit_id.location_name', readonly=True,
         string='Visit Location',

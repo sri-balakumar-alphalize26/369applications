@@ -95,15 +95,8 @@
               <field name="destination_id" placeholder="Select Destination Location" required="1" readonly="end_trip or trip_cancel"/>
               <field name="visited_stops_display" readonly="1"
                      invisible="visited_stop_count == 0"/>
-              <field name="start_time" readonly="end_trip or trip_cancel"/>
-              <label for="end_time"/>
-              <div>
-                  <field name="end_time" required="end_trip" nolabel="1"
-                         readonly="not start_trip or end_trip or trip_cancel"/>
-                  <div class="text-danger small mt-1" invisible="start_trip or trip_cancel">
-                      After Start Trip you can use this field.
-                  </div>
-              </div>
+              <field name="start_time_office" readonly="1"/>
+              <field name="end_time_office" readonly="1"/>
               <field name="duration" readonly="1"/>
               <field name="invoice_number" readonly="end_trip or trip_cancel"/>
 
@@ -211,7 +204,7 @@
         <field name="end_km"/>
         <field name="km_travelled" sum="km_travelled"/>
         <field name="visited_stop_count" string="Stops" optional="show"/>
-        <field name="end_time"/>
+        <field name="end_time_office"/>
         <field name="duration" sum="duration"/>
         <field name="amount"/>
         <field name="trip_status" widget="badge"
@@ -235,7 +228,7 @@
     <field name="name">vehicle.tracking.comparison.list</field>
     <field name="model">vehicle.tracking</field>
     <field name="arch" type="xml">
-      <list string="Trip Comparison" create="false">
+      <list string="Trip Comparison">
         <field name="ref"/>
         <field name="date"/>
         <field name="vehicle_id"/>

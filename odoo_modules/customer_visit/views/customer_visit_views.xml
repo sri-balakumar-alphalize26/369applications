@@ -9,7 +9,7 @@
                 <field name="name"/>
                 <field name="partner_id"/>
                 <field name="employee_id"/>
-                <field name="date_time"/>
+                <field name="date_time_office"/>
                 <field name="purpose_id"/>
                 <field name="visit_duration"/>
                 <field name="state"/>
@@ -33,7 +33,7 @@
                             <field name="name"/>
                             <field name="partner_id"/>
                             <field name="employee_id"/>
-                            <field name="date_time"/>
+                            <field name="date_time_office"/>
                         </group>
                         <group>
                             <field name="purpose_id"/>

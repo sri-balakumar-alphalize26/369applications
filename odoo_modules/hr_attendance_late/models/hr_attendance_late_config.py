@@ -370,6 +370,33 @@ class AttendanceLateConfig(models.Model):
 
         return config or self.browse()
 
+    # --- Office-timezone display helpers ---
+
+    @api.model
+    def get_office_timezone(self, employee_id=False):
+        """Office tz name for displaying datetimes: config office timezone →
+        employee's own tz → any configured office tz → UTC."""
+        tz_name = False
+        if employee_id:
+            tz_name = self.get_config_for_employee(employee_id).get('timezone')
+            if not tz_name:
+                emp = self.env['hr.employee'].browse(employee_id)
+                tz_name = emp.exists() and emp.tz
+        if not tz_name:
+            cfg = self.sudo().search([('timezone', '!=', False)], limit=1)
+            tz_name = cfg.timezone if cfg else False
+        return tz_name or 'UTC'
+
+    @api.model
+    def format_datetime_office(self, dt, employee_id=False):
+        """UTC datetime -> 'DD Mon YYYY, HH:MM AM/PM' string in the office tz.
+        Mirrors hr.attendance._compute_office_time formatting so trip / visit
+        times read the same way as the attendance check-in office time."""
+        if not dt:
+            return ''
+        tz = pytz.timezone(self.get_office_timezone(employee_id))
+        return pytz.utc.localize(dt).astimezone(tz).strftime('%d %b %Y, %I:%M %p')
+
     # --- Recompute hooks ---
 
     def action_recompute_records(self):
