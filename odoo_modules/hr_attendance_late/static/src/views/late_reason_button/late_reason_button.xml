@@ -5,13 +5,13 @@
         <button t-if="isVisible" type="button"
                 class="btn btn-warning"
                 t-on-click="onClick">
-            <i class="fa fa-clock-o me-1"/>Enter Late Reason
+            <i class="fa fa-clock-o me-1"/><t t-esc="buttonLabel"/>
         </button>
     </t>
 
     <t t-name="hr_attendance_late.LateReasonDialog">
         <Dialog title="props.title" size="'md'">
-            <div class="alert alert-warning mb-3" role="alert">
+            <div t-if="props.showInfo" class="alert alert-warning mb-3" role="alert">
                 <h4 class="mb-2"><i class="fa fa-clock-o me-1"/>Late Check-in Detected</h4>
                 <p class="mb-1">
                     <strong t-esc="props.info.employeeName"/>

@@ -22,7 +22,8 @@ export class LateReasonDialog extends Component {
     static props = {
         close: Function,
         title: { type: String, optional: true },
-        info: Object,
+        showInfo: { type: Boolean, optional: true },
+        info: { type: Object, optional: true },
         defaultReason: { type: String, optional: true },
         onConfirm: Function,
     };
@@ -55,12 +56,36 @@ export class LateReasonButton extends Component {
 
     get isVisible() {
         const d = this.props.record.data;
-        return (d.is_late || (d.late_minutes || 0) > 0) && !d.is_waived;
+        // Hidden once checked out (form is read-only) and for waived / on-time.
+        return (d.is_late || (d.late_minutes || 0) > 0) && !d.is_waived && !d.check_out;
+    }
+
+    get hasReason() {
+        const r = this.props.record.data.late_reason;
+        return !!(r && r.trim());
+    }
+
+    get buttonLabel() {
+        return this.hasReason ? _t("Update Reason") : _t("Enter Late Reason");
     }
 
     async onClick() {
         const record = this.props.record;
         const d = record.data;
+
+        // Update mode: a reason already exists -> just edit it. No detail box,
+        // no preview RPC; show only the existing reason in the textarea.
+        if (this.hasReason) {
+            this.dialog.add(LateReasonDialog, {
+                title: _t("Update Late Reason"),
+                showInfo: false,
+                info: {},
+                defaultReason: d.late_reason || "",
+                onConfirm: (reason) => record.update({ late_reason: reason }),
+            });
+            return;
+        }
+
         const emp = d.employee_id;
         const employeeName = Array.isArray(emp)
             ? emp[1]
@@ -104,6 +129,7 @@ export class LateReasonButton extends Component {
         };
         this.dialog.add(LateReasonDialog, {
             title: _t("Enter Late Reason"),
+            showInfo: true,
             info: info,
             defaultReason: d.late_reason || "",
             onConfirm: (reason) => record.update({ late_reason: reason }),
