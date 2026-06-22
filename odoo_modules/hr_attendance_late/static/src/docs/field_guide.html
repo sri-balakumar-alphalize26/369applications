@@ -2,6 +2,7 @@
   .g{line-height:1.6;color:#222;}
   .g h1{color:#875A7B;font-size:24px;margin:0 0 6px;}
   .g h2{color:#875A7B;border-bottom:2px solid #875A7B;padding-bottom:5px;margin-top:26px;font-size:19px;}
+  .g h3{color:#5d3f54;margin-top:18px;font-size:15px;}
   .g table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;}
   .g th,.g td{border:1px solid #e3dde2;padding:7px 10px;text-align:left;vertical-align:top;}
   .g th{background:#875A7B;color:#fff;}
@@ -11,33 +12,48 @@
 </style>
 <div class="g">
   <h1>HR Field Attendance</h1>
-  <p>Attendance for field staff, built from vehicle trips and customer visits &mdash; not just office check-ins.</p>
+  <p>Attendance for staff who work on the road &mdash; a whole day's journey (trips, customer visits, distance, fuel and GPS) captured on one attendance record. The full step-by-step manual is on the <b>Open in PDF doc</b> button.</p>
 
-  <h2>1. What it adds</h2>
+  <h2>1. Where to find it</h2>
+  <p>Menu: <b>Attendances &rarr; Field Attendance</b>. There is also a <b>Field Attendance</b> app icon in the app launcher (the nine-dot grid) that opens the same screen.</p>
   <ul>
-    <li>An <code>attendance_source = field</code> flag on the attendance record.</li>
-    <li>A <b>Source Trip</b> and <b>Source Visits</b> (links to vehicle trips &amp; customer visits), with multi-trip support.</li>
-    <li><b>GPS location</b> captured from the first visit, and an auto-derived <b>Visited Stops</b> display.</li>
-    <li>Trip totals: KM travelled, duration, fuel litres &amp; amount.</li>
+    <li><b>My Field Attendance</b> &mdash; every employee sees their own field days.</li>
+    <li><b>All Field Records</b> &mdash; HR Officers and Managers see everyone's field attendance.</li>
+  </ul>
+  <div class="note">The list shows the date, employee, <b>Check In</b> / <b>Check Out</b> (in office time), the source trip, the visited stops, the location and the trip totals. Use the <b>My Records</b>, <b>Late Only</b>, <b>With Deduction</b> and <b>Waived</b> filters to narrow it down.</div>
+
+  <h2>2. What it captures</h2>
+  <ul>
+    <li>A <b>Field</b> source flag (<code>attendance_source = field</code>) &mdash; field attendance is marked separately from manual office attendance.</li>
+    <li>A <b>primary trip</b> plus unlimited <b>additional trips</b> &mdash; a full day of stops on one record, with multi-trip support.</li>
+    <li><b>Customer visits</b>, each linked to the trip it happened on, and an auto-derived <b>Visited Stops</b> display.</li>
+    <li><b>GPS</b> latitude/longitude captured from the trip or the first visit, plus a Location name.</li>
+    <li><b>Trip Totals:</b> Total KM Travelled, Total Duration, Total Fuel (Litres) and Total Fuel Amount &mdash; added up automatically across every trip.</li>
   </ul>
 
-  <h2>2. Mobile app</h2>
+  <h2>3. A day in the field</h2>
+  <p>The form guides you with clearly labelled buttons, in the order you press them across the day:</p>
   <ul>
-    <li>The app uses <code>get_today_field_attendance</code> / <code>create_field_attendance</code> to check in from the field and link the trip/visits.</li>
-    <li>"Today's" window is computed in the <b>Office Timezone</b>, so a late-night check-in lands on the correct day.</li>
+    <li><b>Check in</b> (from the app or the form) &mdash; the record is marked a <b>Field</b> source and the guidance banner points you to the next action.</li>
+    <li><b>Enter a late reason</b> &mdash; only if you arrived late (see section 5).</li>
+    <li><b>Setup Primary Trip (Home to Office)</b> &mdash; pick the trip, enter the <b>Start KM</b>, optionally name the Location, and save; the trip starts and the primary card fills in. Going straight to a customer instead? Use <b>Setup Secondary Trip (Home to Visit)</b>.</li>
+    <li><b>Add Additional Trip</b> &mdash; for each new stop. If a trip is still open, a <b>Close Previous Trip</b> popup appears first (enter the <b>End KM</b>, <i>Save &amp; Exit</i>); then pick the trip and visit. The <b>Start KM is pre-filled</b> from the previous trip's End KM, so you usually just confirm it.</li>
+    <li><b>Primary Trip (Via Office or Direct)</b> &mdash; begin the journey home. <b>Via Office</b> = Visit&rarr;Office then Office&rarr;Home (the <b>Primary Trip (Office to Home)</b> button appears for the second leg); <b>Direct</b> = Visit&rarr;Home.</li>
+    <li><b>Check Out Now</b> &mdash; ends the day. If a trip is still open you enter the End KM first; on check-out the last trip is closed, every visit is marked <b>Done</b>, and the whole record locks read-only.</li>
+  </ul>
+  <div class="note"><b>Adding a new trip always closes the previous one first</b>, so distance and fuel stay accurate. Ended trips are locked and hidden from the trip picker.</div>
+
+  <h2>4. Times &amp; trip odometer</h2>
+  <ul>
+    <li><b>Start / End Time are read-only:</b> they are <b>captured automatically</b> when you start and close a trip &mdash; you no longer type them in.</li>
+    <li><b>Office time everywhere:</b> each trip's Start/End Time and each visit's Date / Time are shown in the company's <b>Office Timezone</b> (the same anchor as office attendance), so they read the same for everyone.</li>
+    <li><b>Start KM carries over:</b> the next trip's Start KM is pre-filled from the previous (last ended) trip's End KM for odometer continuity &mdash; you can still override it.</li>
   </ul>
 
-  <h2>3. Late tracking is shared</h2>
-  <p>Field check-ins are ordinary attendance records, so <b>late detection, deductions and waivers work exactly like office attendance</b> &mdash; anchored to the Office Timezone. They appear in the Employee Report too.</p>
-  <div class="note">The Field Attendance list shows the office-time <b>Check In</b> / <b>Check Out</b>, plus trip, visits, location, late time and deduction.</div>
-  <p>If you arrived late, the <b>Late Reason is required before the record can be saved</b>. Click <i>Enter Late Reason</i>, type why in the popup and Save; once entered the button becomes <i>Update Reason</i> (re-opening with the existing reason), and it disappears after check-out.</p>
+  <h2>5. Late tracking is shared</h2>
+  <p>Field check-ins are ordinary attendance records, so <b>late detection, deductions and waivers work exactly like office attendance</b> &mdash; anchored to the Office Timezone &mdash; and they appear in the Employee Report too.</p>
+  <p>If you arrived late, scroll to the <b>Late Tracking</b> section: the <b>Late Reason is required before the record can be saved</b>. Click <i>Enter Late Reason</i>, type why in the popup and save; once entered the button becomes <i>Update Reason</i> (re-opening with the existing reason), and it disappears after check-out.</p>
 
-  <h2>4. Office time &amp; trip odometer</h2>
-  <ul>
-    <li><b>Office time everywhere:</b> trip <b>Start/End&nbsp;Time</b> in Vehicle Tracking and the <b>Date and Time</b> on Customer Visits now display in the <b>Office Timezone</b> (same anchor as attendance), so they read the same for everyone.</li>
-    <li><b>Start Km carries over:</b> when you create the next trip of the day, its <b>Start Km</b> is pre-filled from the previous (last ended) trip's <b>End Km</b> for odometer continuity &mdash; you can still override it.</li>
-  </ul>
-
-  <h2>5. Menu</h2>
-  <p>Menu: <b>Field Attendance</b> &mdash; a dedicated list with search filters (My Records, Late Only, With Deduction, Waived).</p>
+  <h2>6. Reviewing field attendance</h2>
+  <p>Managers open <b>All Field Records</b> to review any employee's day. Group by Employee, Department, Trip, Date or Month, filter by My Records / Late Only / With Deduction / Waived, and open any record to inspect the trips, visits, GPS and trip totals.</p>
 </div>

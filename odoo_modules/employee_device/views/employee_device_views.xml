@@ -15,8 +15,10 @@
                         </group>
                     </group>
                     <separator string="Registered Devices"/>
-                    <field name="device_ids">
-                        <list editable="bottom">
+                    <!-- Read-only here: devices are added/edited only via the
+                         Attendances → Devices menu, not from the employee form. -->
+                    <field name="device_ids" readonly="1">
+                        <list create="false" delete="false">
                             <field name="device_id"/>
                             <field name="device_name"/>
                             <field name="device_type"/>
@@ -34,6 +36,10 @@
     <record id="view_employee_device_register_list" model="ir.ui.view">
         <field name="name">hr.employee.device.register.list</field>
         <field name="model">hr.employee</field>
+        <!-- High priority so this never becomes the default hr.employee list
+             elsewhere (e.g. the Employees overview); the Devices action still
+             uses it via its explicit act_window.view binding. -->
+        <field name="priority">99</field>
         <field name="arch" type="xml">
             <list string="Devices" create="false" delete="false" edit="false">
                 <field name="name"/>
@@ -50,6 +56,10 @@
     <record id="view_employee_device_register_form" model="ir.ui.view">
         <field name="name">hr.employee.device.register.form</field>
         <field name="model">hr.employee</field>
+        <!-- High priority so this never becomes the default hr.employee form
+             (e.g. when opening an employee from the overview); the Devices
+             action still uses it via its explicit act_window.view binding. -->
+        <field name="priority">99</field>
         <field name="arch" type="xml">
             <form string="Employee Device">
                 <sheet>

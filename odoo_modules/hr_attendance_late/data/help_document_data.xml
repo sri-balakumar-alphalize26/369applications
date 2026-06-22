@@ -38,5 +38,14 @@
             <field name="pdf_static_path">/hr_attendance_late/static/src/docs/HR_Field_Attendance_User_Manual.pdf</field>
         </record>
 
+        <record id="help_doc_device" model="attendance.help.document">
+            <field name="name">Employee Device</field>
+            <field name="description">Register one phone per employee with a Device ID &amp; PIN.</field>
+            <field name="icon">📱</field>
+            <field name="sequence">50</field>
+            <field name="html_static_path">hr_attendance_late/static/src/docs/device_guide.html</field>
+            <field name="pdf_static_path">/hr_attendance_late/static/src/docs/Employee_Device_User_Manual.pdf</field>
+        </record>
+
     </data>
 </odoo>

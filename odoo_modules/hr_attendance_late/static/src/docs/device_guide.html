@@ -1,0 +1,54 @@
+<style>
+  .g{line-height:1.6;color:#222;}
+  .g h1{color:#875A7B;font-size:24px;margin:0 0 6px;}
+  .g h2{color:#875A7B;border-bottom:2px solid #875A7B;padding-bottom:5px;margin-top:26px;font-size:19px;}
+  .g h3{color:#5d3f54;margin-top:18px;font-size:15px;}
+  .g table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;}
+  .g th,.g td{border:1px solid #e3dde2;padding:7px 10px;text-align:left;vertical-align:top;}
+  .g th{background:#875A7B;color:#fff;}
+  .g tr:nth-child(even) td{background:#faf7f9;}
+  .g code{background:#f3eef2;padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;}
+  .g .note{background:#fff3cd;border:1px solid #e0c97a;border-radius:6px;padding:10px 14px;margin:12px 0;}
+</style>
+<div class="g">
+  <h1>Employee Device</h1>
+  <p>Authorize one phone per employee with a <b>Device ID</b> and <b>PIN</b>, and block lost or replaced phones without losing the record. The full step-by-step manual is on the <b>Open in PDF doc</b> button.</p>
+
+  <h2>1. What it does</h2>
+  <p>The Employee Attendance app only accepts a check-in or check-out from a phone that HR has registered for that employee. Each employee has <b>one device on file</b>, identified by a 10-digit <b>Device ID</b> and protected by a <b>PIN</b>. While the device is <b>Active</b> the employee can mark attendance from it; turn Active off to block a lost or replaced phone without deleting its history.</p>
+
+  <h2>2. Where to find it</h2>
+  <p>Menu: <b>Attendances &rarr; Devices</b> (top bar, next to Late Tracking and Field Attendance). This is the <b>only</b> place devices are added or edited. You get a read-only list with one row per employee showing <b>Name</b>, <b>Device ID</b>, <b>Device Name</b>, <b>Active</b>, <b>Device Added On</b> and <b>Last Used</b>.</p>
+  <div class="note">The employee's own <b>Devices</b> tab (on their profile) shows the same details but is <b>view-only</b> &mdash; registration happens only from <b>Attendances &rarr; Devices</b>.</div>
+
+  <h2>3. Register a device &amp; PIN</h2>
+  <ol>
+    <li>Ask the employee for their <b>10-digit Device ID</b>.</li>
+    <li>Open the employee from <b>Attendances &rarr; Devices</b> (click their row to open the device form).</li>
+    <li>Type the <b>Device ID</b> exactly as provided.</li>
+    <li>Under <b>PIN Authentication</b>, set a <b>PIN</b> &mdash; it verifies the employee when marking attendance.</li>
+    <li>Make sure <b>Active</b> is switched on, then <b>save</b>.</li>
+    <li>Optionally set the <b>Device Type</b> (Android or iOS). <b>Device Name</b> and <b>Last Used</b> fill in automatically once the device is used &mdash; you don't type them.</li>
+  </ol>
+
+  <h2>4. Managing devices</h2>
+  <ul>
+    <li><b>Block a lost or old phone:</b> turn <b>Active</b> off instead of deleting &mdash; the record and its history stay, and you can switch it back on later.</li>
+    <li><b>Replace a device:</b> each employee can have only <b>one</b> device. To move to a new phone, update the existing Device ID (or deactivate it first) &mdash; adding a second device is blocked.</li>
+    <li><b>Check recent activity:</b> use the <b>Last Used</b> column/field to confirm a phone is active and marking attendance.</li>
+  </ul>
+
+  <h2>5. Reference: Device fields</h2>
+  <table>
+    <tr><th>Field</th><th>What it means</th></tr>
+    <tr><td>Device ID</td><td>The 10-digit code that identifies the employee's authorized device.</td></tr>
+    <tr><td>Device Name</td><td>The device's name. Fills in automatically once the device is in use.</td></tr>
+    <tr><td>Device Type</td><td>Android or iOS. Defaults to Android.</td></tr>
+    <tr><td>Active</td><td>Whether the device may mark attendance. Turn off to block without deleting.</td></tr>
+    <tr><td>PIN</td><td>The code that verifies the employee when marking attendance.</td></tr>
+    <tr><td>Device Added On</td><td>When the device record was created.</td></tr>
+    <tr><td>Last Used</td><td>When the device last marked attendance. Fills in automatically.</td></tr>
+  </table>
+
+  <div class="note"><b>Remember:</b> only one device per employee &mdash; deactivate or update the existing one before adding a new phone. Attendance can be marked only from a <b>registered AND Active</b> device, verified by PIN. Lost a phone? Turn <b>Active</b> off rather than deleting so you keep the history and can re-enable it later.</div>
+</div>
