@@ -321,6 +321,70 @@ class HrAttendance(models.Model):
                 rec.late_minutes = int(diff.total_seconds() / 60)
                 rec.is_late = True
 
+    @api.model
+    def evaluate_late_for(self, employee_id, check_in_dt):
+        """Compute late status for a *hypothetical* check-in WITHOUT creating a
+        record. Mirrors `_compute_checkin_session` + `_compute_late_info` so the
+        "reason-before-check-in" flow can decide whether to prompt the user
+        before any hr.attendance row exists.
+
+        `check_in_dt` is a naive UTC datetime (same convention as the stored
+        `check_in` field). Returns a plain dict:
+        {is_late, late_minutes, late_minutes_display, expected_start_time,
+         checkin_session}.
+        """
+        Config = self.env['hr.attendance.late.config']
+        result = {
+            'is_late': False,
+            'late_minutes': 0,
+            'late_minutes_display': '',
+            'expected_start_time': 0.0,
+            'checkin_session': '1',
+        }
+        employee = self.env['hr.employee'].sudo().browse(employee_id)
+        if not check_in_dt or not employee.exists():
+            return result
+
+        config_data = Config.get_config_for_employee(employee_id)
+        threshold = config_data.get('late_threshold_minutes', 15)
+        tz = pytz.timezone(config_data.get('timezone') or employee.tz or 'UTC')
+        # Accept naive (assumed UTC) or tz-aware datetimes.
+        if check_in_dt.tzinfo is None:
+            local_dt = pytz.utc.localize(check_in_dt).astimezone(tz)
+        else:
+            local_dt = check_in_dt.astimezone(tz)
+        check_date = local_dt.date()
+
+        shift_type = config_data.get('shift_type', 'single')
+        session2_start = config_data.get('office_start_hour_2', 14.0)
+        local_hour = local_dt.hour + local_dt.minute / 60.0
+        is_session_2 = (shift_type == 'split' and local_hour >= session2_start)
+        session = '2' if is_session_2 else '1'
+
+        if is_session_2:
+            office_start = config_data.get('office_start_hour_2', 14.0)
+        else:
+            office_start = config_data.get('office_start_hour', 8.0)
+
+        if Config.is_half_day_friday(check_date, employee_id) and session == '1':
+            office_start = config_data.get('half_day_start_hour', 17.0)
+
+        office_hour = int(office_start)
+        office_minute = int((office_start - office_hour) * 60)
+        office_start_dt = local_dt.replace(
+            hour=office_hour, minute=office_minute, second=0, microsecond=0
+        )
+        allowed_dt = office_start_dt + timedelta(minutes=threshold)
+
+        result['expected_start_time'] = office_start
+        result['checkin_session'] = session
+        if local_dt > allowed_dt:
+            lm = int((local_dt - office_start_dt).total_seconds() / 60)
+            result['is_late'] = True
+            result['late_minutes'] = lm
+            result['late_minutes_display'] = '%d:%02d' % (lm // 60, lm % 60)
+        return result
+
     @api.depends('is_late', 'late_minutes', 'employee_id', 'date', 'check_in', 'checkin_session')
     def _compute_late_sequence(self):
         """Count late TIMES per SESSION in the month for this employee.

@@ -28,6 +28,35 @@ export const floatToHM = (h) => {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 };
 
+// Wall-clock {hour, minute} for `date` in the OFFICE timezone (e.g.
+// "Asia/Muscat"), so late detection matches the Odoo server (which computes in
+// the config timezone via pytz). Without this, a phone set to a different tz
+// (e.g. IST) over/under-counts late minutes by the offset. Falls back to the
+// device clock when no timezone is given or the runtime lacks Intl tz support.
+const wallClockInTz = (date, timeZone) => {
+  if (!timeZone) {
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(date);
+    let hour = parseInt(parts.find((p) => p.type === 'hour')?.value, 10);
+    const minute = parseInt(parts.find((p) => p.type === 'minute')?.value, 10);
+    if (hour === 24) hour = 0; // some impls render midnight as "24"
+    if (Number.isNaN(hour) || Number.isNaN(minute)) {
+      return { hour: date.getHours(), minute: date.getMinutes() };
+    }
+    return { hour, minute };
+  } catch (e) {
+    console.log('[late-calc] Intl tz unsupported, using device clock:', e?.message);
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+};
+
 export const computeLocalLateInfo = (checkInDate, lateConfig) => {
   if (!checkInDate || isNaN(checkInDate?.getTime?.())) return { isLate: false };
 
@@ -42,30 +71,31 @@ export const computeLocalLateInfo = (checkInDate, lateConfig) => {
     late_threshold_minutes: 15,
   };
 
-  const localHour = checkInDate.getHours() + checkInDate.getMinutes() / 60;
   const session2Start = typeof config.office_start_hour_2 === 'number' ? config.office_start_hour_2 : 14.0;
   const session1Start = typeof config.office_start_hour === 'number' ? config.office_start_hour : 8.0;
   const threshold = typeof config.late_threshold_minutes === 'number' ? config.late_threshold_minutes : 15;
   const shiftType = config.shift_type ?? 'split';
 
+  // Read the check-in wall clock in the OFFICE timezone (not the device's), so
+  // this matches the server's pytz-based late computation.
+  const { hour, minute } = wallClockInTz(checkInDate, config.timezone);
+  const localHour = hour + minute / 60;
+
   const isSession2 = shiftType === 'split' && localHour >= session2Start;
   const officeStart = isSession2 ? session2Start : session1Start;
 
-  const officeStartDt = new Date(checkInDate);
-  officeStartDt.setHours(
-    Math.floor(officeStart),
-    Math.round((officeStart % 1) * 60),
-    0,
-    0,
-  );
-  const allowedDt = new Date(officeStartDt.getTime() + threshold * 60 * 1000);
+  // Compare purely in wall-clock minutes within the office tz — avoids the
+  // Date arithmetic that previously mixed device-local and office time.
+  const nowMin = hour * 60 + minute;
+  const officeMin = Math.floor(officeStart) * 60 + Math.round((officeStart % 1) * 60);
+  const allowedMin = officeMin + threshold;
 
   console.log('[late-calc] config session1:', session1Start, 'session2:', session2Start,
-              'threshold:', threshold, 'shift:', shiftType,
+              'threshold:', threshold, 'shift:', shiftType, 'tz:', config.timezone || '(device)',
               '→ chose session', isSession2 ? '2' : '1', 'expectedStart:', officeStart,
               'checkInLocalHour:', localHour.toFixed(3));
 
-  if (checkInDate <= allowedDt) {
+  if (nowMin <= allowedMin) {
     return {
       isLate: false,
       session: isSession2 ? '2' : '1',
@@ -74,7 +104,7 @@ export const computeLocalLateInfo = (checkInDate, lateConfig) => {
     };
   }
 
-  const lateMinutes = Math.floor((checkInDate - officeStartDt) / 60000);
+  const lateMinutes = nowMin - officeMin;
   const h = Math.floor(lateMinutes / 60);
   const m = lateMinutes % 60;
 

@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Modal, View, Text, TextInput, TouchableOpacity, ActivityIndicator,
   StyleSheet, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
+import { getCurrentFix, distanceMeters, DEST_VERIFY_RADIUS_M } from '@utils/geoVerify';
 
 const FIELD_COLOR = '#1976D2';
 // Grep "[FA-CLOSE]" to trace the End-KM dialog: open, validation, Save.
@@ -12,7 +13,9 @@ const TAG = '[FA-CLOSE]';
 
 // Modal shown before any "next trip" button when the previous trip is still
 // open. Mirrors the web Close-Previous-Trip dialog: enter End KM, click
-// Save & Exit. Validates End KM > previous Start KM.
+// Save & Exit. Validates End KM > previous Start KM. Also MANDATORY destination
+// GPS check: the driver must be within `verifyRadiusM` of the trip's destination
+// to close (when the destination has coordinates and GPS is available).
 const ClosePreviousTripSheet = ({
   visible, previousTripRef, previousStartKm, saving, onSave, onClose,
   // Optional overrides so the same popup can serve "starting next trip"
@@ -20,9 +23,36 @@ const ClosePreviousTripSheet = ({
   title = 'Close Previous Trip',
   disclaimer,
   saveLabel = 'Save & Exit',
+  // Destination verification
+  destinationCoords = null,   // { latitude, longitude } | null
+  destinationName = '',
+  verifyRadiusM = DEST_VERIFY_RADIUS_M,
 }) => {
   const [endKm, setEndKm] = useState('');
   const [errorText, setErrorText] = useState('');
+  // status: idle | checking | verified | too_far | unavailable | no_coords
+  const [verify, setVerify] = useState({ status: 'idle', distance: null });
+
+  // Run the destination GPS check. 'too_far' is the only state that BLOCKS Save;
+  // 'unavailable'/'no_coords' allow close (so drivers aren't trapped).
+  const runVerify = useCallback(async () => {
+    if (!destinationCoords || destinationCoords.latitude == null || destinationCoords.longitude == null) {
+      setVerify({ status: 'no_coords', distance: null });
+      return;
+    }
+    setVerify({ status: 'checking', distance: null });
+    const fix = await getCurrentFix();
+    if (fix.source === 'denied' || fix.source === 'stale' || fix.source === 'unavailable') {
+      console.log(TAG, 'verify: GPS unavailable —', fix.source);
+      setVerify({ status: 'unavailable', distance: null });
+      return;
+    }
+    const raw = distanceMeters(fix.latitude, fix.longitude, destinationCoords.latitude, destinationCoords.longitude);
+    const eff = Math.max(0, raw - (fix.accuracy || 0));
+    const ok = eff <= verifyRadiusM;
+    console.log(TAG, 'verify:', { raw: Math.round(raw), accuracy: Math.round(fix.accuracy || 0), effective: Math.round(eff), radius: verifyRadiusM, source: fix.source, ok });
+    setVerify({ status: ok ? 'verified' : 'too_far', distance: eff, accuracy: fix.accuracy || 0 });
+  }, [destinationCoords, verifyRadiusM]);
 
   // See TripFormSheet — deps tightened to `[visible]` so the effect
   // doesn't re-fire on every parent render (which churned the log).
@@ -34,15 +64,21 @@ const ClosePreviousTripSheet = ({
         title,
         saveLabel,
         hasCustomDisclaimer: !!disclaimer,
+        hasDestCoords: !!destinationCoords,
       });
       setEndKm('');
       setErrorText('');
+      setVerify({ status: 'idle', distance: null });
+      // Auto-verify on open so the driver immediately sees their status.
+      runVerify();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
+  const blockedByVerify = verify.status === 'too_far';
+
   const handleSave = () => {
-    console.log(TAG, 'Save clicked', { endKm, previousStartKm });
+    console.log(TAG, 'Save clicked', { endKm, previousStartKm, verifyStatus: verify.status });
     const n = Number(endKm);
     if (!Number.isFinite(n) || n <= 0) {
       console.warn(TAG, '  validation failed: end_km <= 0');
@@ -52,6 +88,11 @@ const ClosePreviousTripSheet = ({
     if (n <= (Number(previousStartKm) || 0)) {
       console.warn(TAG, '  validation failed: end_km not > start_km');
       setErrorText(`End KM must be greater than Start KM (${previousStartKm || 0}).`);
+      return;
+    }
+    if (blockedByVerify) {
+      console.warn(TAG, '  blocked: too far from destination');
+      setErrorText(`You're ${Math.round(verify.distance)} m from the destination. Move within ${verifyRadiusM} m to close.`);
       return;
     }
     console.log(TAG, '  validation OK → onSave');
@@ -95,12 +136,51 @@ const ClosePreviousTripSheet = ({
               <Text style={styles.unit}>km</Text>
             </View>
             <Text style={styles.helper}>Start KM was {previousStartKm || 0}. End KM must be higher.</Text>
+
+            {/* Mandatory destination verification — shown only when the trip has
+                destination coordinates. Must be within radius to enable Save. */}
+            {destinationCoords ? (
+              <View style={[
+                styles.verifyBox,
+                verify.status === 'verified' && styles.verifyOk,
+                verify.status === 'too_far' && styles.verifyBad,
+              ]}>
+                <View style={styles.verifyRow}>
+                  <MaterialIcons name="place" size={16} color={FIELD_COLOR} />
+                  <Text style={styles.verifyTitle} numberOfLines={1}>
+                    Destination{destinationName ? `: ${destinationName}` : ''}
+                  </Text>
+                  <TouchableOpacity onPress={runVerify} disabled={saving || verify.status === 'checking'}>
+                    {verify.status === 'checking'
+                      ? <ActivityIndicator size="small" color={FIELD_COLOR} />
+                      : <Text style={styles.recheckText}>Re-check</Text>}
+                  </TouchableOpacity>
+                </View>
+                <Text style={[
+                  styles.verifyStatus,
+                  verify.status === 'verified' && { color: '#2E7D32' },
+                  verify.status === 'too_far' && { color: '#C62828' },
+                  verify.status === 'unavailable' && { color: '#B26A00' },
+                ]}>
+                  {verify.status === 'checking' ? 'Getting an accurate fix…'
+                    : verify.status === 'verified' ? `✓ Verified — ${Math.round(verify.distance)} m away (±${Math.round(verify.accuracy || 0)} m accuracy)`
+                    : verify.status === 'too_far' ? `✗ ${Math.round(verify.distance)} m away — move within ${verifyRadiusM} m (±${Math.round(verify.accuracy || 0)} m)`
+                    : verify.status === 'unavailable' ? "GPS unavailable — can't verify (you may still close)"
+                    : 'Tap Re-check to verify your location'}
+                </Text>
+              </View>
+            ) : null}
+
             {errorText ? <Text style={styles.error}>{errorText}</Text> : null}
             <View style={styles.actions}>
               <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={saving}>
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.saveBtn, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
+              <TouchableOpacity
+                style={[styles.saveBtn, (saving || blockedByVerify) && { opacity: 0.5 }]}
+                onPress={handleSave}
+                disabled={saving || blockedByVerify}
+              >
                 {saving
                   ? <ActivityIndicator color="#fff" />
                   : <><MaterialIcons name="check" size={16} color="#fff" /><Text style={styles.saveText}>{saveLabel}</Text></>}
@@ -135,6 +215,13 @@ const styles = StyleSheet.create({
   },
   unit: { fontSize: 13, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
   helper: { fontSize: 11, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium, marginTop: 4 },
+  verifyBox: { marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E0E0E0', backgroundColor: '#FAFAFA' },
+  verifyOk: { borderColor: '#A5D6A7', backgroundColor: '#F1F8F2' },
+  verifyBad: { borderColor: '#EF9A9A', backgroundColor: '#FDECEA' },
+  verifyRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  verifyTitle: { flex: 1, fontSize: 12.5, fontFamily: FONT_FAMILY.urbanistBold, color: '#333' },
+  recheckText: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR },
+  verifyStatus: { fontSize: 12, fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', marginTop: 6 },
   error: { fontSize: 12, color: '#D32F2F', fontFamily: FONT_FAMILY.urbanistBold, marginTop: 6 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 16 },
   cancelBtn: { flex: 1, paddingVertical: 11, borderRadius: 8, backgroundColor: '#EEE', alignItems: 'center' },

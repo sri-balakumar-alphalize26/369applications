@@ -520,7 +520,7 @@ export const fetchTodayFieldAttendanceOdoo = async (employeeId) => {
   return response.data?.result || { status: 'no_trip', trip: null, visits: [], attendance_id: null };
 };
 
-export const createFieldAttendanceOdoo = async (employeeId) => {
+export const createFieldAttendanceOdoo = async (employeeId, lateReason = null) => {
   if (!employeeId) throw new Error('employeeId is required');
   const headers = await getOdooAuthHeaders();
   const response = await axios.post(
@@ -530,8 +530,10 @@ export const createFieldAttendanceOdoo = async (employeeId) => {
       params: {
         model: 'hr.attendance',
         method: 'create_field_attendance',
+        // Reason-before-check-in: when late, the server only creates the row
+        // once a reason is supplied (else it returns needs_late_reason).
         args: [Number(employeeId)],
-        kwargs: {},
+        kwargs: lateReason ? { late_reason: lateReason } : {},
       },
     },
     { headers, timeout: 20000 }
@@ -549,7 +551,7 @@ export const createFieldAttendanceOdoo = async (employeeId) => {
 // visits already exist, server best-effort auto-links them; otherwise the
 // user can pick them later via the Edit Primary Trip / Add Additional Trip
 // sheets. Returns { success, attendance_id, is_late, needs_late_reason, ... }.
-export const startFieldAttendanceOdoo = async (employeeId) => {
+export const startFieldAttendanceOdoo = async (employeeId, lateReason = null) => {
   if (!employeeId) throw new Error('employeeId is required');
   const headers = await getOdooAuthHeaders();
   const response = await axios.post(
@@ -560,7 +562,7 @@ export const startFieldAttendanceOdoo = async (employeeId) => {
         model: 'hr.attendance',
         method: 'start_field_attendance',
         args: [Number(employeeId)],
-        kwargs: {},
+        kwargs: lateReason ? { late_reason: lateReason } : {},
       },
     },
     { headers, timeout: 20000 }
@@ -649,6 +651,37 @@ export const searchMyFieldAttendanceOdoo = async (employeeId, opts = {}) => {
         'source_trip_id', 'source_visit_count',
         'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
         'deduction_amount', 'is_waived',
+      ],
+      offset, limit, order: 'check_in desc',
+    },
+  });
+  return Array.isArray(result) ? result : [];
+};
+
+// Office attendance history — same shape as searchMyFieldAttendanceOdoo but for
+// office/manual records (attendance_source='manual'). Drops the field-only
+// trip/GPS fields. Used by the office "History" tab.
+export const searchMyOfficeAttendanceOdoo = async (employeeId, opts = {}) => {
+  if (!employeeId) throw new Error('employeeId is required');
+  const { dateFrom, dateTo, lateOnly, withDeduction, waived, offset = 0, limit = 30 } = opts;
+  const domain = [
+    ['attendance_source', '=', 'manual'],
+    ['employee_id', '=', Number(employeeId)],
+  ];
+  if (dateFrom) domain.push(['check_in', '>=', dateFrom]);
+  if (dateTo) domain.push(['check_in', '<=', dateTo]);
+  if (lateOnly) domain.push(['is_late', '=', true]);
+  if (withDeduction) domain.push(['deduction_amount', '>', 0]);
+  if (waived) domain.push(['is_waived', '=', true]);
+  const result = await _fieldRpc({
+    model: 'hr.attendance',
+    method: 'search_read',
+    args: [domain],
+    kwargs: {
+      fields: [
+        'id', 'employee_id', 'check_in', 'check_out', 'attendance_source',
+        'is_late', 'late_minutes', 'late_minutes_display', 'late_reason',
+        'deduction_amount', 'is_waived', 'checkin_session', 'daily_total_hours',
       ],
       offset, limit, order: 'check_in desc',
     },
@@ -754,6 +787,21 @@ export const searchAvailableTripsOdoo = async (attendanceId, { includeCurrent = 
 };
 
 // Read full trip rows by ids (used by pickers + TripDetailSheet).
+// Read vehicle.location coordinates for the given ids (destination/source).
+// Used to verify the driver is at the trip destination (lat/long live on
+// vehicle.location, not on the trip's destination_id m2o).
+export const readVehicleLocationsOdoo = async (ids) => {
+  const list = (Array.isArray(ids) ? ids : [ids]).map(Number).filter(Boolean);
+  if (!list.length) return [];
+  const rows = await _fieldRpc({
+    model: 'vehicle.location',
+    method: 'read',
+    args: [list],
+    kwargs: { fields: ['id', 'name', 'latitude', 'longitude'] },
+  });
+  return Array.isArray(rows) ? rows : [];
+};
+
 export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
   if (!Array.isArray(tripIds) || tripIds.length === 0) return [];
   const rows = await _fieldRpc({

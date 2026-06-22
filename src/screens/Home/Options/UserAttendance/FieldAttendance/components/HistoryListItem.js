@@ -21,18 +21,19 @@ const tripRefOf = (t) => {
   return t.ref || `#${t.id || ''}`;
 };
 
-const HistoryListItem = ({ row, onPress }) => {
+const HistoryListItem = ({ row, onPress, title, accentColor = FIELD_COLOR, showChevron = true }) => {
   const isLate = !!row?.is_late;
   const isWaived = !!row?.is_waived;
   const deduction = Number(row?.deduction_amount || 0);
+  const rowTitle = title || tripRefOf(row?.source_trip_id) || 'Field Attendance';
 
   return (
-    <TouchableOpacity style={styles.card} activeOpacity={0.85} onPress={onPress}>
+    <TouchableOpacity style={[styles.card, { borderLeftColor: accentColor }]} activeOpacity={0.85} onPress={onPress}>
       <View style={styles.dateBox}>
-        <Text style={styles.dateDay}>
+        <Text style={[styles.dateDay, { color: accentColor }]}>
           {fmtDate(row?.check_in).split(' ')[0] || '--'}
         </Text>
-        <Text style={styles.dateMonth}>
+        <Text style={[styles.dateMonth, { color: accentColor }]}>
           {fmtDate(row?.check_in).split(' ')[1] || ''}
         </Text>
       </View>
@@ -40,7 +41,7 @@ const HistoryListItem = ({ row, onPress }) => {
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={styles.title} numberOfLines={1}>
-            {tripRefOf(row?.source_trip_id) || 'Field Attendance'}
+            {rowTitle}
           </Text>
           {isLate ? (
             <View style={[styles.pill, { backgroundColor: '#FFF3E0', borderColor: '#FB8C00' }]}>
@@ -68,7 +69,7 @@ const HistoryListItem = ({ row, onPress }) => {
         ) : null}
       </View>
 
-      <MaterialIcons name="chevron-right" size={22} color="#BDBDBD" />
+      {showChevron ? <MaterialIcons name="chevron-right" size={22} color="#BDBDBD" /> : null}
     </TouchableOpacity>
   );
 };

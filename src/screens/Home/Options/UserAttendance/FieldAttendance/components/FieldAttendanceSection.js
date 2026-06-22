@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, ActivityIndicator,
-  RefreshControl, StyleSheet, Platform,
+  RefreshControl, StyleSheet, Platform, Modal, TextInput,
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -16,7 +16,10 @@ import {
   createReturnTripOdoo,
   fieldActionCheckOutOdoo,
   readVehicleTrackingForTripIdsOdoo,
+  readFieldAttendanceDetailOdoo,
+  readVehicleLocationsOdoo,
 } from '@api/services/generalApi';
+import { submitLateReason } from '@services/AttendanceService';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
 import {
@@ -83,6 +86,12 @@ const FieldAttendanceSection = ({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Late info (is_late / reason / deduction) — fetched separately because the
+  // trip-state RPC doesn't carry it. Drives the Late card + Update Reason.
+  const [lateDetail, setLateDetail] = useState(null);
+  const [lateUpdateOpen, setLateUpdateOpen] = useState(false);
+  const [lateUpdateText, setLateUpdateText] = useState('');
+  const [lateUpdateSaving, setLateUpdateSaving] = useState(false);
 
   // Remembers which "Setup ..." sheet was open when the user tapped "Create
   // New Trip / Visit" inside the picker. On focus return from
@@ -214,6 +223,14 @@ const FieldAttendanceSection = ({
       } else {
         setState(data);
         console.log(TAG, 'refresh OK — state updated');
+      }
+      // Pull late info (is_late / reason / deduction) — separate from the
+      // trip-state RPC. Best-effort; failure just hides the Late card.
+      try {
+        const det = await readFieldAttendanceDetailOdoo(attendanceId);
+        if (det) setLateDetail(det);
+      } catch (lateErr) {
+        console.log(TAG, 'late detail fetch skipped:', lateErr?.message);
       }
     } catch (e) {
       console.error(TAG, 'refresh threw:', e?.message);
@@ -413,6 +430,30 @@ const FieldAttendanceSection = ({
     };
   };
 
+  // Resolve the trip's DESTINATION coordinates so the close-previous-trip popup
+  // can verify the driver is at the destination. The trip read only gives
+  // destination_id as [id, name]; lat/long live on vehicle.location.
+  const resolveDestCoords = async (full) => {
+    try {
+      const destId = Array.isArray(full?.destination_id) ? full.destination_id[0] : full?.destination_id;
+      const destName = full?.destination_name
+        || (Array.isArray(full?.destination_id) ? full.destination_id[1] : '') || '';
+      if (!destId) return { destCoords: null, destName };
+      const locs = await readVehicleLocationsOdoo([destId]);
+      const loc = locs?.[0];
+      if (loc && loc.latitude != null && loc.longitude != null) {
+        return {
+          destCoords: { latitude: Number(loc.latitude), longitude: Number(loc.longitude) },
+          destName: destName || loc.name || '',
+        };
+      }
+      return { destCoords: null, destName };
+    } catch (e) {
+      console.warn(TAG, '  resolveDestCoords failed:', e?.message);
+      return { destCoords: null, destName: '' };
+    }
+  };
+
   const startNextTripFlow = async (nextAction) => {
     console.log(TAG, 'startNextTripFlow', { nextAction, isCheckedOut });
     if (isCheckedOut) {
@@ -434,6 +475,8 @@ const FieldAttendanceSection = ({
       // popup shows the real value even before the backend serialiser change
       // is loaded.
       let actualStartKm = prev.startKm;
+      let destCoords = null;
+      let destName = '';
       try {
         const tripId = prev.tripId;
         if (tripId) {
@@ -444,12 +487,15 @@ const FieldAttendanceSection = ({
             actualStartKm = full.start_km;
             console.log(TAG, '  hydrated start_km:', actualStartKm);
           }
+          const d = await resolveDestCoords(full);
+          destCoords = d.destCoords;
+          destName = d.destName;
         }
       } catch (e) {
         console.warn(TAG, '  hydrate start_km failed, using state value:', e?.message);
       }
-      console.log(TAG, '  → opening Close Previous Trip sheet first');
-      setClosePrevMeta({ ref: prev.ref, startKm: actualStartKm });
+      console.log(TAG, '  → opening Close Previous Trip sheet first', { destCoords, destName });
+      setClosePrevMeta({ ref: prev.ref, startKm: actualStartKm, destCoords, destName });
       setPendingNextAction(nextAction);
       setClosePrevOpen(true);
       return;
@@ -841,6 +887,8 @@ const FieldAttendanceSection = ({
     let ref = prev?.ref || state?.source_trip?.ref || '';
     let startKm = prev?.startKm ?? state?.source_trip?.start_km ?? 0;
     const tripId = prev?.tripId || state?.source_trip?.id || null;
+    let destCoords = null;
+    let destName = '';
     if (tripId) {
       try {
         console.log(TAG, '  checkout: hydrating start_km from server', { tripId });
@@ -851,18 +899,23 @@ const FieldAttendanceSection = ({
           console.log(TAG, '  checkout: hydrated start_km:', startKm);
         }
         if (full?.ref) ref = full.ref;
+        const d = await resolveDestCoords(full);
+        destCoords = d.destCoords;
+        destName = d.destName;
       } catch (e) {
         console.warn(TAG, '  checkout: hydrate start_km failed:', e?.message);
       }
     } else {
       console.log(TAG, '  checkout: no trip on attendance — opening popup with blank defaults');
     }
-    console.log(TAG, '  opening Close Previous Trip popup for checkout', { ref, tripId, startKm, isOpen: prev?.isOpen });
+    console.log(TAG, '  opening Close Previous Trip popup for checkout', { ref, tripId, startKm, isOpen: prev?.isOpen, destCoords, destName });
     setClosePrevMeta({
       ref,
       startKm,
       mode: 'checkout',
       isOpen: prev?.isOpen ?? true,
+      destCoords,
+      destName,
     });
     setPendingNextAction('checkout');
     setClosePrevOpen(true);
@@ -1083,6 +1136,33 @@ const FieldAttendanceSection = ({
         </View>
       ) : null}
 
+      {/* LATE card — shows late-by / deduction / reason. The "Update Reason"
+          button is only available UNTIL checkout (while still open). */}
+      {(lateDetail?.is_late || (lateDetail?.late_reason && String(lateDetail.late_reason).trim())) ? (
+        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, marginTop: 10, borderWidth: 1, borderColor: '#ECECEC' }}>
+          {lateDetail?.is_late ? (
+            <Text style={{ fontSize: 12.5, fontFamily: FONT_FAMILY.urbanistBold, color: '#B26A00' }}>
+              Late by {lateDetail.late_minutes_display || `${lateDetail.late_minutes || 0}m`}
+              {Number(lateDetail.deduction_amount || 0) > 0 ? ` · Deduction ${Number(lateDetail.deduction_amount).toFixed(2)}` : ''}
+            </Text>
+          ) : null}
+          <Text style={{ fontSize: 11.5, fontFamily: FONT_FAMILY.urbanistMedium, color: '#777', marginTop: 6 }}>Late reason</Text>
+          <Text style={{ fontSize: 13, fontFamily: FONT_FAMILY.urbanistMedium, color: '#333', marginTop: 2 }}>
+            {lateDetail?.late_reason && String(lateDetail.late_reason).trim() ? lateDetail.late_reason : '—'}
+          </Text>
+          {!isCheckedOut ? (
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4, marginTop: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: FIELD_COLOR }}
+              onPress={() => { setLateUpdateText(lateDetail?.late_reason || ''); setLateUpdateOpen(true); }}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="edit" size={14} color={FIELD_COLOR} />
+              <Text style={{ fontSize: 11.5, fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR }}>Update Reason</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Built-in Check Out (only when not embedded and host asks for it) */}
       {showCheckOutButton && !isCheckedOut ? (
         <TouchableOpacity style={styles.checkoutBtn} onPress={handleCheckOut} disabled={busy}>
@@ -1090,6 +1170,52 @@ const FieldAttendanceSection = ({
           <Text style={styles.checkoutBtnText}>Check Out Now</Text>
         </TouchableOpacity>
       ) : null}
+
+      {/* Update-Reason editor (pre-filled). Only reachable while not checked out. */}
+      <Modal visible={lateUpdateOpen} transparent animationType="fade" onRequestClose={() => setLateUpdateOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: 24 }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 18 }}>
+            <Text style={{ fontSize: 15, fontFamily: FONT_FAMILY.urbanistBold, color: FIELD_COLOR, marginBottom: 10 }}>Update Late Reason</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 10, minHeight: 80, textAlignVertical: 'top', fontFamily: FONT_FAMILY.urbanistRegular, fontSize: 13, color: '#222' }}
+              placeholder="Enter your reason for being late..."
+              placeholderTextColor="#999"
+              multiline
+              value={lateUpdateText}
+              onChangeText={setLateUpdateText}
+            />
+            <TouchableOpacity
+              style={{ marginTop: 14, backgroundColor: (!lateUpdateText.trim() || lateUpdateSaving) ? '#CCC' : FIELD_COLOR, borderRadius: 10, paddingVertical: 12, alignItems: 'center' }}
+              disabled={!lateUpdateText.trim() || lateUpdateSaving}
+              onPress={async () => {
+                const text = lateUpdateText.trim();
+                if (!text || !attendanceId) return;
+                setLateUpdateSaving(true);
+                try {
+                  const res = await submitLateReason(attendanceId, text);
+                  if (res?.success) {
+                    setLateDetail((prev) => prev ? { ...prev, late_reason: text } : prev);
+                    showToastMessage('Late reason updated');
+                    setLateUpdateOpen(false);
+                  } else {
+                    showToastMessage(res?.error || 'Could not update reason');
+                  }
+                } catch (e) {
+                  showToastMessage('Could not update reason');
+                } finally {
+                  setLateUpdateSaving(false);
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={{ fontSize: 14, fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>{lateUpdateSaving ? 'Saving…' : 'Save'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: 10, paddingVertical: 10, alignItems: 'center' }} onPress={() => setLateUpdateOpen(false)}>
+              <Text style={{ fontSize: 13, fontFamily: FONT_FAMILY.urbanistSemiBold, color: '#666' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 
@@ -1123,6 +1249,8 @@ const FieldAttendanceSection = ({
           : undefined}
         saveLabel={closePrevMeta.mode === 'checkout' ? 'Save & Checkout' : 'Save & Exit'}
         saving={busy}
+        destinationCoords={closePrevMeta.destCoords}
+        destinationName={closePrevMeta.destName}
         onSave={handleClosePreviousTrip}
         onClose={() => { setClosePrevOpen(false); setPendingNextAction(null); }}
       />

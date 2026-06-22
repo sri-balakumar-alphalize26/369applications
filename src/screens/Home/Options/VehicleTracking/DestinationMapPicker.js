@@ -8,7 +8,7 @@ import {
   FlatList,
   Keyboard,
 } from 'react-native';
-import MapView, { Marker, UrlTile } from 'react-native-maps';
+import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from '@components/containers';
@@ -18,19 +18,74 @@ import Text from '@components/Text';
 import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-// Full-screen destination picker built on free OpenStreetMap tiles (no Google
-// Maps API key needed). The driver searches a place name and/or taps the map to
-// drop a marker, then taps Confirm. We reverse-geocode the marker to a readable
-// name and hand {name, latitude, longitude} back to VehicleTrackingForm via the
-// `onPicked` callback passed in route params. Odoo then find-or-creates the
-// matching vehicle.location, so distance estimate / GPS verification keep working.
+// Full-screen destination picker rendered with Leaflet + OpenStreetMap inside a
+// WebView — NO Google Maps API key (react-native-maps' Android base is Google
+// Maps, which renders blank without a key; a WebView/Leaflet map avoids Google
+// entirely). The driver searches a place and/or taps the map to drop a marker,
+// then taps Confirm. We reverse-geocode the marker to a readable name and hand
+// {name, latitude, longitude} back to VehicleTrackingForm via the `onPicked`
+// route param. Odoo then find-or-creates the matching vehicle.location.
 
-const OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 // Nominatim usage policy asks for a descriptive identifier on every request.
 const NOMINATIM_HEADERS = {
   'User-Agent': 'AlphalizeApp/1.0 (vehicle-tracking destination picker)',
   'Accept': 'application/json',
 };
+
+const buildLeafletHtml = (lat, lng, zoom) => `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>html,body,#map{height:100%;width:100%;margin:0;padding:0;background:#e9e9e9;}</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  function post(obj) {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+    }
+  }
+  window.onerror = function (message, src, line, col) {
+    post({ type: 'error', msg: String(message) + ' @' + line + ':' + col });
+  };
+  (function () {
+    if (typeof L === 'undefined') {
+      post({ type: 'error', msg: 'Leaflet (L) failed to load — CDN blocked or no internet' });
+      return;
+    }
+    post({ type: 'log', msg: 'leaflet loaded, init map' });
+    var map = L.map('map', { zoomControl: true }).setView([${lat}, ${lng}], ${zoom});
+    var tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    });
+    tiles.on('tileerror', function () { post({ type: 'tileerror' }); });
+    tiles.on('load', function () { post({ type: 'tilesloaded' }); });
+    tiles.addTo(map);
+    var marker = null;
+    function place(la, ln) {
+      if (marker) { marker.setLatLng([la, ln]); }
+      else { marker = L.marker([la, ln]).addTo(map); }
+    }
+    map.on('click', function (e) {
+      place(e.latlng.lat, e.latlng.lng);
+      post({ type: 'click', lat: e.latlng.lat, lng: e.latlng.lng });
+    });
+    window.setMarker = function (la, ln, z) {
+      place(la, ln);
+      map.setView([la, ln], z || 16);
+    };
+    // Leaflet sometimes needs a nudge to size correctly inside a WebView.
+    setTimeout(function () { map.invalidateSize(); post({ type: 'ready' }); }, 300);
+  })();
+  true;
+</script>
+</body>
+</html>`;
 
 const DestinationMapPicker = ({ route }) => {
   const navigation = useNavigation();
@@ -42,13 +97,9 @@ const DestinationMapPicker = ({ route }) => {
   const startLng = Number.isFinite(Number(initialLongitude)) ? Number(initialLongitude) : 78.9629;
   const hasInitial = Number.isFinite(Number(initialLatitude)) && Number.isFinite(Number(initialLongitude));
 
-  const mapRef = useRef(null);
-  const [region, setRegion] = useState({
-    latitude: startLat,
-    longitude: startLng,
-    latitudeDelta: hasInitial ? 0.05 : 6,
-    longitudeDelta: hasInitial ? 0.05 : 6,
-  });
+  const webViewRef = useRef(null);
+  const htmlRef = useRef(buildLeafletHtml(startLat, startLng, hasInitial ? 14 : 5));
+
   const [marker, setMarker] = useState(null);
   const [placeName, setPlaceName] = useState(initialName || '');
   const [resolvingName, setResolvingName] = useState(false);
@@ -57,8 +108,8 @@ const DestinationMapPicker = ({ route }) => {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState([]);
 
-  // Reverse-geocode a coordinate to a readable place name (OS-provided, offline-
-  // capable via expo-location — no extra API key).
+  // Reverse-geocode a coordinate to a readable place name (OS-provided via
+  // expo-location — no extra API key).
   const resolveName = useCallback(async (lat, lng) => {
     setResolvingName(true);
     try {
@@ -66,8 +117,7 @@ const DestinationMapPicker = ({ route }) => {
       if (rg && rg.length > 0) {
         const p = rg[0];
         const name = [p.name, p.street, p.city, p.region].filter(Boolean).join(', ');
-        if (name) setPlaceName(name);
-        else setPlaceName(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+        setPlaceName(name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       } else {
         setPlaceName(`${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       }
@@ -78,14 +128,49 @@ const DestinationMapPicker = ({ route }) => {
     }
   }, []);
 
-  const placeMarker = useCallback((lat, lng) => {
-    setMarker({ latitude: lat, longitude: lng });
-    resolveName(lat, lng);
-  }, [resolveName]);
+  // Messages from the WebView (Leaflet) — typed: ready/log/error/tileerror/click.
+  const handleMessage = (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.nativeEvent.data);
+    } catch (_) {
+      console.log('[dest-map] non-JSON message:', event.nativeEvent.data);
+      return;
+    }
+    switch (data?.type) {
+      case 'ready':
+        console.log('[dest-map] Leaflet map ready');
+        return;
+      case 'log':
+        console.log('[dest-map] web:', data.msg);
+        return;
+      case 'error':
+        console.log('[dest-map] WEBVIEW JS ERROR:', data.msg);
+        return;
+      case 'tileerror':
+        console.log('[dest-map] OSM tile load error (network/blocked?)');
+        return;
+      case 'tilesloaded':
+        console.log('[dest-map] OSM tiles loaded');
+        return;
+      case 'click': {
+        const lat = Number(data.lat);
+        const lng = Number(data.lng);
+        console.log('[dest-map] map tap:', lat, lng);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          setMarker({ latitude: lat, longitude: lng });
+          resolveName(lat, lng);
+        }
+        return;
+      }
+      default:
+        console.log('[dest-map] unknown message:', JSON.stringify(data));
+    }
+  };
 
-  const handleMapPress = (e) => {
-    const { latitude, longitude } = e.nativeEvent.coordinate;
-    placeMarker(latitude, longitude);
+  // Recenter + drop the pin inside the WebView map.
+  const moveWebMarker = (lat, lng) => {
+    webViewRef.current?.injectJavaScript(`window.setMarker(${lat}, ${lng}, 16); true;`);
   };
 
   // Free OpenStreetMap (Nominatim) place search — no Google key.
@@ -117,11 +202,10 @@ const DestinationMapPicker = ({ route }) => {
     const lat = parseFloat(item.lat);
     const lng = parseFloat(item.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    const next = { latitude: lat, longitude: lng, latitudeDelta: 0.02, longitudeDelta: 0.02 };
-    setRegion(next);
-    mapRef.current?.animateToRegion(next, 600);
+    console.log('[dest-map] search result picked:', item.display_name, lat, lng);
     setMarker({ latitude: lat, longitude: lng });
     setPlaceName(item.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+    moveWebMarker(lat, lng);
     setResults([]);
     setSearchText('');
     Keyboard.dismiss();
@@ -132,6 +216,7 @@ const DestinationMapPicker = ({ route }) => {
       showToastMessage('Tap the map to choose a destination first', 'info');
       return;
     }
+    console.log('[dest-map] confirm destination:', placeName, marker.latitude, marker.longitude);
     if (typeof onPicked === 'function') {
       onPicked({
         name: placeName || `${marker.latitude.toFixed(5)}, ${marker.longitude.toFixed(5)}`,
@@ -185,19 +270,25 @@ const DestinationMapPicker = ({ route }) => {
       )}
 
       <View style={styles.mapWrap}>
-        <MapView
-          ref={mapRef}
-          style={StyleSheet.absoluteFill}
-          initialRegion={region}
-          onPress={handleMapPress}
-          showsUserLocation={hasInitial}
-        >
-          {/* Free OSM tiles — no Google Maps API key required. */}
-          <UrlTile urlTemplate={OSM_TILE_URL} maximumZ={19} flipY={false} />
-          {marker && (
-            <Marker coordinate={marker} title="Destination" pinColor={COLORS.primaryThemeColor} />
+        <WebView
+          ref={webViewRef}
+          originWhitelist={['*']}
+          source={{ html: htmlRef.current }}
+          onMessage={handleMessage}
+          onLoadStart={() => console.log('[dest-map] WebView load start')}
+          onLoadEnd={() => console.log('[dest-map] WebView load end')}
+          onError={(e) => console.log('[dest-map] WebView ERROR:', e?.nativeEvent?.description)}
+          onHttpError={(e) => console.log('[dest-map] WebView HTTP ERROR:', e?.nativeEvent?.statusCode, e?.nativeEvent?.url)}
+          javaScriptEnabled
+          domStorageEnabled
+          startInLoadingState
+          renderLoading={() => (
+            <View style={styles.mapLoading}>
+              <ActivityIndicator size="large" color={COLORS.primaryThemeColor} />
+            </View>
           )}
-        </MapView>
+          style={StyleSheet.absoluteFill}
+        />
 
         {/* Hint when nothing picked yet */}
         {!marker && (
@@ -274,7 +365,8 @@ const styles = StyleSheet.create({
     borderBottomColor: '#EEE',
   },
   resultText: { flex: 1, marginLeft: 8, fontSize: 13, fontFamily: FONT_FAMILY.urbanistRegular, color: '#333' },
-  mapWrap: { flex: 1, margin: 12, borderRadius: 12, overflow: 'hidden' },
+  mapWrap: { flex: 1, margin: 12, borderRadius: 12, overflow: 'hidden', backgroundColor: '#e9e9e9' },
+  mapLoading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: '#e9e9e9' },
   hint: {
     position: 'absolute',
     top: 12,

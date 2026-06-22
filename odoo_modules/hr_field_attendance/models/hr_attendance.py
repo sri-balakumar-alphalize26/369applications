@@ -1183,7 +1183,7 @@ class HrAttendance(models.Model):
         }
 
     @api.model
-    def start_field_attendance(self, employee_id):
+    def start_field_attendance(self, employee_id, late_reason=None):
         """Open a field attendance for today (check_in=now, no check_out).
 
         Best-effort: auto-links today's earliest trip + all of the employee's
@@ -1253,9 +1253,31 @@ class HrAttendance(models.Model):
                 if first_visit.location_name:
                     gps_name = first_visit.location_name
 
+        check_in_now = fields.Datetime.now()
+
+        # Late gate (reason-before-check-in): if this check-in is late and no
+        # reason was supplied, don't create the row — ask the app for the reason
+        # first, then it re-calls with `late_reason`. preview_late_info computes
+        # the real (hourly/slab) deduction_amount without saving, so the popup
+        # shows the same number the saved record / Odoo web will show.
+        if not (late_reason and late_reason.strip()):
+            probe = Attendance.preview_late_info(employee.id, str(check_in_now))
+            if probe.get('is_late'):
+                return {
+                    'success': False,
+                    'needs_late_reason': True,
+                    'is_late': True,
+                    'late_minutes': probe.get('late_minutes', 0),
+                    'late_minutes_display': probe.get('late_minutes_display', ''),
+                    'expected_start_time': probe.get('expected_start_time', 0.0),
+                    'deduction_amount': probe.get('deduction_amount', 0.0),
+                    'checkin_session': probe.get('checkin_session'),
+                    'check_in': str(check_in_now),
+                }
+
         vals = {
             'employee_id': employee.id,
-            'check_in': fields.Datetime.now(),
+            'check_in': check_in_now,
             'attendance_source': 'field',
             'gps_latitude': gps_lat,
             'gps_longitude': gps_lng,
@@ -1263,15 +1285,17 @@ class HrAttendance(models.Model):
         }
         if primary_trip_id:
             vals['source_trip_id'] = primary_trip_id
+        if late_reason and late_reason.strip():
+            vals['late_reason'] = late_reason.strip()
         # source_visit_ids deliberately left empty — per user requirement, the
         # visit list inside the Setup Primary Trip popup must start empty and
         # the user picks ONE via "Add a line" (single-visit cap enforced by
         # the view's `invisible="has_source_visits"` gate on the editable
         # list variant).
 
-        # skip_late_reason_required: the mobile flow creates the row first and
-        # then shows its own late-reason popup (needs_late_reason below), so the
-        # backend "reason required to save" constraint must not block the create.
+        # skip_late_reason_required: keep bypassing the save-time constraint —
+        # the reason (when late) is already in vals, and the gate above ensures
+        # we never create a late row without one.
         new_record = Attendance.with_context(skip_late_reason_required=True).create(vals)
         new_record.flush_recordset()
         return {
@@ -1556,15 +1580,23 @@ class HrAttendance(models.Model):
         return {'success': True, 'attendance_id': self.id, 'trip_id': trip.id}
 
     @api.model
-    def create_field_attendance(self, employee_id):
+    def create_field_attendance(self, employee_id, late_reason=None):
         """Create today's hr.attendance row from the employee's trip + visits.
 
         Idempotent: refuses unless get_today_field_attendance returns 'eligible'.
         Mirrors the eligibility logic so the conflict check is enforced
         server-side regardless of stale client state.
 
+        Reason-before-check-in: when the attendance would be LATE and no
+        `late_reason` is supplied, NO row is created — instead we return
+        {'success': False, 'needs_late_reason': True, ...} so the mobile app
+        collects the reason first and re-calls with it. (Field check-in time is
+        the trip's start time, which only the server knows, so the late gate
+        lives here rather than client-side.)
+
         Returns: {'success': True, 'attendance_id': id}
               or {'success': False, 'error': str}
+              or {'success': False, 'needs_late_reason': True, ...}
         """
         employee = self.env['hr.employee'].sudo().browse(employee_id)
         if not employee.exists():
@@ -1629,6 +1661,26 @@ class HrAttendance(models.Model):
         else:
             gps_lat, gps_lng = self._resolve_trip_gps(primary_trip)
 
+        # Late gate: probe lateness for this check-in time WITHOUT creating a
+        # row. If late and the app hasn't supplied a reason yet, bail out and
+        # ask for it — the row is only created once a reason arrives.
+        # preview_late_info also yields the real (hourly/slab) deduction_amount
+        # so the popup matches the saved record / Odoo web.
+        if not (late_reason and late_reason.strip()):
+            probe = Attendance.preview_late_info(employee.id, str(check_in_dt))
+            if probe.get('is_late'):
+                return {
+                    'success': False,
+                    'needs_late_reason': True,
+                    'is_late': True,
+                    'late_minutes': probe.get('late_minutes', 0),
+                    'late_minutes_display': probe.get('late_minutes_display', ''),
+                    'expected_start_time': probe.get('expected_start_time', 0.0),
+                    'deduction_amount': probe.get('deduction_amount', 0.0),
+                    'checkin_session': probe.get('checkin_session'),
+                    'check_in': str(check_in_dt) if check_in_dt else None,
+                }
+
         vals = {
             'employee_id': employee.id,
             'check_in': check_in_dt,
@@ -1644,9 +1696,9 @@ class HrAttendance(models.Model):
             # via the Setup Primary Trip popup's "Add a line" (single-visit
             # cap enforced by the view).
         }
+        if late_reason and late_reason.strip():
+            vals['late_reason'] = late_reason.strip()
 
-        # skip_late_reason_required: mobile creates the row first, then prompts
-        # for the reason (needs_late_reason below) — see start_field_attendance.
         new_record = Attendance.with_context(skip_late_reason_required=True).create(vals)
         new_record.flush_recordset()
         return {

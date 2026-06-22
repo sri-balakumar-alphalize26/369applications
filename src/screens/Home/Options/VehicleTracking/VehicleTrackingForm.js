@@ -33,6 +33,7 @@ import { OverlayLoader } from '@components/Loader';
 import { cancelVehicleTrackingTripOdoo, fetchInvoiceByIdOdoo, fetchInvoiceByQrOdoo, createFuelLogOdoo } from '@api/services/generalApi';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { StyledAlertModal } from '@components/Modal';
+import { verifyWithinRadius, DEST_VERIFY_RADIUS_M } from '@utils/geoVerify';
 // validation will be handled inline in this file to avoid stale state issues
 // These Odoo `vehicle.tracking` fields are mapped in this form: amount, battery_checking, company_id, completion_status, coolant_water, create_date, create_uid, daily_checks, date, destination, display_name, driver_id, duration, end_fuel_checking, end_fuel_document, end_fuel_document_filename, end_fuel_status, end_km, end_latitude, end_longitude, end_time, end_trip, estimated_time, fuel_checking, fuel_status, id, image_url, invoice_line_ids, invoice_match, invoice_message, invoice_number, km_travelled, number_plate, oil_checking, purpose_of_visit, ref, remarks, source, start_km, start_latitude
 
@@ -491,6 +492,8 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const [sourceMatched, setSourceMatched] = useState(null); // null = unknown, true/false
   const [sourceDistance, setSourceDistance] = useState(null);
   const SOURCE_MATCH_THRESHOLD = 100; // meters
+  // Shown while the mandatory source GPS check runs at Start Trip.
+  const [sourceVerifying, setSourceVerifying] = useState(false);
 
   // Destination coords (from picked dropdown item) and a loading flag for the
   // OpenRouteService route fetch. Both reset whenever destination changes.
@@ -3131,14 +3134,37 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                 <View style={styles.actionRowItem}>
                   <LoadingButton
                     title="▶  Start Trip"
-                    onPress={() => {
+                    onPress={async () => {
                       console.log('[VehicleTrackingForm] Start button tapped');
                       setActiveAction('start');
+                      // Mandatory SOURCE verification (150 m): the driver must be
+                      // at the source to start. Blocks only when measured too far;
+                      // GPS-unavailable / no source coords allow start (no trap).
+                      if (sourceCoords && Number.isFinite(sourceCoords.latitude) && Number.isFinite(sourceCoords.longitude)) {
+                        try {
+                          setSourceVerifying(true);
+                          showToastMessage('Verifying you are at the source…', 'info');
+                          const res = await verifyWithinRadius(sourceCoords, DEST_VERIFY_RADIUS_M);
+                          console.log('[source-verify]', res);
+                          if (res.status === 'too_far') {
+                            showToastMessage(`You're ${Math.round(res.distance)} m from the source — move within ${DEST_VERIFY_RADIUS_M} m to start.`, 'error');
+                            setActiveAction(null);
+                            return;
+                          }
+                          if (res.status === 'verified') {
+                            showToastMessage(`Source verified (${Math.round(res.distance)} m, ±${Math.round(res.accuracy || 0)} m)`, 'success');
+                          } else {
+                            showToastMessage("GPS unavailable — couldn't verify source, starting anyway", 'warning');
+                          }
+                        } finally {
+                          setSourceVerifying(false);
+                        }
+                      }
                       setFormData(prev => ({ ...prev, startTrip: true, endTrip: false }));
                       setPendingSubmit('start');
                     }}
-                    loading={isSubmitting && activeAction === 'start'}
-                    disabled={isSubmitting && activeAction !== 'start'}
+                    loading={(isSubmitting && activeAction === 'start') || sourceVerifying}
+                    disabled={(isSubmitting && activeAction !== 'start') || sourceVerifying}
                     backgroundColor="#714B67"
                   />
                 </View>

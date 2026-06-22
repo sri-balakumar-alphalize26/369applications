@@ -943,15 +943,19 @@ const isNetworkLikeError = (error) => {
 // Helper: enqueue an offline check-in and return the success-shaped object
 // the UserAttendanceScreen expects. Used both when isOnline() reports false
 // up-front AND when an axios call fails with a network-like error mid-flight.
-const queueOfflineCheckIn = async ({ employeeId, employeeName, checkInTime }) => {
+const queueOfflineCheckIn = async ({ employeeId, employeeName, checkInTime, lateReason = null }) => {
   try {
+    const values = {
+      employee_id: employeeId,
+      check_in: checkInTime,
+    };
+    // Reason-before-check-in: a late offline check-in carries its reason so the
+    // queued create lands with it (and the backend constraint is satisfied).
+    if (lateReason) values.late_reason = lateReason;
     const localId = await offlineQueue.enqueue({
       model: 'hr.attendance',
       operation: 'create',
-      values: {
-        employee_id: employeeId,
-        check_in: checkInTime,
-      },
+      values,
     });
     console.log('[Attendance] Check-in queued offline, localId:', localId);
     return {
@@ -969,9 +973,9 @@ const queueOfflineCheckIn = async ({ employeeId, employeeName, checkInTime }) =>
   }
 };
 
-export const checkInByEmployeeId = async (employeeId, employeeName) => {
+export const checkInByEmployeeId = async (employeeId, employeeName, lateReason = null) => {
   console.log('[Attendance] === CHECK-IN BY EMPLOYEE ID ===');
-  console.log('[Attendance] Employee ID:', employeeId);
+  console.log('[Attendance] Employee ID:', employeeId, 'lateReason:', lateReason ? 'yes' : 'no');
 
   const now = new Date();
   const checkInTime = formatDateForOdoo(now);
@@ -983,7 +987,7 @@ export const checkInByEmployeeId = async (employeeId, employeeName) => {
     const online = await isOnline();
     if (!online) {
       console.log('[Attendance] Device is offline, queueing check-in locally');
-      return await queueOfflineCheckIn({ employeeId, employeeName, checkInTime });
+      return await queueOfflineCheckIn({ employeeId, employeeName, checkInTime, lateReason });
     }
   } catch (_) {
     // If isOnline() itself errors, fall through to the live attempt — the
@@ -1042,10 +1046,15 @@ export const checkInByEmployeeId = async (employeeId, employeeName) => {
       console.log('[Attendance] Auto-closed previous attendance');
     }
 
-    // Now create the new check-in
-    // (placeholder `late_reason` to bypass any ValidationError constraint
-    // on the Odoo side; user types the real reason in the "You're Late"
-    // popup right after.)
+    // Now create the new check-in. Reason-before-check-in: the caller computes
+    // lateness up front and, when late, passes the real `lateReason` here so the
+    // row is created WITH it in one step. On-time check-ins omit late_reason
+    // entirely (the backend constraint only fires for late rows).
+    const createVals = {
+      employee_id: employeeId,
+      check_in: checkInTime,
+    };
+    if (lateReason) createVals.late_reason = lateReason;
     const response = await axios.post(
       `${ODOO_BASE_URL()}/web/dataset/call_kw`,
       {
@@ -1054,12 +1063,11 @@ export const checkInByEmployeeId = async (employeeId, employeeName) => {
         params: {
           model: 'hr.attendance',
           method: 'create',
-          args: [{
-            employee_id: employeeId,
-            check_in: checkInTime,
-            late_reason: '.',
-          }],
-          kwargs: {},
+          args: [createVals],
+          // Reason-before-check-in: the app gates lateness up front (and the
+          // post-create prompt is a fallback), so the server-side "reason
+          // required to save" constraint must not hard-fail the create.
+          kwargs: { context: { skip_late_reason_required: true } },
         },
       },
       { headers }
@@ -1092,7 +1100,7 @@ export const checkInByEmployeeId = async (employeeId, employeeName) => {
     // locally instead of bubbling the error up to the UI as a hard failure.
     if (isNetworkLikeError(error)) {
       console.log('[Attendance] Network-like error, falling back to offline queue');
-      return await queueOfflineCheckIn({ employeeId, employeeName, checkInTime });
+      return await queueOfflineCheckIn({ employeeId, employeeName, checkInTime, lateReason });
     }
     return { success: false, error: error?.message || 'Check-in failed' };
   }
@@ -1265,7 +1273,10 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
               'id', 'employee_id', 'check_in', 'check_out',
               // Cross-mode + banner support: source ('manual' = office, 'field' = field),
               // late flag + display fields used by the in-card yellow banner.
+              // `checkin_session` lets us block re-check-in only for the session
+              // that's already completed (split-shift aware).
               'attendance_source', 'is_late', 'late_minutes_display', 'deduction_amount',
+              'checkin_session',
             ],
             order: 'check_in desc',
           },
@@ -1289,16 +1300,20 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
     } catch (_) { /* ignore */ }
 
     // Build the screen-facing object from a raw Odoo attendance record.
+    // checkOut is populated for CLOSED records (e.g. checked in+out on the web)
+    // so the screen recognises a completed day and shows the details instead of
+    // offering a fresh check-in.
     const buildFromRecord = (rec) => ({
       id: rec.id,
       employeeId: rec.employee_id?.[0],
       employeeName: rec.employee_id?.[1] || employeeName,
       checkIn: odooUtcToLocalDisplay(rec.check_in),
-      checkOut: null,
+      checkOut: rec.check_out ? odooUtcToLocalDisplay(rec.check_out) : null,
       attendance_source: rec.attendance_source || 'manual',
       is_late: !!rec.is_late,
       late_minutes_display: rec.late_minutes_display || '',
       deduction_amount: Number(rec.deduction_amount || 0),
+      checkin_session: rec.checkin_session || '1',
     });
 
     if (records.length > 0) {
@@ -1327,8 +1342,30 @@ export const getTodayAttendanceByEmployeeId = async (employeeId, employeeName) =
     }
 
     if (records.length > 0) {
-      // Today's records exist but all are closed — user can check-in again
-      console.log('[Attendance] All attendance records closed, ready for new check-in');
+      // Today's records exist but all are CLOSED. Block re-check-in only for the
+      // session we're in right now: if a closed record exists for the current
+      // session, show its details (completed) instead of offering a new check-in.
+      // A different, not-yet-done session (e.g. split-shift afternoon) still
+      // returns null below so its own check-in is allowed.
+      let currentSession = '1';
+      try {
+        const cached = await getCachedLateConfig(employeeId);
+        currentSession = String(computeLocalLateInfo(new Date(), cached)?.session || '1');
+      } catch (_) { /* default to session 1 */ }
+
+      const sessionRecord = records.find(
+        (r) => String(r.checkin_session || '1') === currentSession
+      );
+      if (sessionRecord) {
+        console.log('[Attendance] Current session', currentSession,
+          'already completed (record', sessionRecord.id, ') — showing details, blocking re-check-in');
+        const built = buildFromRecord(sessionRecord);
+        await cachePut('todayAtt', employeeId, built);
+        return built;
+      }
+
+      console.log('[Attendance] All records closed; current session', currentSession,
+        'has no record yet — ready for new check-in');
     } else {
       console.log('[Attendance] No attendance found for today');
     }
@@ -1809,13 +1846,57 @@ export const computeLocalDeductionAmount = async (employeeId, lateMinutes, check
     if (seq > grace) {
       amount = _slabAmountForMinutes(slabs, lateMinutes);
     }
+    // NOTE: this client estimate is ALWAYS slab-based. If the Odoo config's
+    // deduction_mode is 'hourly', the SERVER computes a different (hourly)
+    // amount — that's the popup(slab) vs after-save(server hourly) mismatch.
     console.log('[local-ded] empId=' + employeeId + ' month=' + month +
+                ' deduction_mode=' + (cachedConfig?.deduction_mode || '?') +
+                ' daily_work_hours=' + (cachedConfig?.daily_work_hours ?? '?') +
                 ' priorCount=' + priorCount + ' seq=' + seq + ' grace=' + grace +
-                ' lateMin=' + lateMinutes + ' slabs=' + (slabs?.length || 0) + ' → ' + amount);
+                ' lateMin=' + lateMinutes +
+                ' slabs=' + JSON.stringify(slabs) +
+                ' → CLIENT(slab)=' + amount +
+                (cachedConfig?.deduction_mode === 'hourly'
+                  ? ' [WARN: config is HOURLY → server value will differ from this slab estimate]'
+                  : ''));
     return amount;
   } catch (e) {
     console.log('[local-ded] error:', e?.message);
     return 0;
+  }
+};
+
+// No-save PREVIEW of a hypothetical check-in's late metrics — including the
+// SERVER-computed deduction (hourly or slab, per config). Lets the office popup
+// show the same number the saved record / Odoo web will show, instead of the
+// client slab estimate. `checkInUtc` = "YYYY-MM-DD HH:MM:SS" (UTC). Returns the
+// raw dict {is_late, late_minutes, late_minutes_display, expected_start_time,
+// checkin_session, late_sequence, deduction_amount} or null on error/offline.
+export const previewLateInfoOdoo = async (employeeId, checkInUtc) => {
+  try {
+    const headers = await getOdooAuthHeaders();
+    const response = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          model: 'hr.attendance',
+          method: 'preview_late_info',
+          args: [Number(employeeId), checkInUtc],
+          kwargs: {},
+        },
+      },
+      { headers }
+    );
+    if (response.data?.error) {
+      console.log('[previewLateInfo] odoo error:', response.data.error?.data?.message);
+      return null;
+    }
+    return response.data?.result || null;
+  } catch (e) {
+    console.log('[previewLateInfo] error:', e?.message);
+    return null;
   }
 };
 

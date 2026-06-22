@@ -61,13 +61,18 @@
 deduction   = hourly_rate &times; ceil(late_minutes / 60)   (every started hour = 1 hour)</div>
   <div class="note"><b>No-wage fallback:</b> in Hourly mode, if an employee has no wage the hourly amount is 0, so it falls back to the matching <b>slab</b>. With no slab, the deduction is 0. Keep a basic slab as a safety net.</div>
 
-  <h2>5. Grace &amp; Late-Waiver</h2>
+  <h2>5. Late Reason, Grace &amp; Waiver</h2>
   <ul>
-    <li><b>Grace:</b> the first N late occurrences per month (per session) are free; a reason is still requested.</li>
-    <li><b>Enter Late Reason:</b> on a late record, the employee clicks <i>Enter Late Reason</i> and types why.</li>
+    <li><b>Grace:</b> the first N late occurrences per month (per session) are free; a reason is still required.</li>
+    <li><b>Late Reason is mandatory:</b> a late attendance <b>cannot be saved without a Late Reason</b>. Saving a late record with an empty reason shows a popup asking you to enter it first. (On-time records save normally; a waived record needs no reason.)</li>
+    <li><b>Enter / Update Reason button:</b> on a late record click <i>Enter Late Reason</i>; the popup shows the late minutes, session, late&nbsp;# and deduction &mdash; type the reason and <i>Save Reason</i> (this fills the reason without leaving the form). Once a reason exists the button becomes <i>Update Reason</i> and its popup re-opens with the existing reason for editing. The button is <b>hidden once the attendance is checked out</b> (the record is then read-only).</li>
+    <li><b>Deduction by office time:</b> late minutes &amp; the resulting deduction are always measured against the Office-Timezone start time (sections 3&ndash;4).</li>
     <li><b>Waiver:</b> <b>Late Tracking &rarr; Late Waiver Requests</b> &mdash; pick the late record, give a reason, submit; a manager <b>Approves</b> (record &rarr; Waived, deduction 0) or <b>Rejects</b>.</li>
   </ul>
 
   <h2>6. Office-time display</h2>
-  <p>Standard Odoo date columns show the viewer's timezone. The attendance lists/kanban/form, Late Waiver, Employee Report and the Late Attendance PDF show dedicated <b>Office-Time</b> values anchored to the Office Timezone, so everyone sees the same office time regardless of their settings.</p>
+  <p>Standard Odoo date columns show the viewer's timezone. The attendance lists/kanban/form, Late Waiver, Employee Report and the Late Attendance PDF show dedicated <b>Office-Time</b> values anchored to the Office Timezone, so everyone sees the same office time regardless of their settings. The same Office-Time display now also covers <b>Vehicle Tracking</b> (trip Start/End&nbsp;Time) and <b>Customer Visits</b> (Date and Time) &mdash; see the HR Field Attendance guide.</p>
+
+  <h2>7. Help &amp; User Guides</h2>
+  <p>Menu: <b>Help</b> &mdash; each guide is a card. <b>Open guide</b> shows it in the browser (this HTML); <b>Open in PDF doc</b> opens the full PDF manual. Admins manage these under <b>Help Documents</b>: edit the HTML content and <b>Upload PDF</b> to replace the bundled manual &mdash; an uploaded PDF takes priority over the shipped one.</p>
 </div>

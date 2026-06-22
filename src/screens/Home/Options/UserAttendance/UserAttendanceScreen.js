@@ -12,11 +12,12 @@ import { COLORS, FONT_FAMILY } from '@constants/theme';
 import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
-import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getLastOpenAttendance, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, getCurrentLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
+import { checkInByEmployeeId, checkOutToOdoo, getTodayAttendanceByEmployeeId, getLastOpenAttendance, getEmployeeByDeviceId, verifyEmployeePin, verifyAttendanceLocation, getCurrentLocation, uploadAttendancePhoto, submitWfhRequest, getTodayApprovedWfh, wfhCheckIn, wfhCheckOut, getMyWfhRequests, getLateConfig, getCachedLateConfig, submitLateReason, getTodayAttendanceWithLateInfo, submitLeaveRequest, getMyLeaveRequests, cancelLeaveRequest, getEligibleLateAttendances, submitWaiverRequest, getMyWaiverRequests, getWorkplaceLocation, prewarmLocation, fetchAndCacheLateSlabs, computeLocalDeductionAmount, previewLateInfoOdoo, createCustomerVisit, closeCustomerVisit } from '@services/AttendanceService';
 import {
   fetchTodayFieldAttendanceOdoo,
   createFieldAttendanceOdoo,
   searchMyFieldAttendanceOdoo,
+  searchMyOfficeAttendanceOdoo,
   startFieldAttendanceOdoo,
   checkOutFieldAttendanceOdoo,
   readFieldAttendanceDetailOdoo,
@@ -160,6 +161,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [showLateReasonModal, setShowLateReasonModal] = useState(false);
   const [lateReasonText, setLateReasonText] = useState('');
   const [pendingLateAttendanceId, setPendingLateAttendanceId] = useState(null);
+  // Reason-before-check-in: when set, the late modal's Submit runs this action
+  // with the typed reason — it performs the ACTUAL check-in (office or field)
+  // that was deferred until a reason was given. Falls back to the legacy
+  // "patch an already-created record" path (pendingLateAttendanceId) when null.
+  const [pendingLateAction, setPendingLateAction] = useState(null);
   const [lateInfo, setLateInfo] = useState(null); // { isLate, lateMinutes, lateSequence }
 
   // Customer Visit (field-work) state — when on, geofence check is skipped
@@ -246,6 +252,24 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [fieldHistoryHasMore, setFieldHistoryHasMore] = useState(false);
   const [fieldHistoryOffset, setFieldHistoryOffset] = useState(0);
   const [fieldFiltersOpen, setFieldFiltersOpen] = useState(false);
+
+  // Office Attendance — tab + history state (mirror of field)
+  const [officeTab, setOfficeTab] = useState('today'); // 'today' | 'history'
+  const [officeHistoryRows, setOfficeHistoryRows] = useState([]);
+  const [officeHistoryLoading, setOfficeHistoryLoading] = useState(false);
+  const [officeHistoryFilters, setOfficeHistoryFilters] = useState({
+    dateFrom: null, dateTo: null,
+    lateOnly: false, withDeduction: false, waived: false,
+  });
+  const [officeHistoryHasMore, setOfficeHistoryHasMore] = useState(false);
+  const [officeHistoryOffset, setOfficeHistoryOffset] = useState(0);
+  const [officeFiltersOpen, setOfficeFiltersOpen] = useState(false);
+  const [officeDetailRow, setOfficeDetailRow] = useState(null);
+  const [officeDetailOpen, setOfficeDetailOpen] = useState(false);
+  // Update-reason editor (Today view only — allowed until checkout)
+  const [officeUpdateOpen, setOfficeUpdateOpen] = useState(false);
+  const [officeUpdateText, setOfficeUpdateText] = useState('');
+  const [officeUpdateSaving, setOfficeUpdateSaving] = useState(false);
 
   // Camera state
   const [cameraPermission, requestCameraPermission] = Camera.useCameraPermissions();
@@ -483,6 +507,57 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     (fieldHistoryFilters.waived ? 1 : 0)
   );
 
+  // ---- Office Attendance history (mirror of field history above) ----
+  const loadOfficeHistory = useCallback(async ({ reset = true, filters } = {}) => {
+    if (!verifiedEmployee?.id) return;
+    if (offline) return;
+    const useFilters = filters || officeHistoryFilters;
+    setOfficeHistoryLoading(true);
+    try {
+      const offset = reset ? 0 : officeHistoryOffset;
+      const rows = await searchMyOfficeAttendanceOdoo(verifiedEmployee.id, {
+        dateFrom: useFilters.dateFrom,
+        dateTo: useFilters.dateTo,
+        lateOnly: useFilters.lateOnly,
+        withDeduction: useFilters.withDeduction,
+        waived: useFilters.waived,
+        offset, limit: PAGE_SIZE,
+      });
+      setOfficeHistoryHasMore(rows.length === PAGE_SIZE);
+      setOfficeHistoryOffset(offset + rows.length);
+      setOfficeHistoryRows((prev) => (reset ? rows : [...prev, ...rows]));
+    } catch (e) {
+      console.error('[OfficeAttendance] history load error:', e?.message);
+      if (reset) setOfficeHistoryRows([]);
+    } finally {
+      setOfficeHistoryLoading(false);
+    }
+  }, [verifiedEmployee, offline, officeHistoryFilters, officeHistoryOffset]);
+
+  // When the user enters the office History tab, load the first page (if empty).
+  useEffect(() => {
+    if (attendanceMode !== 'office' || !isVerified || officeTab !== 'history') return;
+    if (officeHistoryRows.length > 0) return;
+    loadOfficeHistory({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendanceMode, isVerified, officeTab]);
+
+  const applyOfficeFilters = useCallback((next) => {
+    setOfficeHistoryFilters(next);
+    setOfficeFiltersOpen(false);
+    setOfficeHistoryOffset(0);
+    setOfficeHistoryRows([]);
+    loadOfficeHistory({ reset: true, filters: next });
+  }, [loadOfficeHistory]);
+
+  const officeFilterCount = (
+    (officeHistoryFilters.dateFrom ? 1 : 0) +
+    (officeHistoryFilters.dateTo ? 1 : 0) +
+    (officeHistoryFilters.lateOnly ? 1 : 0) +
+    (officeHistoryFilters.withDeduction ? 1 : 0) +
+    (officeHistoryFilters.waived ? 1 : 0)
+  );
+
   // ============================================================
   // Field Attendance — Today tab inline detail + check-in/out
   // ============================================================
@@ -497,6 +572,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
     try {
       const att = await readFieldAttendanceDetailOdoo(attendanceId);
+      console.log('[late-flow][field] SERVER deduction on record', attendanceId, '=',
+        att?.deduction_amount, '(is_late=', att?.is_late, 'late_minutes=', att?.late_minutes,
+        ') — compare against the CLIENT [local-ded] slab estimate shown in the popup');
       setFieldDetail(att);
       const ids = Array.isArray(att?.trip_line_ids) ? att.trip_line_ids : [];
       if (ids.length > 0) {
@@ -541,13 +619,49 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   }, [verifiedEmployee, fieldSubmitting, showAlert, hideAlert]);
 
   // Camera capture finished → start the field attendance + upload photo.
+  // Reason-before-check-in: the backend GATES on lateness — when late and no
+  // reason is supplied it returns needs_late_reason WITHOUT creating the row, so
+  // we show the modal and re-call (doStart) with the reason. The on-time path
+  // and the post-reason path share doStart, which also uploads the photo.
   const processFieldCheckIn = async (photoBase64) => {
-    try {
-      const res = await startFieldAttendanceOdoo(verifiedEmployee.id);
+    const doStart = async (lateReason = null) => {
+      console.log('[late-flow][field] startFieldAttendance call — lateReason=', lateReason || '(none)');
+      const res = await startFieldAttendanceOdoo(verifiedEmployee.id, lateReason);
+      console.log('[late-flow][field] response:', JSON.stringify({
+        success: res?.success,
+        needs_late_reason: res?.needs_late_reason,
+        is_late: res?.is_late,
+        late_minutes: res?.late_minutes,
+        attendance_id: res?.attendance_id,
+        error: res?.error,
+      }));
       if (!res?.success) {
+        if (res?.needs_late_reason) {
+          console.log('[late-flow][field] BRANCH=pre-create gate → opening late modal (reason-first)');
+          // Use the SERVER-computed deduction from the gate (preview_late_info),
+          // which honors the config's hourly/slab mode — so the popup shows the
+          // same amount as the saved record / Odoo web (not a client slab guess).
+          console.log('[late-flow][field] server deduction=', res.deduction_amount);
+          setLateInfo({
+            isLate: true,
+            lateMinutes: res.late_minutes || 0,
+            lateMinutesDisplay: res.late_minutes_display || '',
+            session: res.checkin_session,
+            expectedStartDisplay: res.expected_start_time != null
+              ? floatToHM(res.expected_start_time)
+              : undefined,
+            deductionAmount: Number(res.deduction_amount || 0),
+          });
+          setPendingLateAttendanceId(null);
+          setPendingLateAction(() => async (reason) => { await doStart(reason); });
+          setShowLateReasonModal(true);
+          return;
+        }
+        console.log('[late-flow][field] BRANCH=error (no needs_late_reason) →', res?.error);
         showAlert({ message: res?.error || 'Failed to check in' });
         return;
       }
+      console.log('[late-flow][field] BRANCH=success — row created. needs_late_reason on success?', !!res?.needs_late_reason, '(no popup shown in this branch)');
       showToastMessage('Field check-in marked');
       if (res.attendance_id && photoBase64) {
         try {
@@ -557,49 +671,9 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         }
       }
       await refreshFieldAttendance({ silent: true });
-      if (res.is_late && res.attendance_id) {
-        // Fetch the rich per-record late info (deduction, sequence, session,
-        // expected start) — same call Office check-in uses so the popup body
-        // is consistent across modes.
-        let richPopulated = false;
-        try {
-          const lateResult = await getTodayAttendanceWithLateInfo(verifiedEmployee.id);
-          if (lateResult?.success && Array.isArray(lateResult.records)) {
-            const justCreated = lateResult.records.find(r => r.id === res.attendance_id);
-            if (justCreated && justCreated.isLate) {
-              setLateInfo({
-                isLate: true,
-                lateMinutes: justCreated.lateMinutes,
-                lateMinutesDisplay: justCreated.lateMinutesDisplay,
-                lateSequence: justCreated.lateSequence,
-                deductionAmount: justCreated.deductionAmount,
-                session: justCreated.checkinSession,
-                expectedStartDisplay: justCreated.expectedStartTime != null
-                  ? floatToHM(justCreated.expectedStartTime)
-                  : undefined,
-              });
-              setPendingLateAttendanceId(justCreated.id);
-              setShowLateReasonModal(true);
-              richPopulated = true;
-            }
-          }
-        } catch (lateErr) {
-          console.log('[FieldAttendance] late-info fetch failed, falling back to server response:', lateErr?.message);
-        }
-        // Fallback: use the lean info from start_field_attendance's own response.
-        if (!richPopulated && res.needs_late_reason) {
-          setLateInfo({
-            isLate: true,
-            lateMinutes: res.late_minutes || 0,
-            lateMinutesDisplay: res.late_minutes_display || '',
-            expectedStartDisplay: res.expected_start_time != null
-              ? floatToHM(res.expected_start_time)
-              : undefined,
-          });
-          setPendingLateAttendanceId(res.attendance_id);
-          setShowLateReasonModal(true);
-        }
-      }
+    };
+    try {
+      await doStart(null);
     } catch (e) {
       showAlert({ message: e?.message || 'Failed to check in' });
     } finally {
@@ -1361,6 +1435,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         let attendanceId = todayAttendance.id;
         let sessionLabel;
         let expectedStartDisplay;
+        let totalHours = null;
+        let reasonText = '';
 
         const online = await networkStatus.isOnline();
 
@@ -1376,13 +1452,26 @@ const UserAttendanceScreen = ({ navigation, route }) => {
               sequence = rec.lateSequence;
               deduction = rec.deductionAmount;
               hasReason = !!(rec.lateReason && rec.lateReason.trim());
+              reasonText = rec.lateReason || '';
               attendanceId = rec.id;
               sessionLabel = rec.checkinSession;
               expectedStartDisplay = rec.expectedStartTime != null
                 ? floatToHM(rec.expectedStartTime)
                 : undefined;
+              totalHours = rec.dailyTotalHours;
             }
           }
+          // Persist the late + total-hours figures onto todayAttendance so the
+          // "Today's Details" card (after checkout) can render them.
+          setTodayAttendance(prev => prev ? {
+            ...prev,
+            is_late: isLate,
+            late_minutes: lateMin,
+            late_minutes_display: lateDisplay,
+            deduction_amount: Number(deduction || 0),
+            daily_total_hours: totalHours != null ? Number(totalHours) : prev.daily_total_hours,
+            late_reason: reasonText,
+          } : prev);
         } else {
           // Offline path — recompute from cached config + check queue.
           // checkInTimeUtc is "YYYY-MM-DD HH:MM:SS" UTC; must append 'Z' so
@@ -1725,7 +1814,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         console.log('[checkin-guard] offline guard skipped:', e?.message);
       }
 
-      const result = await checkInByEmployeeId(verifiedEmployee.id, verifiedEmployee.name);
+      // The actual check-in, deferred behind the late-reason gate below. When
+      // `lateReason` is provided the row is created WITH it in one step; the
+      // post-create late prompts are skipped (we already have the reason).
+      const finalizeCheckIn = async (lateReason = null) => {
+      console.log('[late-flow][office] finalizeCheckIn running — lateReason=', lateReason || '(none)');
+      const result = await checkInByEmployeeId(verifiedEmployee.id, verifiedEmployee.name, lateReason);
       if (result.success && result.offline) {
         // Offline path — record was queued locally; will flush when online.
         // Skip photo upload (no server id yet) and skip the late-check query
@@ -1775,7 +1869,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           console.log('[offline-late] check-in raw utc:', utcStr, '→ parsed:', checkInDt?.toString?.());
           console.log('[offline-late] info:', JSON.stringify(info));
 
-          if (info.isLate) {
+          if (info.isLate && !lateReason) {
             console.log('[offline-late] FIRING popup (lateMin=' + info.lateMinutes + ')');
             // Compute deduction locally using cached slabs + grace + month seq.
             const localDed = await computeLocalDeductionAmount(
@@ -1850,7 +1944,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           const lateResult = await getTodayAttendanceWithLateInfo(verifiedEmployee.id);
           if (lateResult.success && lateResult.records.length > 0) {
             const justCreated = lateResult.records.find(r => r.id === result.attendanceId);
-            if (justCreated && justCreated.isLate) {
+            if (justCreated && justCreated.isLate && !lateReason) {
               setLateInfo({
                 isLate: true,
                 lateMinutes: justCreated.lateMinutes,
@@ -1871,6 +1965,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                 is_late: true,
                 late_minutes_display: justCreated.lateMinutesDisplay || '',
                 deduction_amount: Number(justCreated.deductionAmount || 0),
+                daily_total_hours: justCreated.dailyTotalHours != null
+                  ? Number(justCreated.dailyTotalHours) : prev.daily_total_hours,
               } : prev);
             }
           }
@@ -1880,6 +1976,73 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       } else {
         showAlert({ message: result.error || 'Check-in failed' });
       }
+      }; // end finalizeCheckIn
+
+      // Late gate (reason-before-check-in): compute lateness for NOW *before*
+      // any record is created. If late → show the reason modal and defer the
+      // check-in until the reason is submitted. On-time → check in immediately.
+      try {
+        // Prefer the SERVER's late metrics (incl. the correct hourly/slab
+        // deduction) when online — same source as field + the Today's Details
+        // card. Fall back to the client estimate only when offline / call fails.
+        let info = null;
+        let serverDeduction = null;
+        try {
+          const online = await networkStatus.isOnline();
+          if (online) {
+            const nowUtc = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            const pv = await previewLateInfoOdoo(verifiedEmployee.id, nowUtc);
+            if (pv) {
+              info = {
+                isLate: !!pv.is_late,
+                lateMinutes: pv.late_minutes || 0,
+                lateMinutesDisplay: pv.late_minutes_display || '',
+                session: pv.checkin_session,
+                expectedStartDisplay: pv.expected_start_time != null ? floatToHM(pv.expected_start_time) : undefined,
+              };
+              serverDeduction = Number(pv.deduction_amount || 0);
+            }
+          }
+        } catch (_) { /* fall back to client estimate below */ }
+
+        if (!info) {
+          const cached = await getCachedLateConfig(verifiedEmployee.id);
+          info = computeLocalLateInfo(new Date(), cached);
+        }
+        console.log('[late-flow][office] info=', JSON.stringify({
+          isLate: info.isLate, lateMinutes: info.lateMinutes, session: info.session, serverDeduction,
+        }));
+        if (info.isLate) {
+          console.log('[late-flow][office] BRANCH=late → opening late modal (reason-first), deferring check-in');
+          // Use the server deduction when we have it; else the client estimate.
+          let ded = serverDeduction;
+          if (ded == null) {
+            try {
+              ded = await computeLocalDeductionAmount(verifiedEmployee.id, info.lateMinutes, new Date());
+            } catch (_) { ded = 0; }
+          }
+          setLateInfo({
+            isLate: true,
+            lateMinutes: info.lateMinutes,
+            lateMinutesDisplay: info.lateMinutesDisplay,
+            lateSequence: null,
+            deductionAmount: ded || 0,
+            session: info.session,
+            expectedStartDisplay: info.expectedStartDisplay,
+          });
+          setPendingLateAttendanceId(null);
+          // Defer the real check-in: it runs only when the reason is submitted.
+          setPendingLateAction(() => async (reason) => { await finalizeCheckIn(reason); });
+          setShowLateReasonModal(true);
+          setLoading(false);
+          return;
+        }
+        console.log('[late-flow][office] BRANCH=on-time → checking in directly (no popup)');
+      } catch (e) {
+        console.log('[late-flow][office] gate compute failed, proceeding ungated:', e?.message);
+      }
+
+      await finalizeCheckIn(null);
     } catch (error) {
       console.error('Check-in error:', error);
       showAlert({ message: error?.message || 'Failed to check in' });
@@ -2110,6 +2273,34 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         // Keep the record visible in this session — show the checkout time in the box.
         // The whole record is cleared when the user leaves the screen via handleBackPress.
         setTodayAttendance((prev) => prev ? { ...prev, checkOut: result.checkOutTime } : prev);
+
+        // Pull the FINAL late + worked-hours figures (daily_total_hours is only
+        // complete once check_out exists) so the "Today's Details" card shows the
+        // accurate, server-computed values after checkout.
+        try {
+          const online = await networkStatus.isOnline();
+          if (online && verifiedEmployee?.id) {
+            const lateResult = await getTodayAttendanceWithLateInfo(verifiedEmployee.id);
+            if (lateResult?.success && lateResult.records?.length > 0) {
+              const rec = lateResult.records.find(r => r.id === todayAttendance?.id)
+                       || lateResult.records[lateResult.records.length - 1];
+              if (rec) {
+                setTodayAttendance(prev => prev ? {
+                  ...prev,
+                  is_late: !!rec.isLate,
+                  late_minutes: rec.lateMinutes || 0,
+                  late_minutes_display: rec.lateMinutesDisplay || '',
+                  deduction_amount: Number(rec.deductionAmount || 0),
+                  daily_total_hours: rec.dailyTotalHours != null
+                    ? Number(rec.dailyTotalHours) : prev.daily_total_hours,
+                  late_reason: rec.lateReason || '',
+                } : prev);
+              }
+            }
+          }
+        } catch (e) {
+          console.log('[Attendance] post-checkout details refresh skipped:', e?.message);
+        }
       } else {
         showAlert({ message: result.error || 'Check-out failed' });
       }
@@ -3219,36 +3410,49 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // =============================================
   // RENDER: FIELD ATTENDANCE SECTION
   // =============================================
+  // Field check-in, with reason-before-check-in. The backend GATES on lateness
+  // (field check-in time = the trip's start time, which only the server knows):
+  // when late and no reason is supplied it returns needs_late_reason WITHOUT
+  // creating the row, so we show the modal and re-call with the reason. Both the
+  // on-time path and the post-reason path share this one function.
+  const doFieldCheckIn = async (lateReason = null) => {
+    const result = await createFieldAttendanceOdoo(verifiedEmployee.id, lateReason);
+    if (result?.success) {
+      showToastMessage('Field attendance marked');
+      // Refresh state by re-querying — keeps the rendered card consistent
+      // with what the server now sees.
+      const refreshed = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id).catch(() => null);
+      setFieldStatus(refreshed?.status || 'already_field');
+      setFieldData(refreshed || { status: 'already_field', attendance_id: result.attendance_id });
+      return;
+    }
+    // Server says: would be late — collect the reason first, then re-call.
+    if (result?.needs_late_reason) {
+      setLateInfo({
+        isLate: !!result.is_late,
+        lateMinutes: result.late_minutes || 0,
+        lateMinutesDisplay: result.late_minutes_display || '',
+        session: result.checkin_session,
+        expectedStartDisplay: result.expected_start_time
+          ? floatToHM(result.expected_start_time)
+          : undefined,
+      });
+      setPendingLateAttendanceId(null);
+      setPendingLateAction(() => async (reason) => { await doFieldCheckIn(reason); });
+      setShowLateReasonModal(true);
+      return;
+    }
+    showAlert({
+      message: result?.error || 'Could not mark field attendance.',
+      confirmText: 'OK',
+    });
+  };
+
   const handleMarkFieldAttendance = async () => {
     if (fieldSubmitting || !verifiedEmployee?.id) return;
     setFieldSubmitting(true);
     try {
-      const result = await createFieldAttendanceOdoo(verifiedEmployee.id);
-      if (result?.success) {
-        showToastMessage('Field attendance marked');
-        // Refresh state by re-querying — keeps the rendered card consistent
-        // with what the server now sees.
-        const refreshed = await fetchTodayFieldAttendanceOdoo(verifiedEmployee.id).catch(() => null);
-        setFieldStatus(refreshed?.status || 'already_field');
-        setFieldData(refreshed || { status: 'already_field', attendance_id: result.attendance_id });
-
-        // Trigger the existing late-reason modal if the server flagged it.
-        if (result.needs_late_reason && result.attendance_id) {
-          setLateInfo({
-            isLate: !!result.is_late,
-            lateMinutes: result.late_minutes || 0,
-            lateMinutesDisplay: result.late_minutes_display || '',
-            expectedStartTime: result.expected_start_time || 0,
-          });
-          setPendingLateAttendanceId(result.attendance_id);
-          setShowLateReasonModal(true);
-        }
-      } else {
-        showAlert({
-          message: result?.error || 'Could not mark field attendance.',
-          confirmText: 'OK',
-        });
-      }
+      await doFieldCheckIn(null);
     } catch (e) {
       showAlert({
         message: e?.message || 'Network error while marking field attendance.',
@@ -3587,8 +3791,178 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // =============================================
   // RENDER: OFFICE SECTION (existing flow)
   // =============================================
-  const renderOfficeSection = () => (
+  const renderOfficeSection = () => {
+    const OFFICE_COLOR = COLORS.primaryThemeColor;
+
+    const renderOfficeHistoryTab = () => (
+      <View style={{ marginTop: scale(10) }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: scale(8) }}>
+          <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: '#444' }}>
+            My Records ({officeHistoryRows.length})
+          </Text>
+          <View style={{ flexDirection: 'row', gap: scale(6) }}>
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', gap: scale(4), paddingVertical: scale(6), paddingHorizontal: scale(10), borderRadius: scale(8), backgroundColor: officeFilterCount ? OFFICE_COLOR : '#fff', borderWidth: 1, borderColor: OFFICE_COLOR }}
+              onPress={() => setOfficeFiltersOpen(true)}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="filter-list" size={scale(14)} color={officeFilterCount ? '#fff' : OFFICE_COLOR} />
+              <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistBold, color: officeFilterCount ? '#fff' : OFFICE_COLOR }}>
+                Filters{officeFilterCount ? ` · ${officeFilterCount}` : ''}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ padding: scale(6) }} onPress={() => loadOfficeHistory({ reset: true })} activeOpacity={0.7}>
+              <MaterialIcons name="refresh" size={scale(18)} color={OFFICE_COLOR} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {offline && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF3E0', borderRadius: scale(10), padding: scale(10), gap: scale(8), marginBottom: scale(8) }}>
+            <MaterialIcons name="wifi-off" size={scale(16)} color="#7a4f00" />
+            <Text style={{ flex: 1, fontSize: scale(11), color: '#7a4f00', fontFamily: FONT_FAMILY.urbanistMedium }}>
+              Offline — connect to load history.
+            </Text>
+          </View>
+        )}
+
+        {officeHistoryLoading && officeHistoryRows.length === 0 ? (
+          <View style={{ paddingVertical: scale(40), alignItems: 'center' }}>
+            <MaterialIcons name="hourglass-empty" size={scale(28)} color={OFFICE_COLOR} />
+            <Text style={{ fontSize: scale(12), color: '#666', marginTop: scale(8), fontFamily: FONT_FAMILY.urbanistMedium }}>Loading…</Text>
+          </View>
+        ) : officeHistoryRows.length === 0 ? (
+          <View style={{ alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: scale(12), padding: scale(20), borderWidth: 1, borderColor: '#EEE', borderStyle: 'dashed' }}>
+            <MaterialIcons name="inbox" size={scale(32)} color="#BDBDBD" />
+            <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistBold, color: '#444', marginTop: scale(8) }}>No records yet</Text>
+            <Text style={{ fontSize: scale(11), fontFamily: FONT_FAMILY.urbanistMedium, color: '#888', marginTop: scale(2), textAlign: 'center' }}>
+              {officeFilterCount > 0 ? 'Try clearing filters or pick a different date range.' : 'Check in to office to see it here.'}
+            </Text>
+          </View>
+        ) : (
+          <>
+            {officeHistoryRows.map((row) => (
+              <HistoryListItem
+                key={row.id}
+                row={row}
+                title="Office Attendance"
+                accentColor={OFFICE_COLOR}
+                onPress={() => { setOfficeDetailRow(row); setOfficeDetailOpen(true); }}
+              />
+            ))}
+            {officeHistoryHasMore ? (
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), backgroundColor: '#fff', borderRadius: scale(10), borderWidth: 1, borderColor: OFFICE_COLOR, paddingVertical: scale(11), marginTop: scale(8) }}
+                onPress={() => loadOfficeHistory({ reset: false })}
+                disabled={officeHistoryLoading}
+                activeOpacity={0.85}
+              >
+                <MaterialIcons name="expand-more" size={scale(16)} color={OFFICE_COLOR} />
+                <Text style={{ fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: OFFICE_COLOR }}>
+                  {officeHistoryLoading ? 'Loading…' : 'Load more'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
+        )}
+
+        <HistoryFiltersSheet
+          visible={officeFiltersOpen}
+          initial={officeHistoryFilters}
+          onApply={applyOfficeFilters}
+          onClose={() => setOfficeFiltersOpen(false)}
+        />
+
+        {/* Tap-a-row detail popup — uses the fields already on the history row. */}
+        <Modal visible={officeDetailOpen} transparent animationType="fade" onRequestClose={() => setOfficeDetailOpen(false)}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: scale(24) }}>
+            <View style={{ backgroundColor: '#fff', borderRadius: scale(16), padding: scale(18) }}>
+              {(() => {
+                const r = officeDetailRow || {};
+                const fmtT = (s) => (s ? String(s).slice(11, 16) : '—');
+                const fmtD = (s) => {
+                  if (!s) return '';
+                  const d = new Date(String(s).replace(' ', 'T') + 'Z');
+                  return isNaN(d.getTime())
+                    ? String(s).slice(0, 10)
+                    : d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+                };
+                const isLate = !!r.is_late;
+                const ded = Number(r.deduction_amount || 0);
+                const hrs = Number(r.daily_total_hours || 0);
+                const Row = ({ label, value, color }) => (
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: scale(5) }}>
+                    <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#777' }}>{label}</Text>
+                    <Text style={{ flexShrink: 1, textAlign: 'right', marginLeft: scale(10), fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistBold, color: color || '#222' }}>{value}</Text>
+                  </View>
+                );
+                return (
+                  <>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(8), marginBottom: scale(10) }}>
+                      <MaterialIcons name="event-available" size={scale(20)} color={COLORS.primaryThemeColor} />
+                      <Text style={{ flex: 1, fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor }}>
+                        {fmtD(r.check_in)}
+                      </Text>
+                      {r.is_waived ? (
+                        <View style={{ paddingHorizontal: scale(7), paddingVertical: scale(2), borderRadius: scale(5), borderWidth: 1, borderColor: '#9C27B0', backgroundColor: '#F3E5F5' }}>
+                          <Text style={{ fontSize: scale(9), fontFamily: FONT_FAMILY.urbanistBold, color: '#9C27B0' }}>WAIVED</Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    <Row label="Session" value={String(r.checkin_session || '1')} />
+                    <Row label="Check In" value={fmtT(r.check_in)} color="#2E7D32" />
+                    <Row label="Check Out" value={fmtT(r.check_out)} color="#C62828" />
+                    <Row label="Total Hours" value={hrs > 0 ? `${hrs.toFixed(2)} h` : '—'} />
+                    {isLate ? <Row label="Late by" value={r.late_minutes_display || `${r.late_minutes || 0}m`} color="#B26A00" /> : null}
+                    {ded > 0 ? <Row label="Deduction" value={ded.toFixed(2)} color="#C62828" /> : null}
+                    {r.late_reason && String(r.late_reason).trim() ? (
+                      <View style={{ marginTop: scale(6) }}>
+                        <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#777', marginBottom: scale(2) }}>Late reason</Text>
+                        <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#333' }}>{r.late_reason}</Text>
+                      </View>
+                    ) : null}
+
+                    <TouchableOpacity
+                      style={{ marginTop: scale(16), backgroundColor: COLORS.primaryThemeColor, borderRadius: scale(10), paddingVertical: scale(12), alignItems: 'center' }}
+                      onPress={() => setOfficeDetailOpen(false)}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>Close</Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              })()}
+            </View>
+          </View>
+        </Modal>
+      </View>
+    );
+
+    return (
     <View style={styles.detailsSection}>
+      {/* Today | History tab bar */}
+      <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#EEE', marginHorizontal: -scale(4), marginBottom: scale(6) }}>
+        <TouchableOpacity
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: scale(10), gap: scale(4), borderBottomWidth: officeTab === 'today' ? 2 : 0, borderBottomColor: OFFICE_COLOR }}
+          onPress={() => setOfficeTab('today')}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="today" size={scale(16)} color={officeTab === 'today' ? OFFICE_COLOR : '#999'} />
+          <Text style={{ fontSize: scale(12), fontFamily: officeTab === 'today' ? FONT_FAMILY.urbanistBold : FONT_FAMILY.urbanistMedium, color: officeTab === 'today' ? OFFICE_COLOR : '#999' }}>Today</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: scale(10), gap: scale(4), borderBottomWidth: officeTab === 'history' ? 2 : 0, borderBottomColor: OFFICE_COLOR }}
+          onPress={() => setOfficeTab('history')}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons name="history" size={scale(16)} color={officeTab === 'history' ? OFFICE_COLOR : '#999'} />
+          <Text style={{ fontSize: scale(12), fontFamily: officeTab === 'history' ? FONT_FAMILY.urbanistBold : FONT_FAMILY.urbanistMedium, color: officeTab === 'history' ? OFFICE_COLOR : '#999' }}>History</Text>
+        </TouchableOpacity>
+      </View>
+
+      {officeTab === 'history' ? renderOfficeHistoryTab() : (
+        <>
       {/* Greeting Card */}
       <View style={styles.greetingCard}>
         <View style={styles.avatarContainer}>
@@ -3640,6 +4014,118 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           </Text>
         </View>
       ) : null}
+
+      {/* Late reason + Update — reason shows read-only; the Update button is only
+          available UNTIL checkout (while the attendance is still open). */}
+      {todayAttendance?.is_late ? (
+        <View style={{ backgroundColor: '#fff', borderRadius: scale(10), padding: scale(10), marginTop: scale(8), borderWidth: 1, borderColor: '#ECECEC' }}>
+          <Text style={{ fontSize: scale(11.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#777' }}>Late reason</Text>
+          <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistMedium, color: '#333', marginTop: scale(2) }}>
+            {todayAttendance.late_reason && String(todayAttendance.late_reason).trim() ? todayAttendance.late_reason : '—'}
+          </Text>
+          {hasCheckedIn && !hasCheckedOut && todayAttendance?.id ? (
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: scale(4), marginTop: scale(8), paddingVertical: scale(6), paddingHorizontal: scale(10), borderRadius: scale(8), borderWidth: 1, borderColor: COLORS.primaryThemeColor }}
+              onPress={() => { setOfficeUpdateText(todayAttendance.late_reason || ''); setOfficeUpdateOpen(true); }}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="edit" size={scale(14)} color={COLORS.primaryThemeColor} />
+              <Text style={{ fontSize: scale(11.5), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor }}>Update Reason</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
+
+      {/* Office Update-Reason editor modal (pre-filled with the current reason) */}
+      <Modal visible={officeUpdateOpen} transparent animationType="fade" onRequestClose={() => setOfficeUpdateOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', paddingHorizontal: scale(24) }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: scale(16), padding: scale(18) }}>
+            <Text style={{ fontSize: scale(15), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor, marginBottom: scale(10) }}>Update Late Reason</Text>
+            <TextInput
+              style={{ borderWidth: 1, borderColor: '#E0E0E0', borderRadius: scale(10), padding: scale(10), minHeight: scale(80), textAlignVertical: 'top', fontFamily: FONT_FAMILY.urbanistRegular, fontSize: scale(13), color: '#222' }}
+              placeholder="Enter your reason for being late..."
+              placeholderTextColor="#999"
+              multiline
+              value={officeUpdateText}
+              onChangeText={setOfficeUpdateText}
+            />
+            <TouchableOpacity
+              style={{ marginTop: scale(14), backgroundColor: (!officeUpdateText.trim() || officeUpdateSaving) ? '#CCC' : COLORS.primaryThemeColor, borderRadius: scale(10), paddingVertical: scale(12), alignItems: 'center' }}
+              disabled={!officeUpdateText.trim() || officeUpdateSaving}
+              onPress={async () => {
+                const text = officeUpdateText.trim();
+                if (!text || !todayAttendance?.id) return;
+                setOfficeUpdateSaving(true);
+                try {
+                  const res = await submitLateReason(todayAttendance.id, text);
+                  if (res?.success) {
+                    setTodayAttendance(prev => prev ? { ...prev, late_reason: text } : prev);
+                    showToastMessage('Late reason updated');
+                    setOfficeUpdateOpen(false);
+                  } else {
+                    showToastMessage(res?.error || 'Could not update reason', 'error');
+                  }
+                } catch (e) {
+                  showToastMessage('Could not update reason', 'error');
+                } finally {
+                  setOfficeUpdateSaving(false);
+                }
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: '#fff' }}>{officeUpdateSaving ? 'Saving…' : 'Save'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ marginTop: scale(10), paddingVertical: scale(10), alignItems: 'center' }} onPress={() => setOfficeUpdateOpen(false)}>
+              <Text style={{ fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistSemiBold, color: '#666' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Today's Details — shown after checkout, mirrors the field summary:
+          Check In, Check Out, Total Hours, and (if late) Late by + Deduction. */}
+      {hasCheckedOut && (
+        <View style={{ backgroundColor: '#fff', borderRadius: scale(12), padding: scale(14), marginTop: scale(12), borderWidth: 1, borderColor: '#ECECEC' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: scale(6), marginBottom: scale(10) }}>
+            <MaterialIcons name="event-available" size={scale(18)} color={COLORS.primaryThemeColor} />
+            <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor }}>Today's Details</Text>
+          </View>
+          {[
+            { label: 'Check In', value: todayAttendance?.checkIn || '--:--' },
+            { label: 'Check Out', value: todayAttendance?.checkOut || '--:--' },
+            {
+              label: 'Total Hours',
+              value: (todayAttendance?.daily_total_hours != null && Number(todayAttendance.daily_total_hours) > 0)
+                ? `${Number(todayAttendance.daily_total_hours).toFixed(2)} h`
+                : '--',
+            },
+          ].map((row) => (
+            <View key={row.label} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: scale(5) }}>
+              <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#777' }}>{row.label}</Text>
+              <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistBold, color: '#222' }}>{row.value}</Text>
+            </View>
+          ))}
+          {todayAttendance?.is_late ? (
+            <>
+              <View style={{ height: 1, backgroundColor: '#F0F0F0', marginVertical: scale(6) }} />
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: scale(5) }}>
+                <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#B26A00' }}>Late by</Text>
+                <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistBold, color: '#B26A00' }}>
+                  {todayAttendance.late_minutes_display || `${todayAttendance.late_minutes || 0}m`}
+                </Text>
+              </View>
+              {Number(todayAttendance.deduction_amount || 0) > 0 ? (
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: scale(5) }}>
+                  <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistMedium, color: '#C62828' }}>Deduction</Text>
+                  <Text style={{ fontSize: scale(12.5), fontFamily: FONT_FAMILY.urbanistBold, color: '#C62828' }}>
+                    {Number(todayAttendance.deduction_amount).toFixed(2)}
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          ) : null}
+        </View>
+      )}
 
       {/* Location Status */}
       {locationStatus && (
@@ -3757,8 +4243,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           </Text>
         </TouchableOpacity>
       </View>
+        </>
+      )}
     </View>
-  );
+    );
+  };
 
   // =============================================
   // MAIN RENDER
@@ -3993,50 +4482,41 @@ const UserAttendanceScreen = ({ navigation, route }) => {
               disabled={!lateReasonText.trim()}
               onPress={async () => {
                 const reason = lateReasonText.trim();
-                console.log('[late-submit] reason="' + reason + '" pendingId=' + pendingLateAttendanceId);
                 if (!reason) {
                   console.log('[late-submit] BLOCKED: reason is empty');
                   return;
                 }
-                if (!pendingLateAttendanceId) {
-                  console.log('[late-submit] BLOCKED: no pending attendance id (offline create may have failed to return localId)');
-                  showToastMessage('Cannot save reason — try again after sync');
-                  setShowLateReasonModal(false);
-                  setLateReasonText('');
-                  return;
-                }
                 setLoading(true);
                 try {
-                  const idStr = String(pendingLateAttendanceId);
-                  if (idStr.startsWith('offline:')) {
-                    const localId = idStr.split(':')[1];
-                    console.log('[late-submit] OFFLINE path — localId=' + localId);
-
-                    // Verify the queue item exists before updating
-                    const before = await offlineQueue.getAll();
-                    const target = before.find(q => q.id === localId);
-                    console.log('[late-submit] queue item BEFORE update:', target ? JSON.stringify(target.values) : 'MISSING');
-
-                    await offlineQueue.updateValues(localId, { late_reason: reason });
-
-                    const after = await offlineQueue.getAll();
-                    const updated = after.find(q => q.id === localId);
-                    console.log('[late-submit] queue item AFTER update:', updated ? JSON.stringify(updated.values) : 'MISSING (item gone — already synced?)');
-
-                    if (updated && updated.values?.late_reason === reason) {
-                      showToastMessage('Late reason saved offline');
-                    } else if (!updated) {
-                      // Queue item was already synced before user typed. Fall
-                      // back to writing the reason via the online path using
-                      // an offline_id_map lookup. For now just inform user.
-                      showToastMessage('Reason will sync on next online write');
+                  if (pendingLateAction) {
+                    // Reason-before-check-in: run the deferred check-in (office
+                    // or field) WITH the reason — the row is created now.
+                    console.log('[late-submit] reason-first path — running deferred check-in');
+                    await pendingLateAction(reason);
+                  } else if (pendingLateAttendanceId) {
+                    // Legacy path: patch the reason onto an already-created row
+                    // (re-prompt for older late records lacking a reason).
+                    const idStr = String(pendingLateAttendanceId);
+                    if (idStr.startsWith('offline:')) {
+                      const localId = idStr.split(':')[1];
+                      console.log('[late-submit] OFFLINE path — localId=' + localId);
+                      await offlineQueue.updateValues(localId, { late_reason: reason });
+                      const after = await offlineQueue.getAll();
+                      const updated = after.find(q => q.id === localId);
+                      if (updated && updated.values?.late_reason === reason) {
+                        showToastMessage('Late reason saved offline');
+                      } else if (!updated) {
+                        showToastMessage('Reason will sync on next online write');
+                      } else {
+                        showToastMessage('Saved (but value mismatch — check logs)');
+                      }
                     } else {
-                      showToastMessage('Saved (but value mismatch — check logs)');
+                      console.log('[late-submit] ONLINE path — id=' + idStr);
+                      await submitLateReason(pendingLateAttendanceId, reason);
+                      showToastMessage('Late reason submitted');
                     }
                   } else {
-                    console.log('[late-submit] ONLINE path — id=' + idStr);
-                    await submitLateReason(pendingLateAttendanceId, reason);
-                    showToastMessage('Late reason submitted');
+                    showToastMessage('Cannot save reason — try again');
                   }
                 } catch (err) {
                   console.log('[late-submit] error:', err?.message, err?.stack);
@@ -4044,11 +4524,29 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                 setShowLateReasonModal(false);
                 setLateReasonText('');
                 setPendingLateAttendanceId(null);
+                setPendingLateAction(null);
                 setLoading(false);
               }}
             >
               <Text style={styles.lateSubmitButtonText}>Submit Reason</Text>
             </TouchableOpacity>
+
+            {/* Cancel — reason-first flow only: dismissing aborts the check-in
+                entirely (no record is created, since we gated before creating). */}
+            {pendingLateAction && (
+              <TouchableOpacity
+                style={styles.lateCancelButton}
+                onPress={() => {
+                  setShowLateReasonModal(false);
+                  setLateReasonText('');
+                  setPendingLateAttendanceId(null);
+                  setPendingLateAction(null);
+                  showToastMessage('Check-in cancelled — enter a reason to check in');
+                }}
+              >
+                <Text style={styles.lateCancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -4380,6 +4878,8 @@ const styles = StyleSheet.create({
   lateSubmitButton: { backgroundColor: COLORS.primaryThemeColor, borderRadius: scale(10), padding: scale(14), alignItems: 'center' },
   lateSubmitButtonDisabled: { backgroundColor: '#CCC' },
   lateSubmitButtonText: { fontSize: scale(15), fontWeight: 'bold', color: COLORS.white, fontFamily: FONT_FAMILY.urbanistBold },
+  lateCancelButton: { marginTop: scale(10), borderRadius: scale(10), padding: scale(12), alignItems: 'center', borderWidth: 1, borderColor: '#CCC' },
+  lateCancelButtonText: { fontSize: scale(14), color: '#666', fontFamily: FONT_FAMILY.urbanistSemiBold },
 });
 
 export default UserAttendanceScreen;
