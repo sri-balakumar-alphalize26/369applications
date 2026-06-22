@@ -11,10 +11,12 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
+import { formatTimeOffice } from '@utils/officeTime';
 
 const FIELD_COLOR = '#1976D2';
 
-const fmtTime = (s) => (s ? String(s).slice(11, 16) : '—');
+// Office timezone (from config), not raw UTC.
+const fmtTime = (s) => (s ? (formatTimeOffice(s, { hour12: false }) || '—') : '—');
 
 const STATE_COLOR = {
   draft: '#FB8C00',

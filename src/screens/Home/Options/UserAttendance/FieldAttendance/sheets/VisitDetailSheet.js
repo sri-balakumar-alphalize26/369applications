@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
+import { formatDateTimeOffice } from '@utils/officeTime';
 
 const FIELD_COLOR = '#1976D2';
 
@@ -20,10 +21,8 @@ const STATE_COLOR = {
   cancelled: '#E53935',
 };
 
-const fmtDateTime = (s) => {
-  if (!s) return '—';
-  return String(s).slice(0, 16).replace('T', ' ');
-};
+// Office timezone (from config), not raw UTC.
+const fmtDateTime = (s) => (s ? (formatDateTimeOffice(s) || '—') : '—');
 
 const m2oLabel = (v) => (Array.isArray(v) ? (v[1] || '—') : (v || '—'));
 

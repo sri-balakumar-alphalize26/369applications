@@ -5,6 +5,7 @@ import { NavigationHeader } from '@components/Header'
 import { RoundedScrollContainer, SafeAreaView } from '@components/containers'
 import { TextInput as FormInput } from '@components/common/TextInput'
 import { formatDate } from '@utils/common/date'
+import { formatDateTimeOffice, getOfficeTimezone, hydrateOfficeTimezone } from '@utils/officeTime'
 import { setPendingNewVisit } from '@utils/newVisitChannel'
 import { LoadingButton } from '@components/common/Button'
 import CustomListModal from '@components/Modal/CustomListModal'
@@ -56,6 +57,8 @@ const VisitForm = ({ navigation, route }) => {
   const { visitPlanId = "", pipelineId = "" } = route?.params || {};
   const currentUser = useAuthStore((state) => state.user);
   const [errors, setErrors] = useState({});
+  // Red banner above SAVE listing the missing mandatory fields.
+  const [submitBlockMsg, setSubmitBlockMsg] = useState('');
   const [isPurposeModalVisible, setIsPurposeModalVisible] = useState(false);
   const [isDurationModalVisible, setIsDurationModalVisible] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -773,9 +776,31 @@ const VisitForm = ({ navigation, route }) => {
     }
   };
 
+  // Make sure the office tz is loaded even if Visit was opened directly.
+  useEffect(() => { hydrateOfficeTimezone(); }, []);
+
+  // Display the visit date-time instant in the OFFICE timezone (not the device
+  // clock), matching the Odoo module + the visit detail views. Logs for verify.
+  const fmtOfficeDT = (d, label) => {
+    const out = formatDateTimeOffice(d, { second: '2-digit' });
+    console.log('[office-time]', label, ':', d ? (d instanceof Date ? d.toISOString() : d) : null,
+      '→', out, 'tz=', getOfficeTimezone());
+    return out;
+  };
+
   const handleFieldChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     if (errors[field]) setErrors((prevErrors) => ({ ...prevErrors, [field]: null }));
+    // Clear the missing-fields banner as the user fills things in.
+    if (submitBlockMsg) setSubmitBlockMsg('');
+  };
+
+  // User-friendly labels for the mandatory fields (used in the banner).
+  const REQUIRED_FIELD_LABELS = {
+    customer: 'Customer Name',
+    dateAndTime: 'Date and Time',
+    visitPurpose: 'Visit Purpose',
+    remarks: 'Remarks',
   };
 
 
@@ -795,6 +820,20 @@ const VisitForm = ({ navigation, route }) => {
       return;
     }
     const fieldsToValidate = ['customer', 'dateAndTime', 'remarks', 'visitPurpose'];
+    // Clear, plain-language feedback when required fields are empty: list exactly
+    // which ones in a red banner above SAVE (plus the existing inline highlights).
+    const preCheck = validateFields(formData, fieldsToValidate);
+    if (!preCheck.isValid) {
+      Keyboard.dismiss();
+      setErrors(preCheck.errors);
+      const missing = fieldsToValidate
+        .filter((f) => preCheck.errors[f])
+        .map((f) => REQUIRED_FIELD_LABELS[f] || f);
+      setSubmitBlockMsg(`Please fill: ${missing.join(', ')}`);
+      showToast({ type: 'error', title: 'Missing details', message: `Please fill: ${missing.join(', ')}` });
+      return;
+    }
+    setSubmitBlockMsg('');
     if (validateForm(fieldsToValidate)) {
       setIsSubmitting(true);
       try {
@@ -1034,7 +1073,7 @@ const VisitForm = ({ navigation, route }) => {
             });
           }}
         />
-        <FormInput required label="Date and time" dropIcon="calendar" editable={false} value={formatDate(formData.dateAndTime, 'dd-MM-yyyy HH:mm:ss')} />
+        <FormInput required label="Date and time" dropIcon="calendar" editable={false} value={fmtOfficeDT(formData.dateAndTime, 'visit')} />
         <FormInput label="Visit Purpose" placeholder="Select purpose of visit" dropIcon="menu-down" editable={false} required value={formData.visitPurpose?.label} validate={errors.visitPurpose} onPress={() => setIsPurposeModalVisible(true)} />
         <FormInput label="Visit Duration (mins)" placeholder="Select duration" dropIcon="menu-down" editable={false} value={formData.visitDuration?.label} onPress={() => setIsDurationModalVisible(true)} />
         <FormInput label="Remarks" placeholder="Enter Remarks" multiline textAlignVertical="top" numberOfLines={5} required value={formData.remarks} validate={errors.remarks} onChangeText={(value) => handleFieldChange('remarks', value)} />
@@ -1214,6 +1253,12 @@ const VisitForm = ({ navigation, route }) => {
           onAddIcon={false}
         />
 
+        {submitBlockMsg ? (
+          <View style={styles.submitBlockBanner}>
+            <MaterialIcons name="error-outline" size={18} color="#C62828" />
+            <Text style={styles.submitBlockText}>{submitBlockMsg}</Text>
+          </View>
+        ) : null}
         <LoadingButton title='SAVE' onPress={submit} loading={isSubmitting} />
       </RoundedScrollContainer>
 
@@ -1259,6 +1304,25 @@ const VisitForm = ({ navigation, route }) => {
 }
 
 const styles = StyleSheet.create({
+  // Missing-mandatory-fields banner above SAVE.
+  submitBlockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFEBEE',
+    borderLeftWidth: 3,
+    borderLeftColor: '#C62828',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  submitBlockText: {
+    flex: 1,
+    color: '#C62828',
+    fontSize: 13,
+    fontFamily: FONT_FAMILY.urbanistMedium,
+  },
   // In-app camera modal
   cameraModalContainer: { flex: 1, backgroundColor: '#000' },
   cameraView: { flex: 1 },

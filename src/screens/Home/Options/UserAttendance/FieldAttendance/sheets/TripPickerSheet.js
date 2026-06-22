@@ -13,14 +13,13 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
+import { formatTimeOffice } from '@utils/officeTime';
 
 const FIELD_COLOR = '#1976D2';
 const LIST_MAX_HEIGHT = Math.floor(Dimensions.get('window').height * 0.75);
 
-const fmtTime = (s) => {
-  if (!s) return '';
-  return String(s).slice(11, 16);
-};
+// Office timezone (from config), not raw UTC.
+const fmtTime = (s) => (s ? (formatTimeOffice(s, { hour12: false }) || '') : '');
 
 const STATUS_COLOR = {
   draft: '#9E9E9E',

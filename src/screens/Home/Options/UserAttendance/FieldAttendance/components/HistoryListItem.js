@@ -2,17 +2,17 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { FONT_FAMILY } from '@constants/theme';
+import { formatTimeOffice, formatDateOffice } from '@utils/officeTime';
 
 const FIELD_COLOR = '#1976D2';
 
-const fmtTime = (s) => (s ? String(s).slice(11, 16) : '--:--');
+// Times/dates shown in the OFFICE timezone (from the Odoo config), not the
+// phone's clock or raw UTC.
+const fmtTime = (s) => (s ? (formatTimeOffice(s, { hour12: false }) || '--:--') : '--:--');
 
 const fmtDate = (s) => {
   if (!s) return '';
-  // Odoo returns 'YYYY-MM-DD HH:MM:SS' UTC. Display as DD MMM.
-  const d = new Date(String(s).replace(' ', 'T') + 'Z');
-  if (isNaN(d.getTime())) return String(s).slice(0, 10);
-  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+  return formatDateOffice(s) || String(s).slice(0, 10);
 };
 
 const tripRefOf = (t) => {

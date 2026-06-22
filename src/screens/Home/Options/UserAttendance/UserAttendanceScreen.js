@@ -44,6 +44,7 @@ import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendanc
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
 import ClosePreviousTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/ClosePreviousTripSheet';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
+import { formatTimeOffice, formatDateOffice } from '@utils/officeTime';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { MaterialIcons, Feather, Ionicons } from '@expo/vector-icons';
@@ -131,6 +132,10 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [loading, setLoading] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
   const [todayAttendance, setTodayAttendance] = useState(null);
+  // True while the office today-attendance is being fetched — gates the office
+  // section so it shows a loader instead of flashing the Check-In button before
+  // the real (cached/server) state is known.
+  const [officeLoading, setOfficeLoading] = useState(true);
   const [verifiedEmployee, setVerifiedEmployee] = useState(null);
   const [locationStatus, setLocationStatus] = useState(null);
   const [deviceId, setDeviceId] = useState(null);
@@ -448,6 +453,16 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     if (attendanceMode !== 'field' || !isVerified || !verifiedEmployee?.id) return;
     refreshFieldAttendance();
   }, [attendanceMode, isVerified, verifiedEmployee, offline, refreshFieldAttendance]);
+
+  // Office: fetch today's attendance whenever office mode is active + verified so
+  // the section shows a loader (officeLoading) until the real state is known,
+  // instead of flashing the Check-In button from stale/empty state.
+  useEffect(() => {
+    if (attendanceMode !== 'office' || !isVerified || !verifiedEmployee?.id) return;
+    setOfficeLoading(true);
+    loadTodayAttendanceForEmployee(verifiedEmployee.id, verifiedEmployee.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendanceMode, isVerified, verifiedEmployee?.id]);
 
   // Field Attendance history loader. `reset=true` for first page / new filters,
   // `reset=false` to append the next page.
@@ -1370,11 +1385,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   };
 
   const loadTodayAttendanceForEmployee = async (employeeId, employeeName) => {
+    setOfficeLoading(true);
     try {
       const attendance = await getTodayAttendanceByEmployeeId(employeeId, employeeName);
       setTodayAttendance(attendance);
     } catch (error) {
       console.error('Failed to load attendance:', error);
+    } finally {
+      setOfficeLoading(false);
     }
   };
 
@@ -1523,31 +1541,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [todayAttendance?.id, todayAttendance?.offlineQueueId, verifiedEmployee?.id]);
 
-  const formatDate = (date) => {
-    return date.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+  // All three render in the OFFICE timezone (from the Odoo config), not the
+  // device clock — so the live time + stamps match Odoo web / the office.
+  const formatDate = (date) =>
+    formatDateOffice(date, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  const formatTime = (date) => {
-    return date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    });
-  };
+  const formatTime = (date) => formatTimeOffice(date, { withSeconds: true });
 
-  const formatTimeOnly = (date) => {
-    return date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
-  };
+  const formatTimeOnly = (date) => formatTimeOffice(date);
 
   const getTodayDateString = () => {
     const d = new Date();
@@ -2208,9 +2209,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           values: combinedValues,
         });
 
-        const displayTime = now.toLocaleTimeString('en-US', {
-          hour: '2-digit', minute: '2-digit', hour12: true,
-        });
+        const displayTime = formatTimeOffice(now);
 
         showToastMessage('Check-out saved offline. Will sync when online.');
         // Show "All Done" for this session so the user sees the confirmation
@@ -3463,7 +3462,37 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   };
 
+  // Cross-mode guard banner: the day's attendance was started through the OTHER
+  // mode, so this mode must NOT show its own check-in UI. Centered yellow card,
+  // red font, with a button that jumps to the correct mode. `goTo` is the mode to
+  // switch to ('field' shown inside Office, 'office' shown inside Field).
+  const renderCrossModeBanner = (goTo) => {
+    const otherLabel = goTo === 'field' ? 'Field Attendance' : 'Office Attendance';
+    return (
+      <View style={styles.crossModeWrap}>
+        <View style={styles.crossModeBanner}>
+          <MaterialIcons name="info-outline" size={scale(32)} color="#C62828" />
+          <Text style={styles.crossModeText}>
+            Check-in done through {otherLabel}.{'\n'}Please go there to continue.
+          </Text>
+          <TouchableOpacity
+            style={styles.crossModeBtn}
+            onPress={() => setAttendanceMode(goTo)}
+            activeOpacity={0.85}
+          >
+            <MaterialIcons name="arrow-forward" size={scale(16)} color="#fff" />
+            <Text style={styles.crossModeBtnText}>Go to {otherLabel}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
   const renderFieldSection = () => {
+    // Started through Office/Manual today → show only the "go to Office" banner.
+    if (fieldStatus === 'manual_exists') {
+      return renderCrossModeBanner('office');
+    }
     const FIELD_COLOR = '#1976D2';
     const trip = fieldData?.trip;
     const visits = fieldData?.visits || [];
@@ -3716,7 +3745,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                 </View>
                 <Text style={styles.statusCardLabel}>Check In</Text>
                 <Text style={[styles.statusCardValue, fieldData?.check_in && { color: '#4CAF50' }]}>
-                  {fieldData?.check_in?.slice(11, 16) || '--:--'}
+                  {fieldData?.check_in ? (formatTimeOffice(fieldData.check_in, { hour12: false }) || '--:--') : '--:--'}
                 </Text>
               </View>
               <View style={[styles.statusCard, fieldData?.check_out ? styles.statusCardActive : styles.statusCardInactive]}>
@@ -3725,7 +3754,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
                 </View>
                 <Text style={styles.statusCardLabel}>Check Out</Text>
                 <Text style={[styles.statusCardValue, fieldData?.check_out && { color: '#F44336' }]}>
-                  {fieldData?.check_out?.slice(11, 16) || '--:--'}
+                  {fieldData?.check_out ? (formatTimeOffice(fieldData.check_out, { hour12: false }) || '--:--') : '--:--'}
                 </Text>
               </View>
             </View>
@@ -3793,6 +3822,23 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // =============================================
   const renderOfficeSection = () => {
     const OFFICE_COLOR = COLORS.primaryThemeColor;
+
+    // Still fetching today's record → show a loader so the Check-In button never
+    // flashes from stale/empty state before the real data arrives.
+    if (officeLoading) {
+      return (
+        <View style={styles.crossModeWrap}>
+          <ActivityIndicator size="large" color={OFFICE_COLOR} />
+          <Text style={styles.officeLoadingText}>Loading your attendance…</Text>
+        </View>
+      );
+    }
+
+    // Started through Field today → show only the "go to Field" banner, hide the
+    // office check-in UI so the user can't create a conflicting record here.
+    if (todayAttendance?.attendance_source === 'field') {
+      return renderCrossModeBanner('field');
+    }
 
     const renderOfficeHistoryTab = () => (
       <View style={{ marginTop: scale(10) }}>
@@ -3879,13 +3925,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             <View style={{ backgroundColor: '#fff', borderRadius: scale(16), padding: scale(18) }}>
               {(() => {
                 const r = officeDetailRow || {};
-                const fmtT = (s) => (s ? String(s).slice(11, 16) : '—');
+                // Office timezone (from config), not raw UTC / device clock.
+                const fmtT = (s) => (s ? (formatTimeOffice(s, { hour12: false }) || '—') : '—');
                 const fmtD = (s) => {
                   if (!s) return '';
-                  const d = new Date(String(s).replace(' ', 'T') + 'Z');
-                  return isNaN(d.getTime())
-                    ? String(s).slice(0, 10)
-                    : d.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+                  return formatDateOffice(s, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' })
+                    || String(s).slice(0, 10);
                 };
                 const isLate = !!r.is_late;
                 const ded = Number(r.deduction_amount || 0);
@@ -4788,6 +4833,13 @@ const styles = StyleSheet.create({
   wfhBadgeText: { fontSize: scale(12), fontWeight: 'bold', color: '#2196F3', fontFamily: FONT_FAMILY.urbanistBold },
 
   // Status Cards
+  // Cross-mode guard banner — centered yellow card with red font.
+  crossModeWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: scale(40), paddingHorizontal: scale(16) },
+  crossModeBanner: { width: '100%', alignItems: 'center', backgroundColor: '#FFF8E1', borderRadius: scale(14), borderWidth: 1, borderColor: '#FFE082', paddingVertical: scale(28), paddingHorizontal: scale(20), gap: scale(14) },
+  crossModeText: { color: '#C62828', fontFamily: FONT_FAMILY.urbanistBold, fontSize: scale(15), textAlign: 'center', lineHeight: scale(22) },
+  crossModeBtn: { flexDirection: 'row', alignItems: 'center', gap: scale(6), backgroundColor: '#C62828', borderRadius: scale(10), paddingVertical: scale(10), paddingHorizontal: scale(20) },
+  crossModeBtnText: { color: '#fff', fontFamily: FONT_FAMILY.urbanistBold, fontSize: scale(13) },
+  officeLoadingText: { marginTop: scale(12), fontSize: scale(13), fontFamily: FONT_FAMILY.urbanistMedium, color: '#666', textAlign: 'center' },
   statusCardsContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: scale(10) },
   statusCard: { flex: 1, backgroundColor: COLORS.white, borderRadius: scale(12), padding: scale(10), alignItems: 'center', marginHorizontal: scale(4), shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
   statusCardActive: { borderWidth: 1, borderColor: '#E8E8E8' },

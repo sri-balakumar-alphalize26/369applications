@@ -20,6 +20,7 @@ import {
   readVehicleLocationsOdoo,
 } from '@api/services/generalApi';
 import { submitLateReason } from '@services/AttendanceService';
+import { formatDateTimeOffice } from '@utils/officeTime';
 import { consumePendingNewTrip } from '@utils/newTripChannel';
 import { consumePendingNewVisit } from '@utils/newVisitChannel';
 import {
@@ -647,11 +648,17 @@ const FieldAttendanceSection = ({
     // so signal the restored TripFormSheet to also re-open its internal
     // picker on visibility.
     setAutoOpenPickerOnRestore(true);
+    // Carry the FA mode + attendance so that starting the trip from the edit
+    // flow writes the pending-secondary marker (outbound two-phase flow), just
+    // like handleCreateNewTrip does. Without these, Start Trip via edit never
+    // persisted the marker → handleSaveOutbound found stored=null → the Pending
+    // Trip "Enter Visits" card never appeared.
+    const faMode = lastActiveSheetRef.current;
     closeAllSheets();
     // `returnTo: 'fieldAttendance'` makes VehicleTrackingForm route its
     // post-Save / post-Start-Trip navigation back HERE (via the pending-
     // channel + goBack), instead of falling through to the VTF list page.
-    navigation.navigate('VehicleTrackingForm', { tripData: trip, returnTo: 'fieldAttendance' });
+    navigation.navigate('VehicleTrackingForm', { tripData: trip, returnTo: 'fieldAttendance', faMode, attendanceId });
   };
 
   const handleCreateNewVisit = (params) => {
@@ -987,6 +994,7 @@ const FieldAttendanceSection = ({
           trip={state.source_trip}
           visits={state.source_visits}
           readOnly={isCheckedOut}
+          onEditTrip={handleEditTripFromPicker}
           onOpenTrip={() => handleOpenTrip(state.source_trip.id)}
           onViewVisits={() => handleViewVisits(state.source_visits)}
           onAddFuel={() => handleAddFuel(state.source_trip.id)}
@@ -1067,6 +1075,7 @@ const FieldAttendanceSection = ({
               line={line}
               index={idx}
               readOnly={isCheckedOut}
+              onEditTrip={handleEditTripFromPicker}
               onOpenTrip={() => handleOpenTrip(line.trip?.id)}
               onViewVisits={line.visit ? () => handleViewVisits(line.visit) : null}
               onAddFuel={() => handleAddFuel(line.trip?.id)}
@@ -1100,6 +1109,7 @@ const FieldAttendanceSection = ({
               index={idx}
               isReturn
               readOnly={isCheckedOut}
+              onEditTrip={handleEditTripFromPicker}
               onOpenTrip={() => handleOpenTrip(line.trip?.id)}
               onAddFuel={() => handleAddFuel(line.trip?.id)}
             />
@@ -1393,13 +1403,14 @@ const FieldAttendanceSection = ({
 // ============================================================================
 // Sub-components
 // ============================================================================
-const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
+const TripCard = ({ label, trip, visits, readOnly, onEditTrip, onOpenTrip, onViewVisits, onAddFuel }) => {
   const hasVisits = Array.isArray(visits) && visits.length > 0;
   const fuelCount = Number(trip?.fuel_log_count || 0);
   const fuelAdded = fuelCount > 0 || Number(trip?.total_fuel_litres || 0) > 0;
   const fuelBadge = fuelAdded
     ? (fuelCount > 0 ? `${fuelCount} fuel log${fuelCount === 1 ? '' : 's'} added` : 'Fuel added')
     : '';
+  const isDraft = trip?.trip_status === 'draft';
   return (
     <View style={styles.tripCard}>
       <Row k={`${label}:`} v={trip.ref || `#${trip.id}`} />
@@ -1408,6 +1419,7 @@ const TripCard = ({ label, trip, visits, readOnly, onOpenTrip, onViewVisits, onA
       <Row k="Status:" v={trip.trip_status || 'draft'} />
       <ActionRow
         readOnly={readOnly}
+        onEditTrip={isDraft && onEditTrip ? () => onEditTrip(trip) : null}
         onOpenTrip={onOpenTrip}
         onViewVisits={hasVisits ? onViewVisits : null}
         onAddFuel={trip?.trip_status === 'in_progress' && onAddFuel ? onAddFuel : null}
@@ -1466,7 +1478,7 @@ const PendingTripCard = ({ pending, hydrated, busy, onEnterVisits }) => {
 // Mirrors the Odoo module's secondary-trip card layout: two side-by-side
 // columns — TRIP DETAILS on the left, VISIT DETAILS on the right — plus
 // Open Source Trip / View Visits / Add Fuel buttons at the bottom.
-const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits, onAddFuel }) => {
+const TripLineRow = ({ line, index, isReturn, readOnly, onEditTrip, onOpenTrip, onViewVisits, onAddFuel }) => {
   let badge = null;
   if (isReturn) {
     if (line.is_office_to_home_leg) badge = 'Office → Home';
@@ -1492,7 +1504,7 @@ const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits
     const mm = Math.round((n - hh) * 60);
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   };
-  const fmtDT = (s) => (s ? String(s).slice(0, 16).replace('T', ' ') : '—');
+  const fmtDT = (s) => (s ? (formatDateTimeOffice(s) || '—') : '—');
   return (
     <View style={[styles.tripCard, isReturn && styles.tripCardReturn]}>
       {badge ? <Text style={styles.legBadge}>{badge}</Text> : null}
@@ -1524,6 +1536,7 @@ const TripLineRow = ({ line, index, isReturn, readOnly, onOpenTrip, onViewVisits
       </View>
       <ActionRow
         readOnly={readOnly}
+        onEditTrip={trip?.trip_status === 'draft' && onEditTrip ? () => onEditTrip(trip) : null}
         onOpenTrip={onOpenTrip}
         onViewVisits={visit && onViewVisits ? onViewVisits : null}
         onAddFuel={trip?.trip_status === 'in_progress' && onAddFuel ? onAddFuel : null}
@@ -1545,15 +1558,19 @@ const ColRow = ({ k, v }) => (
 // trip card. Hidden once the attendance is checked out. Add Fuel only
 // appears for in_progress trips (matches the module — can't add fuel to
 // an ended or cancelled trip).
-const ActionRow = ({ readOnly, onOpenTrip, onViewVisits, onAddFuel, fuelBadge }) => {
+const ActionRow = ({ readOnly, onEditTrip, onOpenTrip, onViewVisits, onAddFuel, fuelBadge }) => {
   // After checkout we keep the navigation actions visible (Open Source
   // Trip, View Visits) and the fuel badge — they're read-only. Only the
-  // genuinely-edit action (Add Fuel) is suppressed, mirroring the Odoo
+  // genuinely-edit actions (Edit, Add Fuel) are suppressed, mirroring the Odoo
   // web module's locked-card layout.
   const effectiveAddFuel = readOnly ? null : onAddFuel;
-  if (!onOpenTrip && !onViewVisits && !effectiveAddFuel && !fuelBadge) return null;
+  const effectiveEdit = readOnly ? null : onEditTrip;
+  if (!effectiveEdit && !onOpenTrip && !onViewVisits && !effectiveAddFuel && !fuelBadge) return null;
   return (
     <View style={styles.cardActionsRow}>
+      {effectiveEdit ? (
+        <CardBtn icon="edit" label="Edit Trip" onPress={effectiveEdit} />
+      ) : null}
       {onOpenTrip ? (
         <CardBtn icon="open-in-new" label="Open Source Trip" onPress={onOpenTrip} />
       ) : null}

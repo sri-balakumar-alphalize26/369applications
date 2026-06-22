@@ -32,6 +32,9 @@ const ClosePreviousTripSheet = ({
   const [errorText, setErrorText] = useState('');
   // status: idle | checking | verified | too_far | unavailable | no_coords
   const [verify, setVerify] = useState({ status: 'idle', distance: null });
+  // Destination verify is "retry once, then skip" (matches the source check):
+  // the 1st too-far Save tap blocks with a retry hint; the 2nd saves anyway.
+  const [saveAttempts, setSaveAttempts] = useState(0);
 
   // Run the destination GPS check. 'too_far' is the only state that BLOCKS Save;
   // 'unavailable'/'no_coords' allow close (so drivers aren't trapped).
@@ -69,13 +72,16 @@ const ClosePreviousTripSheet = ({
       setEndKm('');
       setErrorText('');
       setVerify({ status: 'idle', distance: null });
+      setSaveAttempts(0);
       // Auto-verify on open so the driver immediately sees their status.
       runVerify();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  const blockedByVerify = verify.status === 'too_far';
+  // Save is disabled only while the check is actively running. When too_far the
+  // button stays ENABLED so tapping it surfaces a red error (chosen UX).
+  const verifyChecking = verify.status === 'checking';
 
   const handleSave = () => {
     console.log(TAG, 'Save clicked', { endKm, previousStartKm, verifyStatus: verify.status });
@@ -90,10 +96,24 @@ const ClosePreviousTripSheet = ({
       setErrorText(`End KM must be greater than Start KM (${previousStartKm || 0}).`);
       return;
     }
-    if (blockedByVerify) {
-      console.warn(TAG, '  blocked: too far from destination');
-      setErrorText(`You're ${Math.round(verify.distance)} m from the destination. Move within ${verifyRadiusM} m to close.`);
-      return;
+    // Verify gate — only the 'verified'/'unavailable'/'no_coords' states may save.
+    if (destinationCoords) {
+      if (verify.status === 'checking' || verify.status === 'idle') {
+        console.warn(TAG, '  blocked: still verifying location');
+        setErrorText('Verifying your location — please wait…');
+        return;
+      }
+      if (verify.status === 'too_far') {
+        // Retry once, then skip: 1st tap blocks with a hint, 2nd tap saves anyway.
+        if (saveAttempts >= 1) {
+          console.warn(TAG, '  too_far but 2nd attempt — skipping verify, saving anyway');
+        } else {
+          console.warn(TAG, '  blocked: too far from destination (retry available)');
+          setSaveAttempts((a) => a + 1);
+          setErrorText(`You're ${Math.round(verify.distance)} m from the destination — move within ${verifyRadiusM} m, or tap ${saveLabel} again to save anyway.`);
+          return;
+        }
+      }
     }
     console.log(TAG, '  validation OK → onSave');
     setErrorText('');
@@ -177,13 +197,15 @@ const ClosePreviousTripSheet = ({
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.saveBtn, (saving || blockedByVerify) && { opacity: 0.5 }]}
+                style={[styles.saveBtn, (saving || verifyChecking) && { opacity: 0.5 }]}
                 onPress={handleSave}
-                disabled={saving || blockedByVerify}
+                disabled={saving || verifyChecking}
               >
                 {saving
                   ? <ActivityIndicator color="#fff" />
-                  : <><MaterialIcons name="check" size={16} color="#fff" /><Text style={styles.saveText}>{saveLabel}</Text></>}
+                  : verifyChecking
+                    ? <><ActivityIndicator color="#fff" size="small" /><Text style={styles.saveText}>Verifying…</Text></>
+                    : <><MaterialIcons name="check" size={16} color="#fff" /><Text style={styles.saveText}>{saveLabel}</Text></>}
               </TouchableOpacity>
             </View>
           </View>

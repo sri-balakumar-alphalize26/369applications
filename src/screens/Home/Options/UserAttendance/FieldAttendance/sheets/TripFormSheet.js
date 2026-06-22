@@ -213,6 +213,13 @@ const TripFormSheet = ({
       console.warn(TAG, '  validation failed: no trip picked');
       setErrorText('Please pick a trip.'); return;
     }
+    // A draft trip (Saved but not Started) can't be used yet — the driver must
+    // open it and tap Start Trip first.
+    if (selectedTrip?.trip_status === 'draft') {
+      console.warn(TAG, '  validation failed: selected trip is still draft (not started)');
+      setErrorText('Start the trip first — tap the ✏️ to open it and press Start Trip.');
+      return;
+    }
     const km = tripStartKm != null ? tripStartKm : Number(startKm);
     if (!Number.isFinite(km) || km <= 0) {
       console.warn(TAG, '  validation failed: start_km <= 0');
@@ -300,18 +307,36 @@ const TripFormSheet = ({
                   <View style={styles.lockedField}>
                     <Text style={styles.fieldVal} numberOfLines={1}>
                       {selectedTrip.ref || `Trip #${selectedTrip.id}`}
+                      {selectedTrip.trip_status === 'draft' ? '  (Draft)' : ''}
                     </Text>
-                    <TouchableOpacity
-                      onPress={() => { setSelectedTripId(null); setErrorText(''); }}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      disabled={saving}
-                    >
-                      <MaterialIcons name="close" size={18} color="#888" />
-                    </TouchableOpacity>
+                    <View style={styles.lockedActions}>
+                      {/* Draft trips can be opened in VehicleTracking to Start. */}
+                      {selectedTrip.trip_status === 'draft' && onEditTrip ? (
+                        <TouchableOpacity
+                          onPress={() => onEditTrip(selectedTrip)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          disabled={saving}
+                        >
+                          <MaterialIcons name="edit" size={18} color={FIELD_COLOR} />
+                        </TouchableOpacity>
+                      ) : null}
+                      <TouchableOpacity
+                        onPress={() => { setSelectedTripId(null); setErrorText(''); }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        disabled={saving}
+                      >
+                        <MaterialIcons name="close" size={18} color="#888" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   <Text style={styles.detail}>
                     {(selectedTrip.source_id?.[1] || selectedTrip.source || '')} → {(selectedTrip.destination_id?.[1] || selectedTrip.destination || '')}
                   </Text>
+                  {selectedTrip.trip_status === 'draft' ? (
+                    <Text style={styles.draftHint}>
+                      This trip is a draft — tap ✏️ to open it and press Start Trip before saving.
+                    </Text>
+                  ) : null}
                 </>
               ) : ((mode === 'outbound' || mode === 'return') && previousDestinationId && onCreateNewTrip) ? (
                 <TouchableOpacity
@@ -491,7 +516,9 @@ const styles = StyleSheet.create({
   },
   fieldVal: { flex: 1, fontSize: 13, color: '#222', fontFamily: FONT_FAMILY.urbanistMedium },
   placeholder: { color: '#999' },
+  lockedActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   detail: { fontSize: 11, color: '#777', fontFamily: FONT_FAMILY.urbanistMedium, marginTop: 4 },
+  draftHint: { fontSize: 11.5, color: '#C62828', fontFamily: FONT_FAMILY.urbanistMedium, marginTop: 6 },
   createCta: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: '#F5F9FF', borderRadius: 10, padding: 12,

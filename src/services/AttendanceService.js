@@ -6,6 +6,7 @@ import ODOO_BASE_URL from '@api/config/odooConfig';
 import offlineQueue from '@utils/offlineQueue';
 import { isOnline } from '@utils/networkStatus';
 import { computeLocalLateInfo } from '@utils/lateLogic';
+import { setOfficeTimezone, formatTimeOffice } from '@utils/officeTime';
 
 // =============================================================================
 // Tiny attendance cache (for offline-tolerant reads).
@@ -75,16 +76,12 @@ const formatDateForOdoo = (date) => {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
-// Convert Odoo UTC datetime string to local time display (HH:MM AM/PM)
+// Convert an Odoo UTC datetime string to a HH:MM AM/PM display in the OFFICE
+// timezone (e.g. Asia/Muscat), not the device timezone. Falls back to device
+// time when the office tz isn't known yet.
 const odooUtcToLocalDisplay = (utcString) => {
   if (!utcString) return null;
-  // Odoo returns "YYYY-MM-DD HH:MM:SS" in UTC — append Z to parse as UTC
-  const d = new Date(utcString.replace(' ', 'T') + 'Z');
-  return d.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
+  return formatTimeOffice(utcString);
 };
 
 // Get today's date string (YYYY-MM-DD)
@@ -1715,6 +1712,8 @@ export const getLateConfig = async (employeeId) => {
     const result = response.data?.result;
     if (result) {
       console.log('[Attendance] Late config:', JSON.stringify(result));
+      // Make the office timezone available to the synchronous time formatters.
+      setOfficeTimezone(result.timezone);
       // Cache the raw config so the offline late-reason flow can read it.
       try {
         await AsyncStorage.setItem(
@@ -1745,7 +1744,11 @@ export const getLateConfig = async (employeeId) => {
 export const getCachedLateConfig = async (employeeId) => {
   try {
     const raw = await AsyncStorage.getItem(`@cache:lateConfig:${employeeId}`);
-    return raw ? JSON.parse(raw) : null;
+    const cfg = raw ? JSON.parse(raw) : null;
+    // Seed the office timezone for the time formatters (covers offline / before
+    // a fresh getLateConfig has run this session).
+    if (cfg?.timezone) setOfficeTimezone(cfg.timezone);
+    return cfg;
   } catch {
     return null;
   }

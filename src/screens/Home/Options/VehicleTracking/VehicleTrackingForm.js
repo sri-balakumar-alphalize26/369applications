@@ -34,6 +34,7 @@ import { cancelVehicleTrackingTripOdoo, fetchInvoiceByIdOdoo, fetchInvoiceByQrOd
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { StyledAlertModal } from '@components/Modal';
 import { verifyWithinRadius, DEST_VERIFY_RADIUS_M } from '@utils/geoVerify';
+import { formatDateTimeOffice, getOfficeTimezone, hydrateOfficeTimezone } from '@utils/officeTime';
 // validation will be handled inline in this file to avoid stale state issues
 // These Odoo `vehicle.tracking` fields are mapped in this form: amount, battery_checking, company_id, completion_status, coolant_water, create_date, create_uid, daily_checks, date, destination, display_name, driver_id, duration, end_fuel_checking, end_fuel_document, end_fuel_document_filename, end_fuel_status, end_km, end_latitude, end_longitude, end_time, end_trip, estimated_time, fuel_checking, fuel_status, id, image_url, invoice_line_ids, invoice_match, invoice_message, invoice_number, km_travelled, number_plate, oil_checking, purpose_of_visit, ref, remarks, source, start_km, start_latitude
 
@@ -84,6 +85,17 @@ const VehicleTrackingForm = ({ navigation, route }) => {
     // Convert to UTC and format as YYYY-MM-DD HH:mm:ss
     return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
   };
+  // Display a start/end time instant in the OFFICE timezone (Asia/Muscat), not the
+  // device clock — matching the Odoo module. Logs the conversion for verification.
+  const fmtOfficeDT = (d, label) => {
+    const out = formatDateTimeOffice(d, { second: '2-digit' });
+    console.log('[office-time]', label, ':', d ? (d instanceof Date ? d.toISOString() : d) : null,
+      '→', out, 'tz=', getOfficeTimezone());
+    return out;
+  };
+  // Safety net: make sure the office tz is loaded even if this form was opened
+  // directly (not via attendance, which normally sets it).
+  useEffect(() => { hydrateOfficeTimezone(); }, []);
   const [currentCoords, setCurrentCoords] = useState(null);
   const [currentLocationName, setCurrentLocationName] = useState('');
   const [showAddFuel, setShowAddFuel] = useState(false);
@@ -494,6 +506,13 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const SOURCE_MATCH_THRESHOLD = 100; // meters
   // Shown while the mandatory source GPS check runs at Start Trip.
   const [sourceVerifying, setSourceVerifying] = useState(false);
+  // Red banner above the Save / Start Trip buttons: missing mandatory fields or
+  // source-verify failure. Cleared on a successful start / next valid attempt.
+  const [startBlockMsg, setStartBlockMsg] = useState('');
+  // Source verify is "retry once, then skip": 1st too-far tap blocks with a
+  // retry hint; the 2nd tap skips the GPS check and starts anyway. Resets when
+  // the source changes.
+  const [sourceVerifyAttempts, setSourceVerifyAttempts] = useState(0);
 
   // Destination coords (from picked dropdown item) and a loading flag for the
   // OpenRouteService route fetch. Both reset whenever destination changes.
@@ -877,6 +896,14 @@ const VehicleTrackingForm = ({ navigation, route }) => {
         [field]: null
       }));
     }
+    // Editing any mandatory start field clears the red Start-Trip banner.
+    if (['source', 'destination', 'startKM'].includes(field)) {
+      setStartBlockMsg('');
+    }
+    // A new source restarts the verify retry count (one retry per source).
+    if (field === 'source') {
+      setSourceVerifyAttempts(0);
+    }
   };
 
   const handleChecklistChange = (field, value) => {
@@ -1107,6 +1134,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
   const handleDropdownSelect = async (field, item) => {
     if (field === 'purposeOfVisit') {
       setPurposeOfVisit(item.name);
+      setStartBlockMsg('');
       setIsVisible(false);
       return;
     }
@@ -2807,7 +2835,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
               completed states (set at line 324). */}
           <FormInput
             label="Start Time :"
-            value={formatDateTime(formData.startTime)}
+            value={fmtOfficeDT(formData.startTime, 'start')}
             onPress={() => {
               if (formData.isTripStarted) {
                 console.log('[START-TIME] tap ignored — trip already started/ended; start_time is frozen', {
@@ -2841,7 +2869,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           {/* End Time */}
           <FormInput
             label="End Time :"
-            value={formatDateTime(formData.endTime)}
+            value={fmtOfficeDT(formData.endTime, 'end')}
             onPress={() => { if (endFieldsLocked) return; setIsEndTimePickerVisible(true); }}
             editable={false}
           />
@@ -3108,6 +3136,13 @@ const VehicleTrackingForm = ({ navigation, route }) => {
           (() => {
             console.log('[VehicleTrackingForm] Rendering Save + Start Trip row');
             return (
+              <>
+              {startBlockMsg ? (
+                <View style={styles.startBlockBanner}>
+                  <MaterialCommunityIcons name="alert-circle" size={18} color="#C62828" />
+                  <Text style={styles.startBlockText}>{startBlockMsg}</Text>
+                </View>
+              ) : null}
               <View style={[styles.actionGroup, styles.actionRow]}>
                 <View style={styles.actionRowItem}>
                   <LoadingButton
@@ -3137,27 +3172,55 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                     onPress={async () => {
                       console.log('[VehicleTrackingForm] Start button tapped');
                       setActiveAction('start');
-                      // Mandatory SOURCE verification (150 m): the driver must be
-                      // at the source to start. Blocks only when measured too far;
-                      // GPS-unavailable / no source coords allow start (no trap).
+                      setStartBlockMsg('');
+                      // Mandatory fields for a new trip: Source, Destination,
+                      // Start KM (> 0), Purpose of Visit (+ base required). Show
+                      // what's missing in a red banner above the buttons and
+                      // highlight the inline fields; don't start.
+                      const startKmNum = parseFloat(formData.startKM);
+                      const missing = [];
+                      const inlineErrs = {};
+                      if (!formData.date) { missing.push('Date'); inlineErrs.date = 'Date is required'; }
+                      if (!formData.vehicle) { missing.push('Vehicle'); inlineErrs.vehicle = 'Vehicle is required'; }
+                      if (!formData.driver) { missing.push('Driver'); inlineErrs.driver = 'Driver is required'; }
+                      if (!formData.plateNumber) { missing.push('Plate Number'); inlineErrs.plateNumber = 'Plate Number is required'; }
+                      if (!formData.source) { missing.push('Source'); inlineErrs.source = 'Source is required'; }
+                      if (!formData.destination) { missing.push('Destination'); inlineErrs.destination = 'Destination is required'; }
+                      if (!formData.startKM || !Number.isFinite(startKmNum) || startKmNum <= 0) { missing.push('Start KM'); inlineErrs.startKM = 'Start KM is required and must be greater than 0'; }
+                      if (!purposeOfVisit || (typeof purposeOfVisit === 'string' && !purposeOfVisit.trim())) { missing.push('Purpose of Visit'); inlineErrs.purposeOfVisit = 'Purpose of Visit is required'; }
+                      if (missing.length) {
+                        setErrors(prev => ({ ...prev, ...inlineErrs }));
+                        setStartBlockMsg(`Please fill: ${missing.join(', ')}`);
+                        setActiveAction(null);
+                        return;
+                      }
+                      // SOURCE verification (150 m): retry once, then skip. The
+                      // 1st too-far tap blocks with a retry hint; the 2nd tap
+                      // skips the GPS check and starts anyway. GPS-unavailable /
+                      // no source coords allow start on the 1st tap (no trap).
                       if (sourceCoords && Number.isFinite(sourceCoords.latitude) && Number.isFinite(sourceCoords.longitude)) {
-                        try {
-                          setSourceVerifying(true);
-                          showToastMessage('Verifying you are at the source…', 'info');
-                          const res = await verifyWithinRadius(sourceCoords, DEST_VERIFY_RADIUS_M);
-                          console.log('[source-verify]', res);
-                          if (res.status === 'too_far') {
-                            showToastMessage(`You're ${Math.round(res.distance)} m from the source — move within ${DEST_VERIFY_RADIUS_M} m to start.`, 'error');
-                            setActiveAction(null);
-                            return;
+                        if (sourceVerifyAttempts >= 1) {
+                          showToastMessage('Starting without source verification.', 'warning');
+                        } else {
+                          try {
+                            setSourceVerifying(true);
+                            showToastMessage('Verifying you are at the source…', 'info');
+                            const res = await verifyWithinRadius(sourceCoords, DEST_VERIFY_RADIUS_M);
+                            console.log('[source-verify]', res);
+                            if (res.status === 'too_far') {
+                              setSourceVerifyAttempts(a => a + 1);
+                              setStartBlockMsg(`You're ${Math.round(res.distance)} m from the source — move within ${DEST_VERIFY_RADIUS_M} m, or tap Start Trip again to start anyway.`);
+                              setActiveAction(null);
+                              return;
+                            }
+                            if (res.status === 'verified') {
+                              showToastMessage(`Source verified (${Math.round(res.distance)} m, ±${Math.round(res.accuracy || 0)} m)`, 'success');
+                            } else {
+                              showToastMessage("GPS unavailable — couldn't verify source, starting anyway", 'warning');
+                            }
+                          } finally {
+                            setSourceVerifying(false);
                           }
-                          if (res.status === 'verified') {
-                            showToastMessage(`Source verified (${Math.round(res.distance)} m, ±${Math.round(res.accuracy || 0)} m)`, 'success');
-                          } else {
-                            showToastMessage("GPS unavailable — couldn't verify source, starting anyway", 'warning');
-                          }
-                        } finally {
-                          setSourceVerifying(false);
                         }
                       }
                       setFormData(prev => ({ ...prev, startTrip: true, endTrip: false }));
@@ -3169,6 +3232,7 @@ const VehicleTrackingForm = ({ navigation, route }) => {
                   />
                 </View>
               </View>
+              </>
             );
           })()
         ) : (
@@ -4052,6 +4116,23 @@ const styles = StyleSheet.create({
   },
   actionRowItem: {
     flex: 1,
+  },
+  startBlockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFEBEE',
+    borderLeftWidth: 3,
+    borderLeftColor: '#C62828',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+  },
+  startBlockText: {
+    flex: 1,
+    color: '#C62828',
+    fontSize: 13,
   },
   actionCard: {
     flexDirection: 'row',
