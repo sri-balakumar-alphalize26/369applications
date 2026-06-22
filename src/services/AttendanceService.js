@@ -543,7 +543,7 @@ export const debugListAllEmployees = async () => {
 };
 
 // Find employee by device ID (custom field x_device_id on hr.employee)
-export const getEmployeeByDeviceId = async (deviceId) => {
+export const getEmployeeByDeviceId = async (deviceId, deviceName = null) => {
   console.log('[Attendance] Finding employee by device ID:', deviceId);
 
   try {
@@ -592,7 +592,7 @@ export const getEmployeeByDeviceId = async (deviceId) => {
           method: 'read',
           args: [allDeviceIds],
           kwargs: {
-            fields: ['id', 'device_id', 'employee_id'],
+            fields: ['id', 'device_id', 'employee_id', 'active'],
           },
         },
       },
@@ -602,11 +602,18 @@ export const getEmployeeByDeviceId = async (deviceId) => {
     const devices = deviceResponse.data?.result || [];
     console.log('[Attendance] Device records fetched:', devices.length);
 
-    const matchedDevice = devices.find((d) => d.device_id === deviceId);
+    // Match the device id AND require it to be active (honor the Active flag).
+    const matchedDevice = devices.find((d) => d.device_id === deviceId && d.active !== false);
 
     if (!matchedDevice) {
-      console.log('[Attendance] No device record matches:', deviceId);
-      return { success: false, error: 'No employee registered for this device' };
+      const inactiveMatch = devices.some((d) => d.device_id === deviceId && d.active === false);
+      console.log('[Attendance] No active device record matches:', deviceId, 'inactiveMatch=', inactiveMatch);
+      return {
+        success: false,
+        error: inactiveMatch
+          ? 'This device is inactive. Ask HR to re-activate it.'
+          : 'No employee registered for this device',
+      };
     }
 
     const employeeId = matchedDevice.employee_id?.[0];
@@ -614,6 +621,7 @@ export const getEmployeeByDeviceId = async (deviceId) => {
 
     if (employee) {
       console.log('[Attendance] Found employee by device ID:', employee.name);
+      _stampDeviceLastUsed(deviceId, employee.id, deviceName); // fire-and-forget
       const result = {
         success: true,
         employee: {
@@ -660,36 +668,97 @@ export const getEmployeeByDeviceId = async (deviceId) => {
   }
 };
 
-// Find employee by Badge ID (checks both 'pin' and 'barcode' fields)
-export const verifyEmployeePin = async (userId, enteredBadgeId) => {
-  const badgeId = enteredBadgeId?.trim();
-  console.log('[Attendance] Finding employee by Badge ID:', badgeId);
+// Fire-and-forget: stamp the device's Last Used = now on a successful login so HR
+// can see which phones are actually in use.
+const _stampDeviceLastUsed = async (deviceId, employeeId = null, deviceName = null) => {
+  console.log('[device-stamp] start', { deviceId, employeeId, deviceName });
+  if (!deviceId) return;
+  try {
+    const headers = await getOdooAuthHeaders();
+    const domain = [['device_id', '=', deviceId]];
+    if (employeeId) domain.push(['employee_id', '=', employeeId]);
+    const searchResp = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      { jsonrpc: '2.0', method: 'call', params: { model: 'employee.device', method: 'search', args: [domain], kwargs: { limit: 1, context: { active_test: false } } } },
+      { headers },
+    );
+    if (searchResp.data?.error) {
+      console.warn('[device-stamp] SEARCH error:', JSON.stringify(searchResp.data.error?.data?.message || searchResp.data.error));
+      return;
+    }
+    const ids = searchResp.data?.result || [];
+    console.log('[device-stamp] matched ids', ids);
+    if (!ids.length) return;
+    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const vals = { last_used: now };
+    // Auto-fill the phone's model name on first login (Android via Platform).
+    if (deviceName && String(deviceName).trim()) vals.device_name = String(deviceName).trim();
+    const writeResp = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      { jsonrpc: '2.0', method: 'call', params: { model: 'employee.device', method: 'write', args: [ids, vals], kwargs: {} } },
+      { headers },
+    );
+    if (writeResp.data?.error) {
+      console.warn('[device-stamp] WRITE error:', JSON.stringify(writeResp.data.error?.data?.message || writeResp.data.error));
+    } else {
+      console.log('[device-stamp] OK — wrote', vals, 'to', ids);
+    }
+  } catch (e) {
+    console.warn('[device-stamp] failed:', e?.message);
+  }
+};
 
-  // Up-front offline check — skip the doomed axios calls and go straight to
-  // cache. This is the same pattern as checkInByEmployeeId.
+// Is `deviceId` a registered + ACTIVE device for this employee?
+const _isDeviceRegisteredFor = async (employeeId, deviceId) => {
+  if (!deviceId || !employeeId) return false;
+  try {
+    const headers = await getOdooAuthHeaders();
+    const resp = await axios.post(
+      `${ODOO_BASE_URL()}/web/dataset/call_kw`,
+      {
+        jsonrpc: '2.0', method: 'call',
+        params: {
+          model: 'employee.device', method: 'search_count',
+          args: [[['employee_id', '=', employeeId], ['device_id', '=', deviceId], ['active', '=', true]]],
+          kwargs: {},
+        },
+      },
+      { headers }
+    );
+    const count = resp.data?.result || 0;
+    console.log('[Attendance] device registered for emp', employeeId, '=', count > 0);
+    return count > 0;
+  } catch (e) {
+    console.warn('[Attendance] device-registration check failed:', e?.message);
+    return false; // fail closed
+  }
+};
+
+// Find employee by Badge ID (checks both 'pin' and 'barcode' fields). PIN login
+// also requires the phone to be a REGISTERED + ACTIVE device for that employee.
+export const verifyEmployeePin = async (userId, enteredBadgeId, deviceId = null, deviceName = null) => {
+  const badgeId = enteredBadgeId?.trim();
+  console.log('[Attendance] Finding employee by Badge ID:', badgeId, 'device:', deviceId);
+
+  if (!deviceId) {
+    return { success: false, error: 'Device ID not available. Please restart the app.' };
+  }
+
+  // Up-front offline check — go straight to the PIN cache, but only accept it if
+  // it was validated on THIS device (no "any PIN" lastEmployee fallback).
   try {
     const online = await isOnline();
     if (!online) {
-      console.log('[Attendance] Device offline, trying PIN cache directly');
       const cached = await cacheGet('pin', badgeId);
-      if (cached) {
-        console.log('[Attendance] Offline: PIN cache hit for badge:', badgeId);
+      if (cached?.success && cached?.deviceId === deviceId) {
+        console.log('[Attendance] Offline: PIN cache hit for this device');
         return { ...cached, fromCache: true };
       }
-      // No PIN-specific cache → try lastEmployee fallback
-      try {
-        const raw = await AsyncStorage.getItem('@attCache:lastEmployee');
-        if (raw) {
-          const last = JSON.parse(raw);
-          if (last?.success && last?.employee) {
-            console.log('[Attendance] Offline: using lastEmployee fallback:', last.employee.name);
-            return { ...last, fromCache: true, fallback: true };
-          }
-        }
-      } catch (_) { /* ignore */ }
       return {
         success: false,
-        error: 'Cannot verify offline. Open User Attendance once with internet first.',
+        error: cached
+          ? 'This phone is not registered for this PIN. Connect to the internet to register it.'
+          : 'Cannot verify offline. Sign in once online on a registered device first.',
       };
     }
   } catch (_) {
@@ -746,16 +815,26 @@ export const verifyEmployeePin = async (userId, enteredBadgeId) => {
     if (employees.length > 0) {
       const employee = employees[0];
       console.log('[Attendance] Found employee:', employee.name);
-      console.log('[Attendance] Employee details:', JSON.stringify(employee, null, 2));
+      // Device gate: the phone must be a registered + active device for this employee.
+      const devOk = await _isDeviceRegisteredFor(employee.id, deviceId);
+      if (!devOk) {
+        console.log('[Attendance] PIN ok but device not registered for', employee.name);
+        return {
+          success: false,
+          error: `This phone isn't registered for ${employee.name}. Ask HR to register this device.`,
+        };
+      }
+      _stampDeviceLastUsed(deviceId, employee.id, deviceName); // fire-and-forget
       const result = {
         success: true,
         employee: {
           id: employee.id,
           name: employee.name,
           userId: employee.user_id?.[0] || null,
-        }
+        },
+        deviceId,
       };
-      // Cache by the badge id the user just typed so the same PIN works offline next time
+      // Cache by the badge id + device so the same PIN works offline on this device.
       await cachePut('pin', badgeId, result);
       return result;
     }
@@ -771,32 +850,18 @@ export const verifyEmployeePin = async (userId, enteredBadgeId) => {
     console.log('[Attendance] isNetworkLikeErr=', isNetErr);
 
     if (isNetErr) {
-      // Offline / unreachable → check the cache for this PIN.
+      // Offline / unreachable → accept the cache only if it was validated on THIS
+      // device (no "any non-empty PIN" lastEmployee fallback anymore).
       const cached = await cacheGet('pin', badgeId);
-      console.log('[Attendance] PIN cache hit=', !!cached, 'for badge=', badgeId);
-      if (cached) {
-        console.log('[Attendance] Using cached employee for badge:', badgeId);
+      if (cached?.success && cached?.deviceId === deviceId) {
+        console.log('[Attendance] Using cached employee for this device');
         return { ...cached, fromCache: true };
-      }
-      // Last-resort fallback: if the device has been recognized at least once
-      // online, the lastEmployee key holds whoever it resolved to. Accept any
-      // non-empty PIN against that.
-      try {
-        const raw = await AsyncStorage.getItem('@attCache:lastEmployee');
-        console.log('[Attendance] lastEmployee raw=', raw ? 'exists' : 'null');
-        if (raw) {
-          const last = JSON.parse(raw);
-          if (last?.success && last?.employee) {
-            console.log('[Attendance] Falling back to lastEmployee for offline PIN:', last.employee.name);
-            return { ...last, fromCache: true, fallback: true };
-          }
-        }
-      } catch (cacheErr) {
-        console.error('[Attendance] lastEmployee read error:', cacheErr?.message);
       }
       return {
         success: false,
-        error: 'Cannot verify offline. Open User Attendance once with internet first.',
+        error: cached
+          ? 'This phone is not registered for this PIN.'
+          : 'Cannot verify offline. Sign in once online on a registered device first.',
       };
     }
     return {

@@ -12,7 +12,7 @@
         is done from an authorized device only.
     """,
     'author': 'Amal',
-    'depends': ['hr'],
+    'depends': ['hr', 'hr_attendance'],
     'data': [
         'security/ir.model.access.csv',
         'views/employee_device_views.xml',

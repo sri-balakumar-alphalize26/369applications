@@ -51,6 +51,7 @@ import { MaterialIcons, Feather, Ionicons } from '@expo/vector-icons';
 import { Camera } from 'expo-camera';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Application from 'expo-application';
+import { toShortDeviceCode } from '@utils/shortDeviceId';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import networkStatus from '@utils/networkStatus';
 
@@ -139,6 +140,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [verifiedEmployee, setVerifiedEmployee] = useState(null);
   const [locationStatus, setLocationStatus] = useState(null);
   const [deviceId, setDeviceId] = useState(null);
+  const [deviceName, setDeviceName] = useState('');
   const [pinInput, setPinInput] = useState('');
   const [verificationMethod, setVerificationMethod] = useState(null); // 'fingerprint' | 'pin'
   const currentUser = useAuthStore(state => state.user);
@@ -338,14 +340,24 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   useEffect(() => {
     const fetchDeviceId = async () => {
       try {
-        let id;
+        let rawId;
         if (Platform.OS === 'android') {
-          id = Application.getAndroidId();
+          rawId = Application.getAndroidId();
         } else {
-          id = await Application.getIosIdForVendorAsync();
+          rawId = await Application.getIosIdForVendorAsync();
         }
-        console.log('[Attendance] Device ID:', id);
-        setDeviceId(id);
+        // Use a short, stable 10-digit code (derived from the OS id) everywhere —
+        // easier for HR to register; same stability as the raw id.
+        const shortId = toShortDeviceCode(rawId);
+        // Device model name — from RN Platform.constants (no extra package).
+        // Android exposes Brand/Manufacturer/Model; iOS only the OS name.
+        const c = Platform.constants || {};
+        const name = Platform.OS === 'android'
+          ? [c.Manufacturer || c.Brand, c.Model].filter(Boolean).join(' ').trim()
+          : (c.systemName || 'iOS');
+        console.log('[Attendance] Device ID (raw):', rawId, '→ code:', shortId, 'name:', name);
+        setDeviceId(shortId);
+        setDeviceName(name || Platform.OS);
       } catch (error) {
         console.error('[Attendance] Failed to get device ID:', error);
       }
@@ -1596,7 +1608,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       }
 
       console.log('[Attendance] Fingerprint authenticated, looking up device ID:', deviceId);
-      const result = await getEmployeeByDeviceId(deviceId);
+      const result = await getEmployeeByDeviceId(deviceId, deviceName);
 
       if (result.success) {
         setIsVerified(true);
@@ -1645,7 +1657,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     setLoading(true);
     try {
       const userId = currentUser?.uid;
-      const result = await verifyEmployeePin(userId, pinInput.trim());
+      const result = await verifyEmployeePin(userId, pinInput.trim(), deviceId, deviceName);
 
       if (result.success) {
         setIsVerified(true);
@@ -4411,8 +4423,18 @@ const UserAttendanceScreen = ({ navigation, route }) => {
 
               {deviceId && (
                 <View style={styles.deviceIdContainer}>
-                  <Text style={styles.deviceIdLabel}>Device ID:</Text>
-                  <Text style={styles.deviceIdValue} numberOfLines={1}>{deviceId}</Text>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={styles.deviceIdLabel}>Device ID:</Text>
+                      <Text style={styles.deviceIdValue} numberOfLines={1}>{deviceId}</Text>
+                    </View>
+                    {deviceName ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: scale(3) }}>
+                        <Text style={styles.deviceIdLabel}>Device:</Text>
+                        <Text style={styles.deviceIdValue} numberOfLines={1}>{deviceName}</Text>
+                      </View>
+                    ) : null}
+                  </View>
                 </View>
               )}
             </View>

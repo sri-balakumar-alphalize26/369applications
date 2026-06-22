@@ -1,3 +1,4 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_employee_device_manager,employee.device.manager,model_employee_device,hr.group_hr_manager,1,1,1,1
 access_employee_device_user,employee.device.user,model_employee_device,hr.group_hr_user,1,1,1,0
+access_employee_device_internal,employee.device.internal,model_employee_device,base.group_user,1,1,0,0

@@ -29,4 +29,101 @@
         </field>
     </record>
 
+    <!-- Attendances → Devices : READ-ONLY list, one row per employee.
+         Click a row to open the form (all fields + PIN visible). -->
+    <record id="view_employee_device_register_list" model="ir.ui.view">
+        <field name="name">hr.employee.device.register.list</field>
+        <field name="model">hr.employee</field>
+        <field name="arch" type="xml">
+            <list string="Devices" create="false" delete="false" edit="false">
+                <field name="name"/>
+                <field name="device_code"/>
+                <field name="device_name"/>
+                <field name="device_active" widget="boolean_toggle" readonly="1"/>
+                <field name="device_added_date"/>
+                <field name="device_last_used"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Form opened on row click — shows every device field, PIN in clear text. -->
+    <record id="view_employee_device_register_form" model="ir.ui.view">
+        <field name="name">hr.employee.device.register.form</field>
+        <field name="model">hr.employee</field>
+        <field name="arch" type="xml">
+            <form string="Employee Device">
+                <sheet>
+                    <group>
+                        <group string="Employee">
+                            <field name="name" readonly="1"/>
+                            <field name="department_id" readonly="1"/>
+                            <field name="job_id" readonly="1"/>
+                        </group>
+                        <group string="Device &amp; PIN">
+                            <field name="device_code"/>
+                            <field name="device_name" readonly="1"/>
+                            <field name="device_active" widget="boolean_toggle"/>
+                            <field name="pin"/>
+                            <field name="device_added_date" readonly="1"/>
+                            <field name="device_last_used" readonly="1"/>
+                        </group>
+                    </group>
+                    <separator string="Registered Device"/>
+                    <field name="device_ids" create="false">
+                        <list create="false">
+                            <field name="device_id"/>
+                            <field name="device_name"/>
+                            <field name="device_type"/>
+                            <field name="active"/>
+                            <field name="last_used"/>
+                        </list>
+                    </field>
+
+                    <div class="alert alert-warning" role="alert" style="margin-top:16px;">
+                        <strong>How device registration works</strong>
+                        <ul style="margin-bottom:0;">
+                            <li>Enter the employee's <b>Device ID</b> — the 10-digit code shown on their phone — and set a <b>PIN</b>.</li>
+                            <li>Only <b>one device</b> can be registered per employee.</li>
+                            <li>The phone can mark attendance only from a <b>registered + Active</b> device (PIN or fingerprint).</li>
+                            <li>Turn <b>Active</b> off to block a lost or old phone without deleting it.</li>
+                            <li><b>Device Name</b> and <b>Last Used</b> fill in automatically after the employee logs in once on the phone.</li>
+                        </ul>
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_employee_device_register" model="ir.actions.act_window">
+        <field name="name">Devices</field>
+        <field name="res_model">hr.employee</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No employees found</p>
+            <p>Click an employee to set their Device ID and PIN to authorize their phone for attendance.</p>
+        </field>
+    </record>
+
+    <!-- Bind the specific list + form so clicking a row opens THIS form (not the
+         full employee form). -->
+    <record id="action_employee_device_register_list_view" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">list</field>
+        <field name="view_id" ref="view_employee_device_register_list"/>
+        <field name="act_window_id" ref="action_employee_device_register"/>
+    </record>
+    <record id="action_employee_device_register_form_view" model="ir.actions.act_window.view">
+        <field name="sequence" eval="2"/>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="view_employee_device_register_form"/>
+        <field name="act_window_id" ref="action_employee_device_register"/>
+    </record>
+
+    <!-- Top-bar menu in the Attendances app, next to Late Tracking / Field Attendance -->
+    <menuitem id="menu_employee_devices_root"
+              name="Devices"
+              parent="hr_attendance.menu_hr_attendance_root"
+              action="action_employee_device_register"
+              sequence="35"/>
+
 </odoo>
