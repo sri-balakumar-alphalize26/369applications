@@ -512,10 +512,11 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   }, [verifiedEmployee, offline, fieldHistoryFilters, fieldHistoryOffset]);
 
-  // When the user enters the History tab, load the first page (if empty).
+  // Refresh the first page every time the user enters the History tab — always
+  // reload (not only when empty) so a trip/record checked out since the list was
+  // last shown reflects its updated check-out time instead of a stale "--:--".
   useEffect(() => {
     if (attendanceMode !== 'field' || !isVerified || fieldTab !== 'history') return;
-    if (fieldHistoryRows.length > 0) return;
     loadFieldHistory({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attendanceMode, isVerified, fieldTab]);
@@ -568,10 +569,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   }, [verifiedEmployee, offline, officeHistoryFilters, officeHistoryOffset]);
 
-  // When the user enters the office History tab, load the first page (if empty).
+  // Refresh the first page every time the user enters the office History tab.
+  // Always reload (not only when empty) so a record that was checked out since
+  // the list was last shown reflects its updated check-out time — otherwise the
+  // cached open record (check_out = false) keeps showing "--:--" after checkout.
   useEffect(() => {
     if (attendanceMode !== 'office' || !isVerified || officeTab !== 'history') return;
-    if (officeHistoryRows.length > 0) return;
     loadOfficeHistory({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attendanceMode, isVerified, officeTab]);

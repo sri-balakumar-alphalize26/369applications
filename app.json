@@ -2,7 +2,7 @@
   "expo": {
     "name": "369aiAlphalize",
     "slug": "369aialphalize",
-    "owner": "yaradiv",
+    "owner": "vejefih",
     "version": "1.0.88",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -99,7 +99,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "0afaa8ee-fe96-4a5b-a205-c73aa336189d"
+        "projectId": "aa43add7-b8b9-42c3-9cb8-1ac1a5f097fb"
       },
       "openRouteServiceKey": "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjJlOWU5MTM0OGI3MTQ4ZTQ4NjA5ZjdlY2ZhYmNjODA4IiwiaCI6Im11cm11cjY0In0="
     }
