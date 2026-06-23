@@ -2574,6 +2574,12 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     }
   };
 
+  // Open the in-app HTML guide for a specific manual id.
+  const openUserManual = (id) => {
+    console.log('[UserGuide] open manual from attendance card:', id);
+    navigation.navigate('ManualViewerScreen', { id });
+  };
+
   // =============================================
   // RENDER: MODE SELECTION
   // =============================================
@@ -2593,6 +2599,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         <View style={styles.modeTextContainer}>
           <Text style={styles.modeCardTitle}>Office</Text>
           <Text style={styles.modeCardSubtitle}>Check in from office with location verification</Text>
+          <TouchableOpacity
+            style={styles.manualLink}
+            activeOpacity={0.7}
+            onPress={() => openUserManual('office-attendance')}
+          >
+            <MaterialIcons name="menu-book" size={scale(13)} color={COLORS.primaryThemeColor} />
+            <Text style={styles.manualLinkText}>View user manual</Text>
+          </TouchableOpacity>
         </View>
         <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
       </TouchableOpacity>
@@ -2608,6 +2622,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         <View style={styles.modeTextContainer}>
           <Text style={styles.modeCardTitle}>Leave Request</Text>
           <Text style={styles.modeCardSubtitle}>Apply for leave with manager approval</Text>
+          <TouchableOpacity
+            style={styles.manualLink}
+            activeOpacity={0.7}
+            onPress={() => openUserManual('leave-request')}
+          >
+            <MaterialIcons name="menu-book" size={scale(13)} color={COLORS.primaryThemeColor} />
+            <Text style={styles.manualLinkText}>View user manual</Text>
+          </TouchableOpacity>
         </View>
         <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
       </TouchableOpacity>
@@ -2623,6 +2645,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         <View style={styles.modeTextContainer}>
           <Text style={styles.modeCardTitle}>Late Waiver Request</Text>
           <Text style={styles.modeCardSubtitle}>Request waiver for a late arrival deduction</Text>
+          <TouchableOpacity
+            style={styles.manualLink}
+            activeOpacity={0.7}
+            onPress={() => openUserManual('late-waiver-request')}
+          >
+            <MaterialIcons name="menu-book" size={scale(13)} color={COLORS.primaryThemeColor} />
+            <Text style={styles.manualLinkText}>View user manual</Text>
+          </TouchableOpacity>
         </View>
         <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
       </TouchableOpacity>
@@ -2638,6 +2668,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         <View style={styles.modeTextContainer}>
           <Text style={styles.modeCardTitle}>Field Attendance (Customer Visit)</Text>
           <Text style={styles.modeCardSubtitle}>Mark today using your trip and customer visits</Text>
+          <TouchableOpacity
+            style={styles.manualLink}
+            activeOpacity={0.7}
+            onPress={() => openUserManual('field-attendance')}
+          >
+            <MaterialIcons name="menu-book" size={scale(13)} color={COLORS.primaryThemeColor} />
+            <Text style={styles.manualLinkText}>View user manual</Text>
+          </TouchableOpacity>
         </View>
         <Feather name="chevron-right" size={scale(20)} color={COLORS.gray} />
       </TouchableOpacity>
@@ -4856,6 +4894,8 @@ const styles = StyleSheet.create({
   modeTextContainer: { flex: 1 },
   modeCardTitle: { fontSize: scale(16), fontWeight: 'bold', color: COLORS.black, fontFamily: FONT_FAMILY.urbanistBold, marginBottom: 2 },
   modeCardSubtitle: { fontSize: scale(12), color: COLORS.gray, fontFamily: FONT_FAMILY.urbanistMedium },
+  manualLink: { flexDirection: 'row', alignItems: 'center', marginTop: scale(6), alignSelf: 'flex-start' },
+  manualLinkText: { marginLeft: 4, fontSize: scale(12), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor, textDecorationLine: 'underline' },
 
   // Fingerprint
   pinSection: { backgroundColor: COLORS.white, padding: scale(16), borderRadius: scale(16), shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3 },
