@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Trip Summary: every vehicle trip, grouped Employee -> Date, with
+         per-day totals (KM, fuel, extra KM/time) and the trip count. -->
+    <record id="view_trip_summary_list" model="ir.ui.view">
+        <field name="name">vehicle.tracking.trip.summary.list</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="arch" type="xml">
+            <list string="Trip Summary" create="0" edit="0"
+                  decoration-danger="trip_check_status == 'over'">
+                <field name="employee_id" optional="show"/>
+                <field name="date" optional="show"/>
+                <field name="ref" optional="show"/>
+                <field name="vehicle_id" optional="show"/>
+                <field name="number_plate" optional="show"/>
+                <field name="source_id" optional="show"/>
+                <field name="destination_id" optional="show"/>
+                <field name="start_km" optional="show"/>
+                <field name="end_km" optional="show"/>
+                <field name="km_travelled" sum="Total KM" optional="show"/>
+                <field name="start_time_office" optional="show"/>
+                <field name="end_time_office" optional="show"/>
+                <field name="duration" string="Time Taken" widget="float_time" sum="Total Time" optional="show"/>
+                <field name="estimated_km" optional="show"/>
+                <field name="estimated_time" optional="show"/>
+                <field name="km_variance" string="Extra KM" sum="Total Extra KM" optional="show"/>
+                <field name="time_variance" string="Extra Time (Hrs)" sum="Total Extra Time" optional="show"/>
+                <field name="total_fuel_litres" string="Fuel (L)" sum="Total Fuel (L)" optional="show"/>
+                <field name="total_fuel_amount" string="Fuel Amount" sum="Total Fuel Amount" optional="show"/>
+                <field name="trip_check_status" string="Trip Check" optional="show"
+                       decoration-danger="trip_check_status == 'over'"
+                       decoration-success="trip_check_status == 'ok'"/>
+                <field name="deviation_reason" string="Deviation Reason" optional="show"/>
+                <field name="trip_status" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_trip_summary_search" model="ir.ui.view">
+        <field name="name">vehicle.tracking.trip.summary.search</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="arch" type="xml">
+            <search string="Trip Summary">
+                <field name="employee_id"/>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="ref"/>
+                <filter name="filter_in_progress" string="In Progress"
+                        domain="[('trip_status', '=', 'in_progress')]"/>
+                <filter name="filter_ended" string="Ended"
+                        domain="[('trip_status', '=', 'ended')]"/>
+                <filter name="filter_cancelled" string="Cancelled"
+                        domain="[('trip_status', '=', 'cancelled')]"/>
+                <separator/>
+                <filter name="filter_over" string="Over / Check"
+                        domain="[('trip_check_status', '=', 'over')]"/>
+                <separator/>
+                <group>
+                    <filter name="group_employee" string="Employee"
+                            context="{'group_by': 'employee_id'}"/>
+                    <filter name="group_date" string="Date"
+                            context="{'group_by': 'date'}"/>
+                    <filter name="group_vehicle" string="Vehicle"
+                            context="{'group_by': 'vehicle_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_trip_summary" model="ir.actions.act_window">
+        <field name="name">Trip Summary</field>
+        <field name="res_model">vehicle.tracking</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_trip_summary_search"/>
+        <field name="context">{'group_by': ['employee_id', 'date:day']}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No trips yet</p>
+            <p>Trips appear here grouped by employee and day, with per-day totals.</p>
+        </field>
+    </record>
+
+    <!-- Force the Trip Summary list (not the default trip list) for this action. -->
+    <record id="action_trip_summary_list_view" model="ir.actions.act_window.view">
+        <field name="sequence" eval="1"/>
+        <field name="view_mode">list</field>
+        <field name="view_id" ref="view_trip_summary_list"/>
+        <field name="act_window_id" ref="action_trip_summary"/>
+    </record>
+
+    <menuitem id="menu_trip_summary"
+              name="Trip Summary"
+              parent="hr_employee_report.menu_employee_report_root"
+              action="action_trip_summary"
+              sequence="30"/>
+
+    <!-- Trip form: Trip Check + mandatory Deviation Reason, placed in the
+         Tracking Details section right under Estimated KM. -->
+    <record id="view_vehicle_tracking_form_deviation" model="ir.ui.view">
+        <field name="name">vehicle.tracking.form.deviation</field>
+        <field name="model">vehicle.tracking</field>
+        <field name="inherit_id" ref="vehicle_tracking.view_vehicle_tracking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='estimated_km']" position="after">
+                <field name="trip_check_status"/>
+                <field name="deviation_reason"
+                       placeholder="Reason for going beyond the estimated KM / time..."
+                       required="trip_check_status == 'over'"
+                       readonly="trip_cancel"/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

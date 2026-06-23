@@ -79,6 +79,20 @@ class AttendanceLateConfig(models.Model):
              'in either session.',
     )
 
+    # --- Trip deviation check (Vehicle Trip Summary) ---
+    trip_km_tolerance = fields.Float(
+        string='Trip KM Tolerance',
+        default=5.0,
+        help='Allowed extra KM over the estimate before a trip is flagged '
+             '"Over — Check" in the Trip Summary.',
+    )
+    trip_time_tolerance_minutes = fields.Integer(
+        string='Trip Time Tolerance (Minutes)',
+        default=10,
+        help='Allowed extra minutes over the estimated time before a trip is '
+             'flagged "Over — Check" in the Trip Summary.',
+    )
+
     # --- Deduction Mode ---
     deduction_mode = fields.Selection([
         ('fixed', 'Fixed Amount (Slab-based)'),

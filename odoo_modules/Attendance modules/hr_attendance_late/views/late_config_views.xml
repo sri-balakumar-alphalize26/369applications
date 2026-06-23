@@ -45,6 +45,15 @@
                         </group>
                     </group>
 
+                    <group string="Trip Deviation Check">
+                        <group>
+                            <field name="trip_km_tolerance"/>
+                        </group>
+                        <group>
+                            <field name="trip_time_tolerance_minutes"/>
+                        </group>
+                    </group>
+
                     <group string="Office Hours">
                         <group>
                             <field name="shift_type" widget="radio"/>

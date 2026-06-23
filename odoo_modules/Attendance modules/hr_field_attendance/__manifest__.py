@@ -26,10 +26,12 @@
         'hr_attendance_late',
         'vehicle_tracking',
         'customer_visit',
+        'hr_employee_report',
     ],
     'data': [
         'security/ir.model.access.csv',
         'views/hr_attendance_views.xml',
+        'views/trip_summary_views.xml',
     ],
     'installable': True,
     'application': True,

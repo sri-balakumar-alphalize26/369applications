@@ -9,6 +9,91 @@ _logger = logging.getLogger(__name__)
 class VehicleTracking(models.Model):
     _inherit = 'vehicle.tracking'
 
+    # --- Trip Summary report ------------------------------------------------
+    # Reverse links from a trip back to the field attendance(s) that used it,
+    # so the Trip Summary can resolve (and group by) the employee who drove it.
+    field_attendance_ids = fields.One2many(
+        'hr.attendance', 'source_trip_id', string='Field Attendances (Primary)',
+    )
+    field_trip_line_ids = fields.One2many(
+        'field.attendance.trip.line', 'trip_id', string='Field Attendance Trip Lines',
+    )
+    # Stored so the Trip Summary list can group by it. Resolved from the field
+    # attendance that owns the trip (primary trip, then additional trip line);
+    # falls back to the driver→employee resolver for non-field-attendance trips.
+    employee_id = fields.Many2one(
+        'hr.employee', string='Employee',
+        compute='_compute_trip_employee', store=True,
+    )
+
+    @api.depends(
+        'field_attendance_ids.employee_id',
+        'field_trip_line_ids.attendance_id.employee_id',
+        'driver_id',
+    )
+    def _compute_trip_employee(self):
+        for trip in self:
+            emp = trip.field_attendance_ids[:1].employee_id \
+                or trip.field_trip_line_ids[:1].attendance_id.employee_id
+            if not emp and trip.driver_id:
+                emp = trip._resolve_employee_from_driver()
+            trip.employee_id = emp.id if emp else False
+
+    # Flags an ended trip as "Over — Check" when the actual KM *or* actual time
+    # exceeds the estimate by more than the allowed margin (set on the Office
+    # Hours config). A likely detour. Within-margin trips read "Within Estimate".
+    trip_check_status = fields.Selection(
+        [('ok', 'Within Estimate'), ('over', 'Over — Check')],
+        string='Trip Check', compute='_compute_trip_check', store=True,
+    )
+
+    @api.depends('km_travelled', 'duration', 'estimated_km', 'estimated_time',
+                 'trip_status', 'employee_id')
+    def _compute_trip_check(self):
+        Config = self.env['hr.attendance.late.config']
+        for trip in self:
+            status = False
+            if trip.trip_status == 'ended' and (trip.estimated_km or trip.estimated_time):
+                cfg = Config.get_config_record_for_employee(trip.employee_id.id) \
+                    if trip.employee_id else False
+                # getattr defaults guard against the config module not yet being
+                # upgraded (field absent) and against an empty config record.
+                km_tol = getattr(cfg, 'trip_km_tolerance', 5.0) if cfg else 5.0
+                min_tol = getattr(cfg, 'trip_time_tolerance_minutes', 10) if cfg else 10
+                km_over = (trip.km_travelled or 0) > (trip.estimated_km or 0) + km_tol
+                time_over = (trip.duration or 0) > (trip.estimated_time or 0) + (min_tol / 60.0)
+                status = 'over' if (km_over or time_over) else 'ok'
+            trip.trip_check_status = status
+
+    # When a trip is flagged "Over — Check", a reason is mandatory (mirrors the
+    # late-reason rule on hr.attendance). Bypassed via context for the mobile
+    # "end the trip first, then prompt for the reason" flow.
+    deviation_reason = fields.Text(string='Deviation Reason')
+
+    @api.constrains('trip_check_status', 'deviation_reason')
+    def _check_deviation_reason_required(self):
+        if self.env.context.get('skip_deviation_reason_required') \
+                or self.env.context.get('import_file'):
+            return
+        for rec in self:
+            if rec.trip_check_status == 'over' \
+                    and not (rec.deviation_reason and rec.deviation_reason.strip()):
+                raise ValidationError(_(
+                    "This trip exceeded the estimated KM/time. "
+                    "Please enter a Deviation Reason before saving."
+                ))
+
+    def needs_deviation_reason(self):
+        """True when this trip is flagged Over and has no reason yet."""
+        self.ensure_one()
+        return self.trip_check_status == 'over' and not (self.deviation_reason or '').strip()
+
+    def set_trip_deviation_reason(self, reason):
+        """Mobile entry point: store the deviation reason for an over trip."""
+        self.ensure_one()
+        self.write({'deviation_reason': reason or ''})
+        return {'success': True, 'trip_check_status': self.trip_check_status}
+
     def _check_start_km_for_picker_flow(self):
         """Block save when a draft trip is being persisted from the
         field-attendance trip-picker popup with start_km <= 0. The view
@@ -160,6 +245,15 @@ class VehicleTracking(models.Model):
                 if not att.source_trip_id:
                     att.source_trip_id = self.id
                 return att.action_edit_primary_trip()
+        return res
+
+    def action_reset_to_draft(self):
+        """Reset to Draft must also clear End KM. The base reset clears the
+        lifecycle flags but leaves end_km, so re-Starting the trip would be
+        instantly auto-ended by the `end_km > start_km` write hook below —
+        the user never gets to enter a fresh End KM."""
+        res = super().action_reset_to_draft()
+        self.with_context(skip_auto_end_trip=True).write({'end_km': 0})
         return res
 
     def action_discard_custom(self):
