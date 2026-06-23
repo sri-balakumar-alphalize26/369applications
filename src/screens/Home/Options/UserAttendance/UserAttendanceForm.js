@@ -8,6 +8,7 @@ import { OverlayLoader } from '@components/Loader';
 import { showToastMessage } from '@components/Toast';
 import { useAuthStore } from '@stores/auth';
 import { getCurrentLocationWithAddress } from '@services/LocationTrackingService';
+import { formatTimeOffice, formatDateOffice, hydrateOfficeTimezone } from '@utils/officeTime';
 
 const UserAttendanceForm = ({ navigation, route }) => {
   const { date, attendanceData } = route.params || {};
@@ -20,6 +21,9 @@ const UserAttendanceForm = ({ navigation, route }) => {
   const isEditing = !!attendanceData;
 
   useEffect(() => {
+    // Seed the office tz so check-in/out times render in office time (not the
+    // device timezone) even if this form is opened before the late config loads.
+    hydrateOfficeTimezone();
     fetchCurrentLocation();
   }, []);
 
@@ -74,28 +78,19 @@ const UserAttendanceForm = ({ navigation, route }) => {
 
   const formatTime = (timeString) => {
     if (!timeString) return '--:--';
-    try {
-      const d = new Date(timeString);
-      return d.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-      });
-    } catch {
-      return '--:--';
-    }
+    // Office timezone (config), not the device timezone.
+    return formatTimeOffice(timeString) || '--:--';
   };
 
   const formatDate = (dateString) => {
-    if (!dateString) return new Date().toLocaleDateString();
+    if (!dateString) return formatDateOffice(new Date());
     try {
-      const d = new Date(dateString);
-      return d.toLocaleDateString('en-US', {
+      return formatDateOffice(dateString, {
         weekday: 'long',
         year: 'numeric',
         month: 'long',
         day: 'numeric',
-      });
+      }) || dateString;
     } catch {
       return dateString;
     }

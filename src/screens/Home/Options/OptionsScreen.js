@@ -114,6 +114,7 @@ const OptionsScreen = ({ navigation }) => {
         { title: 'Vehicle Location', image: require('@assets/images/Home/section/services.png'), onPress: () => navigation.navigate('VehicleLocationScreen') },
         { title: 'Visits Plan', image: require('@assets/images/Home/options/visits_plan.png'), onPress: () => navigation.navigate('VisitsPlanScreen') },
         { title: 'Customer Visits', image: require('@assets/images/Home/options/attendance/attendance_requests.png'), onPress: () => navigation.navigate('VisitScreen') },
+        { title: 'User Guide', iconName: 'menu-book', iconColor: '#2E294E', onPress: () => navigation.navigate('UserGuideScreen') },
       ],
     },
     {

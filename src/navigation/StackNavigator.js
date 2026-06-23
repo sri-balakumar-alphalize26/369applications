@@ -47,6 +47,7 @@ import { MarkAttendance, PunchingScreen } from "@screens/Home/Options/Attendance
 import { CashCollectionScreen, CashCollectionForm } from "@screens/Home/Options/CashCollection";
 import { UserAttendanceScreen, UserAttendanceForm, FieldAttendanceDetailScreen } from "@screens/Home/Options/UserAttendance";
 import { LateRecordsScreen } from "@screens/Home/Options/LateRecords";
+import { UserGuideScreen, ManualViewerScreen } from "@screens/Home/Options/UserGuide";
 import { OfflineSyncScreen } from "@screens/Home/Options/OfflineSync";
 import { InvoiceScannerScreen, InvoiceDetailsScreen } from "@screens/Home/Options/InvoiceScanner";
 import { AddParticipants, KPIActionDetails, KPIDashboardScreen, KPIListingScreen } from "@screens/KPIDashboard";
@@ -779,6 +780,18 @@ const StackNavigator = () => {
       <Stack.Screen
         name="CashCollectionForm"
         component={CashCollectionForm}
+        options={{ headerShown: false }}
+      />
+
+      {/* Help & User Guide */}
+      <Stack.Screen
+        name="UserGuideScreen"
+        component={UserGuideScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="ManualViewerScreen"
+        component={ManualViewerScreen}
         options={{ headerShown: false }}
       />
 

@@ -1201,6 +1201,8 @@ export const checkOutToOdoo = async (attendanceId) => {
       return {
         success: true,
         checkOutTime: odooUtcToLocalDisplay(checkOutTime),
+        // Raw UTC so the UI can re-format LIVE in the current office timezone.
+        checkOutTimeUtc: checkOutTime,
       };
     }
 
@@ -1258,6 +1260,10 @@ export const getTodayAttendance = async (userId) => {
         employeeName: records[0].employee_id?.[1] || employee.name,
         checkIn: odooUtcToLocalDisplay(records[0].check_in),
         checkOut: odooUtcToLocalDisplay(records[0].check_out),
+        // Raw UTC instants so the UI can re-format LIVE in the current office
+        // timezone (the formatted strings above are frozen at fetch time).
+        checkInTimeUtc: records[0].check_in,
+        checkOutTimeUtc: records[0].check_out,
       };
     }
 
@@ -1659,7 +1665,7 @@ export const wfhCheckIn = async (requestId) => {
     console.log('[WFH] Check-in successful');
     return {
       success: true,
-      checkInTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      checkInTime: formatTimeOffice(now),
     };
   } catch (error) {
     console.error('[WFH] Check-in error:', error?.message);
@@ -1699,7 +1705,7 @@ export const wfhCheckOut = async (requestId) => {
     console.log('[WFH] Check-out successful');
     return {
       success: true,
-      checkOutTime: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      checkOutTime: formatTimeOffice(now),
     };
   } catch (error) {
     console.error('[WFH] Check-out error:', error?.message);

@@ -13,6 +13,7 @@ import CacheWarmer from '@services/CacheWarmer';
 import offlineQueue from '@utils/offlineQueue';
 import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { hydrateOfficeTimezone } from '@utils/officeTime';
 
 // One-time migration of legacy un-namespaced sale-order maps into the
 // per-DB A-map for the currently-active Odoo DB. Runs once per DB.
@@ -128,6 +129,13 @@ export default function App() {
   // for connectivity changes and auto-flushes the on-device queue to Odoo
   // when the device comes back online.
   useEffect(() => {
+    // Seed the office timezone from cache the moment the app boots, BEFORE the
+    // user can navigate to any attendance screen. Without this, the office tz
+    // cache is empty until the late config loads async, and times briefly
+    // render in the device timezone, then repaint in office time. Hydrating
+    // here populates it from the persisted value so office time shows first.
+    hydrateOfficeTimezone().catch(() => { /* ignore — getLateConfig refreshes it */ });
+
     // One-time cleanup: remove any broken queue items from older code versions
     // (e.g. items with operation='checkout' that Odoo rejects).
     offlineQueue.getAll().then(async (items) => {

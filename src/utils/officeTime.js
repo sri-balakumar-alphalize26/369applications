@@ -18,6 +18,7 @@ let _officeTz = null;
 
 export const setOfficeTimezone = (tz) => {
   if (tz && typeof tz === 'string') {
+    if (_officeTz !== tz) console.log('[office-tz] setOfficeTimezone:', _officeTz, '->', tz);
     _officeTz = tz;
     // Persist so forms opened without loading the late config can still hydrate.
     AsyncStorage.setItem(OFFICE_TZ_KEY, tz).catch(() => { /* ignore */ });
@@ -33,6 +34,7 @@ export const hydrateOfficeTimezone = async () => {
   try {
     const tz = await AsyncStorage.getItem(OFFICE_TZ_KEY);
     if (tz && !_officeTz) _officeTz = tz;
+    console.log('[office-tz] hydrate from cache:', tz, '| active now:', _officeTz);
   } catch { /* ignore */ }
   return _officeTz;
 };
@@ -54,13 +56,16 @@ const toDate = (input) => {
 export const formatTimeOffice = (input, { withSeconds = false, hour12 = true } = {}) => {
   const d = toDate(input);
   if (!d) return '';
-  const opts = { hour: '2-digit', minute: '2-digit', hour12 };
+  // Office tz not known yet: show nothing rather than the DEVICE time — the
+  // value fills in (office time) once the tz hydrates and the screen re-renders.
+  if (!_officeTz) return '';
+  const opts = { hour: '2-digit', minute: '2-digit', hour12, timeZone: _officeTz };
   if (withSeconds) opts.second = '2-digit';
   try {
-    if (_officeTz) opts.timeZone = _officeTz;
     return new Intl.DateTimeFormat('en-US', opts).format(d);
   } catch (e) {
-    return d.toLocaleTimeString('en-US', opts);
+    // Last resort: Intl can't honour this tz on this device — better some time than none.
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12 });
   }
 };
 
@@ -70,9 +75,10 @@ export const formatTimeOffice = (input, { withSeconds = false, hour12 = true } =
 export const formatDateOffice = (input, opts = { day: '2-digit', month: 'short', year: 'numeric' }) => {
   const d = toDate(input);
   if (!d) return '';
+  // Office tz not known yet: show nothing rather than the device-tz calendar day.
+  if (!_officeTz) return '';
   try {
-    const o = { ...opts };
-    if (_officeTz) o.timeZone = _officeTz;
+    const o = { ...opts, timeZone: _officeTz };
     return new Intl.DateTimeFormat('en-GB', o).format(d);
   } catch (e) {
     return d.toLocaleDateString('en-GB', opts);
@@ -88,9 +94,10 @@ export const formatDateTimeOffice = (input, opts = {}) => {
     hour: '2-digit', minute: '2-digit', hour12: false,
     ...opts,
   };
+  // Office tz not known yet: show nothing rather than the device timezone.
+  if (!_officeTz) return '';
   try {
-    const o = { ...base };
-    if (_officeTz) o.timeZone = _officeTz;
+    const o = { ...base, timeZone: _officeTz };
     return new Intl.DateTimeFormat('en-GB', o).format(d);
   } catch (e) {
     return d.toLocaleString('en-GB', base);

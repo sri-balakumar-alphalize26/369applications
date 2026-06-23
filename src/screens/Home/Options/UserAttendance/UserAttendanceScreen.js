@@ -44,7 +44,7 @@ import TripDetailSheet from '@screens/Home/Options/UserAttendance/FieldAttendanc
 import VisitsListSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/VisitsListSheet';
 import ClosePreviousTripSheet from '@screens/Home/Options/UserAttendance/FieldAttendance/sheets/ClosePreviousTripSheet';
 import { computeLocalLateInfo, floatToHM } from '@utils/lateLogic';
-import { formatTimeOffice, formatDateOffice } from '@utils/officeTime';
+import { formatTimeOffice, formatDateOffice, hydrateOfficeTimezone, getOfficeTimezone } from '@utils/officeTime';
 import * as offlineQueue from '@utils/offlineQueue';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { MaterialIcons, Feather, Ionicons } from '@expo/vector-icons';
@@ -317,6 +317,13 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   // network-only features. Subscribes via the same poll-based helper used by
   // OfflineSyncService — fires when state flips between online/offline.
   const [offline, setOffline] = useState(false);
+  // Seed the office timezone on mount so attendance/leave/waiver/field times
+  // render in office time (not the device timezone) even before the late config
+  // loads. getLateConfig/getCachedLateConfig refresh it once the employee is verified.
+  useEffect(() => {
+    hydrateOfficeTimezone();
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     networkStatus.isOnline().then((online) => {
@@ -1449,6 +1456,22 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     })();
   }, [verifiedEmployee?.id, offline]);
 
+  // Re-pull the office timezone / late config every time this screen regains
+  // focus (online + verified). The prefetch effect above only runs when the
+  // verified employee changes, so an admin's change to the Office Timezone
+  // would otherwise not show until the user re-verifies or restarts the app.
+  // Refreshing on focus makes a config change appear on the next visit; the
+  // per-second clock tick re-renders the times into the new timezone.
+  useFocusEffect(
+    useCallback(() => {
+      if (!verifiedEmployee?.id || offline) return;
+      console.log('[office-tz] focus refresh: pulling late config for employee', verifiedEmployee.id, '| tz before:', getOfficeTimezone());
+      getLateConfig(verifiedEmployee.id)
+        .then(() => console.log('[office-tz] focus refresh done | tz after:', getOfficeTimezone()))
+        .catch(() => { /* ignore — cached tz stays */ });
+    }, [verifiedEmployee?.id, offline])
+  );
+
   // Re-prompt the user with the You're Late popup if today's check-in is
   // late and has no `late_reason` recorded yet — works online (queries
   // Odoo) AND offline (recomputes locally and reads the offline queue).
@@ -1561,6 +1584,24 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const formatTime = (date) => formatTimeOffice(date, { withSeconds: true });
 
   const formatTimeOnly = (date) => formatTimeOffice(date);
+
+  // Format a check-in/out time LIVE from its raw UTC instant, so it always
+  // reflects the CURRENT office timezone (the pre-formatted checkIn/checkOut
+  // strings are frozen at fetch time and would otherwise show the old tz until
+  // a re-fetch / PIN re-entry). Falls back to the frozen string, then '--:--'.
+  const _ltLogRef = useRef({});
+  const liveCheckTime = (utc, frozen) => {
+    const out = utc ? (formatTimeOffice(utc) || frozen || '--:--') : (frozen || '--:--');
+    if (utc) {
+      // Log only when the value actually changes (avoid per-second clock spam).
+      const sig = `${getOfficeTimezone()}|${utc}|${out}`;
+      if (_ltLogRef.current[utc] !== sig) {
+        _ltLogRef.current[utc] = sig;
+        console.log('[office-tz] liveCheckTime tz=', getOfficeTimezone(), 'utc=', utc, '-> frozen=', frozen, '| live=', out);
+      }
+    }
+    return out;
+  };
 
   const getTodayDateString = () => {
     const d = new Date();
@@ -2283,7 +2324,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         showToastMessage('Check-out successful!');
         // Keep the record visible in this session — show the checkout time in the box.
         // The whole record is cleared when the user leaves the screen via handleBackPress.
-        setTodayAttendance((prev) => prev ? { ...prev, checkOut: result.checkOutTime } : prev);
+        setTodayAttendance((prev) => prev ? { ...prev, checkOut: result.checkOutTime, checkOutTimeUtc: result.checkOutTimeUtc } : prev);
 
         // Pull the FINAL late + worked-hours figures (daily_total_hours is only
         // complete once check_out exists) so the "Today's Details" card shows the
@@ -4044,7 +4085,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           </View>
           <Text style={styles.statusCardLabel}>Check In</Text>
           <Text style={[styles.statusCardValue, todayAttendance?.checkIn && { color: '#4CAF50' }]}>
-            {todayAttendance?.checkIn || '--:--'}
+            {liveCheckTime(todayAttendance?.checkInTimeUtc, todayAttendance?.checkIn)}
           </Text>
         </View>
 
@@ -4054,7 +4095,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           </View>
           <Text style={styles.statusCardLabel}>Check Out</Text>
           <Text style={[styles.statusCardValue, todayAttendance?.checkOut && { color: '#F44336' }]}>
-            {todayAttendance?.checkOut || '--:--'}
+            {liveCheckTime(todayAttendance?.checkOutTimeUtc, todayAttendance?.checkOut)}
           </Text>
         </View>
       </View>
@@ -4148,8 +4189,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
             <Text style={{ fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistBold, color: COLORS.primaryThemeColor }}>Today's Details</Text>
           </View>
           {[
-            { label: 'Check In', value: todayAttendance?.checkIn || '--:--' },
-            { label: 'Check Out', value: todayAttendance?.checkOut || '--:--' },
+            { label: 'Check In', value: liveCheckTime(todayAttendance?.checkInTimeUtc, todayAttendance?.checkIn) },
+            { label: 'Check Out', value: liveCheckTime(todayAttendance?.checkOutTimeUtc, todayAttendance?.checkOut) },
             {
               label: 'Total Hours',
               value: (todayAttendance?.daily_total_hours != null && Number(todayAttendance.daily_total_hours) > 0)
