@@ -56,4 +56,13 @@
 
   <h2>6. Reviewing field attendance</h2>
   <p>Managers open <b>All Field Records</b> to review any employee's day. Group by Employee, Department, Trip, Date or Month, filter by My Records / Late Only / With Deduction / Waived, and open any record to inspect the trips, visits, GPS and trip totals.</p>
+
+  <h2>7. Trip Deviation Check</h2>
+  <p>A trip can carry an estimate &mdash; <b>Estimated KM</b> and <b>Estimated Time</b>. When the trip is closed, the actual distance and duration are compared against that estimate, plus the tolerances HR sets in <b>Late Tracking &rarr; Configuration</b> (<i>Trip KM Tolerance</i>, default 5&nbsp;km, and <i>Trip Time Tolerance</i>, default 10&nbsp;min). The result shows as a <b>Trip Check</b> status:</p>
+  <table>
+    <tr><th>Trip Check</th><th>What it means</th></tr>
+    <tr><td><b>Within Estimate</b></td><td>The trip stayed inside the allowed KM and time. Nothing more to do.</td></tr>
+    <tr><td><b>Over &mdash; Check</b></td><td>The trip went beyond the estimate. A <b>Deviation Reason is required before the record can be saved</b> &mdash; type why the trip ran longer (detour, traffic, extra stop) in the <i>&ldquo;Reason for going beyond the estimated KM / time&hellip;&rdquo;</i> box.</td></tr>
+  </table>
+  <div class="note"><b>Managers</b> review deviations under <b>All Field Records &rarr; Trip Summary</b> (grouped by Employee and Date). Alongside the usual trip columns it shows <b>Extra KM</b>, <b>Extra Time (Hrs)</b>, the <b>Trip Check</b> status (over rows highlighted in red) and the <b>Deviation Reason</b>. Use the <b>Over / Check</b> filter to list only the trips that exceeded their estimate.</div>
 </div>

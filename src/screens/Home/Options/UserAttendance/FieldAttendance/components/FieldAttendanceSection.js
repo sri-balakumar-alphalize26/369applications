@@ -18,6 +18,7 @@ import {
   readVehicleTrackingForTripIdsOdoo,
   readFieldAttendanceDetailOdoo,
   readVehicleLocationsOdoo,
+  submitTripDeviationReasonOdoo,
 } from '@api/services/generalApi';
 import { submitLateReason } from '@services/AttendanceService';
 import { formatDateTimeOffice } from '@utils/officeTime';
@@ -186,6 +187,22 @@ const FieldAttendanceSection = ({
   const [closePrevOpen, setClosePrevOpen] = useState(false);
   const [closePrevMeta, setClosePrevMeta] = useState({ ref: '', startKm: 0 });
   const [pendingNextAction, setPendingNextAction] = useState(null);
+
+  // Deviation reason (per-trip): when a trip ends "Over" the estimate, the
+  // employee must explain it before the flow continues. resolveDeviationsThen()
+  // returns a promise the close/checkout handlers await; the modal's Submit
+  // resolves it once every over-trip has a reason.
+  const [showDeviationModal, setShowDeviationModal] = useState(false);
+  const [deviationReasonText, setDeviationReasonText] = useState('');
+  const [deviationQueue, setDeviationQueue] = useState([]);
+  const [currentDeviationTrip, setCurrentDeviationTrip] = useState(null);
+  const [deviationSaving, setDeviationSaving] = useState(false);
+  const deviationResolveRef = useRef(null);
+  // Guards the auto-prompt effect so it never runs concurrently with itself.
+  const deviationAutoCheckRef = useRef(false);
+  // Holds the in-flight resolveDeviationsThen() promise so concurrent callers
+  // (auto-prompt effect + close/checkout/start-trip gates) share one session.
+  const deviationPromiseRef = useRef(null);
   const [primaryOpen, setPrimaryOpen] = useState(false);
   const [outboundOpen, setOutboundOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -461,6 +478,12 @@ const FieldAttendanceSection = ({
       console.log(TAG, '  blocked: attendance is checked out');
       return;
     }
+    // Mandatory deviation reason gate: if any already-closed trip ended
+    // "Over" and still has no reason (e.g. the user reloaded the app before
+    // submitting it), force the popup here before a new Secondary/Additional
+    // trip can be started. resolveDeviationsThen() returns immediately when
+    // there's nothing pending.
+    await resolveDeviationsThen();
     // Wipe any leftover pendingTripId/pendingVisitId from a previous
     // create-new flow. Otherwise the popup we're about to open will
     // pre-select the OLD trip (the user just-tapped button is supposed
@@ -678,6 +701,142 @@ const FieldAttendanceSection = ({
     navigation.navigate('VisitForm', { returnTo: 'fieldAttendance', prefillPurposeId, prefillPurposeName });
   };
 
+  // Find this attendance's trips that ended "Over" with no reason yet, and
+  // (if any) prompt for each before resolving. Returns a promise the caller
+  // awaits so the close/checkout chain pauses until reasons are entered.
+  //
+  // De-duped via deviationPromiseRef: the auto-prompt effect, the close/
+  // checkout gates, and the start-next-trip gate may all call this near-
+  // simultaneously. Without dedupe they'd each open a fresh prompt and
+  // overwrite deviationResolveRef, orphaning a promise that never resolves
+  // (hanging the awaiting flow). Concurrent callers now share ONE session.
+  const resolveDeviationsThen = useCallback(async () => {
+    if (deviationPromiseRef.current) return deviationPromiseRef.current;
+    const session = (async () => {
+      try {
+        const faState = await getFieldAttendanceStateOdoo(attendanceId);
+        const ids = new Set();
+        if (faState?.source_trip?.id) ids.add(Number(faState.source_trip.id));
+        (faState?.trip_lines || []).forEach((l) => l?.trip?.id && ids.add(Number(l.trip.id)));
+        (faState?.return_lines || []).forEach((l) => l?.trip?.id && ids.add(Number(l.trip.id)));
+        console.log('[FA-DEVIATION] checking trips', Array.from(ids));
+        if (ids.size === 0) return;
+        const trips = await readVehicleTrackingForTripIdsOdoo(Array.from(ids));
+        (trips || []).forEach((t) => console.log('[FA-DEVIATION]   trip', t?.id, t?.ref,
+          '| check=', t?.trip_check_status, '| reason=', JSON.stringify(t?.deviation_reason),
+          '| est_km=', t?.estimated_km, 'est_time=', t?.estimated_time,
+          '| km_travelled=', t?.km_travelled, 'duration=', t?.duration,
+          '| km_var=', t?.km_variance, 'time_var=', t?.time_variance));
+        const pending = (trips || []).filter(
+          (t) => t?.trip_check_status === 'over'
+            && !(t?.deviation_reason && String(t.deviation_reason).trim())
+        );
+        console.log('[FA-DEVIATION] pending(needs reason) =', pending.map((t) => t.id));
+        if (pending.length === 0) return;
+        // Enrich each over-trip with Estimated/Actual/Extra fields for the popup.
+        // These trips are already ended, so km_travelled/duration/variance are final.
+        const enriched = pending.map((t) => buildDeviationTrip(t, null));
+        // Open the modal and wait until every pending trip has a reason.
+        await new Promise((resolve) => {
+          deviationResolveRef.current = resolve;
+          setDeviationQueue(enriched);
+          setCurrentDeviationTrip(enriched[0]);
+          setDeviationReasonText('');
+          setShowDeviationModal(true);
+        });
+      } catch (e) {
+        console.warn('[FA-DEVIATION] lookup failed (not blocking):', e?.message);
+      } finally {
+        deviationPromiseRef.current = null;
+      }
+    })();
+    deviationPromiseRef.current = session;
+    return session;
+  }, [attendanceId]);
+
+  const submitDeviationReason = useCallback(async () => {
+    const reason = deviationReasonText.trim();
+    if (!reason || !currentDeviationTrip?.id) return;
+    setDeviationSaving(true);
+    try {
+      console.log('[FA-DEVIATION] submit reason for trip', currentDeviationTrip.id, JSON.stringify(reason));
+      await submitTripDeviationReasonOdoo(currentDeviationTrip.id, reason);
+      const rest = deviationQueue.filter((t) => t.id !== currentDeviationTrip.id);
+      setDeviationReasonText('');
+      if (rest.length) {
+        console.log('[FA-DEVIATION] next over-trip', rest[0].id, '— remaining', rest.map((t) => t.id));
+        setDeviationQueue(rest);
+        setCurrentDeviationTrip(rest[0]);
+      } else {
+        console.log('[FA-DEVIATION] all reasons captured — resuming flow');
+        setShowDeviationModal(false);
+        setDeviationQueue([]);
+        setCurrentDeviationTrip(null);
+        const resolve = deviationResolveRef.current;
+        deviationResolveRef.current = null;
+        if (resolve) resolve();
+      }
+    } catch (e) {
+      console.warn('[FA-DEVIATION] save reason failed:', e?.message);
+      showToastMessage(e?.message || 'Could not save the reason');
+    } finally {
+      setDeviationSaving(false);
+    }
+  }, [deviationReasonText, currentDeviationTrip, deviationQueue]);
+
+  // Mandatory deviation reason — auto-prompt on load/refresh. Whenever the FA
+  // state is loaded (and not checked out), check the server for any closed
+  // "Over" trip that still lacks a reason and force the popup. This makes the
+  // reason truly mandatory: even after an app reload that dropped the in-memory
+  // modal, re-opening the screen re-surfaces the popup without needing a tap.
+  // The ref guards against concurrent runs; the showDeviationModal check avoids
+  // re-entering while it's already open.
+  useEffect(() => {
+    if (loading || !state || isCheckedOut) return;
+    if (showDeviationModal || deviationAutoCheckRef.current) return;
+    deviationAutoCheckRef.current = true;
+    (async () => {
+      try {
+        await resolveDeviationsThen();
+      } finally {
+        deviationAutoCheckRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, state, isCheckedOut, showDeviationModal]);
+
+  // Build an enriched trip object for the deviation popup so it can show
+  // Estimated / Actual / Extra for both KM and time. The popup runs AFTER the
+  // trip has closed (resolveDeviationsThen), so the trip's km_travelled /
+  // duration / variance are final; endKm is unused here but kept for callers
+  // that want to derive actual KM from a just-entered End KM.
+  const buildDeviationTrip = (full, endKm) => {
+    // Keep 2 decimals — estimates can be small fractions (e.g. 0.34 km,
+    // 0.02 h); whole-number rounding wiped them out to 0. Numbers render
+    // without trailing zeros (14, 0.34, 12.99) so the popup mirrors Odoo.
+    const km1 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const hr1 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const startKm = Number(full?.start_km) || 0;
+    const estKm = Number(full?.estimated_km) || 0;
+    const estTime = Number(full?.estimated_time) || 0;
+    const actualKm = endKm != null ? Math.max(0, Number(endKm) - startKm) : (Number(full?.km_travelled) || 0);
+    const actualTime = Number(full?.duration) || 0;
+    const varKm = Number(full?.km_variance);
+    const varTime = Number(full?.time_variance);
+    // Prefer the server-computed variance; otherwise derive from actual-est.
+    const extraKm = Number.isFinite(varKm) && varKm !== 0 ? varKm : actualKm - estKm;
+    const extraTime = Number.isFinite(varTime) && varTime !== 0 ? varTime : actualTime - estTime;
+    return {
+      ...full,
+      estimated_km: km1(estKm),
+      estimated_time: hr1(estTime),
+      km_travelled: km1(actualKm),
+      duration: hr1(actualTime),
+      extra_km: km1(Math.max(0, extraKm)),
+      extra_time: hr1(Math.max(0, extraTime)),
+    };
+  };
+
   // ---------- Mutations ----------
   const handleClosePreviousTrip = async (endKm) => {
     console.log(TAG, 'handleClosePreviousTrip start', { endKm });
@@ -702,6 +861,9 @@ const FieldAttendanceSection = ({
       console.log(TAG, 'closePreviousTrip OK');
       setClosePrevOpen(false);
       await refresh({ silent: true });
+      // The trip just closed — if it ended "Over", get its reason before
+      // moving on to the next trip / checkout.
+      await resolveDeviationsThen();
       if (pendingNextAction) {
         const action = pendingNextAction;
         console.log(TAG, '  chaining to queued next sheet:', action);
@@ -845,6 +1007,8 @@ const FieldAttendanceSection = ({
   // close-prev → checkout path land in the same RPC + toast + refresh code.
   const runCheckOutRpc = async () => {
     console.log(TAG, 'runCheckOutRpc start', { attendanceId });
+    // Gate: every "Over" trip must have a deviation reason before checkout.
+    await resolveDeviationsThen();
     setBusy(true);
     try {
       const res = await fieldActionCheckOutOdoo(attendanceId);
@@ -1264,6 +1428,62 @@ const FieldAttendanceSection = ({
         onSave={handleClosePreviousTrip}
         onClose={() => { setClosePrevOpen(false); setPendingNextAction(null); }}
       />
+
+      {/* Trip Deviation Reason — fires right after a trip closes "Over". */}
+      <Modal visible={showDeviationModal} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={devStyles.overlay}>
+          <View style={devStyles.card}>
+            <View style={devStyles.header}>
+              <MaterialIcons name="warning-amber" size={26} color="#E67E22" />
+              <Text style={devStyles.title}>Trip Needs a Reason</Text>
+            </View>
+            <Text style={devStyles.subtitle}>
+              {currentDeviationTrip?.ref ? `${currentDeviationTrip.ref}: ` : ''}
+              this trip went beyond the estimate.
+            </Text>
+            {currentDeviationTrip && (
+              <View style={devStyles.metricsBox}>
+                <View style={devStyles.metricRow}>
+                  <Text style={devStyles.metricLabel}>Estimated</Text>
+                  <Text style={devStyles.metricVal}>{currentDeviationTrip.estimated_km ?? 0} km</Text>
+                  <Text style={devStyles.metricVal}>{currentDeviationTrip.estimated_time ?? 0} h</Text>
+                </View>
+                <View style={devStyles.metricRow}>
+                  <Text style={devStyles.metricLabel}>Actual</Text>
+                  <Text style={devStyles.metricVal}>{currentDeviationTrip.km_travelled ?? 0} km</Text>
+                  <Text style={devStyles.metricVal}>{currentDeviationTrip.duration ?? 0} h</Text>
+                </View>
+                <View style={[devStyles.metricRow, devStyles.metricRowExtra]}>
+                  <Text style={[devStyles.metricLabel, devStyles.metricLabelExtra]}>Extra over</Text>
+                  <Text style={[devStyles.metricVal, devStyles.metricValExtra]}>+{currentDeviationTrip.extra_km ?? 0} km</Text>
+                  <Text style={[devStyles.metricVal, devStyles.metricValExtra]}>+{currentDeviationTrip.extra_time ?? 0} h</Text>
+                </View>
+              </View>
+            )}
+            {deviationQueue.length > 1 && (
+              <Text style={devStyles.detail}>{deviationQueue.length} trips need a reason</Text>
+            )}
+            <TextInput
+              style={devStyles.input}
+              placeholder="Reason for going beyond the estimated KM / time..."
+              placeholderTextColor="#999"
+              multiline
+              numberOfLines={3}
+              value={deviationReasonText}
+              onChangeText={setDeviationReasonText}
+              textAlignVertical="top"
+            />
+            <TouchableOpacity
+              style={[devStyles.btn, (!deviationReasonText.trim() || deviationSaving) && devStyles.btnDisabled]}
+              disabled={!deviationReasonText.trim() || deviationSaving}
+              onPress={submitDeviationReason}
+            >
+              <Text style={devStyles.btnText}>{deviationSaving ? 'Saving...' : 'Submit Reason'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <TripFormSheet
         visible={primaryOpen}
         mode="primary"
@@ -1756,6 +1976,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#E65100', borderRadius: 10, paddingVertical: 12, marginTop: 16,
   },
   checkoutBtnText: { color: '#fff', fontSize: 14, fontFamily: FONT_FAMILY.urbanistBold },
+});
+
+const devStyles = StyleSheet.create({
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  card: { backgroundColor: '#fff', borderRadius: 16, padding: 20, width: '100%', maxWidth: 400 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  title: { fontSize: 18, color: '#E67E22', fontFamily: FONT_FAMILY.urbanistBold, marginLeft: 8 },
+  subtitle: { fontSize: 14, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium, textAlign: 'center', marginBottom: 6 },
+  detail: { fontSize: 12, color: '#888', fontFamily: FONT_FAMILY.urbanistMedium, textAlign: 'center', marginBottom: 8 },
+  metricsBox: { borderWidth: 1, borderColor: '#EEE', borderRadius: 10, paddingVertical: 4, marginBottom: 12 },
+  metricRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 7, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#F2F2F2' },
+  metricRowExtra: { borderBottomWidth: 0, backgroundColor: '#FFF6EC' },
+  metricLabel: { flex: 1.2, fontSize: 13, color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
+  metricLabelExtra: { color: '#E67E22', fontFamily: FONT_FAMILY.urbanistBold },
+  metricVal: { flex: 1, fontSize: 13, color: '#333', fontFamily: FONT_FAMILY.urbanistBold, textAlign: 'right' },
+  metricValExtra: { color: '#E67E22' },
+  input: { borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 10, padding: 12, fontSize: 14, fontFamily: FONT_FAMILY.urbanistMedium, color: '#222', backgroundColor: '#FAFAFA', minHeight: 80, marginTop: 4, marginBottom: 14 },
+  btn: { backgroundColor: '#2E294E', borderRadius: 10, padding: 14, alignItems: 'center' },
+  btnDisabled: { backgroundColor: '#CCC' },
+  btnText: { fontSize: 15, color: '#fff', fontFamily: FONT_FAMILY.urbanistBold },
 });
 
 export default FieldAttendanceSection;

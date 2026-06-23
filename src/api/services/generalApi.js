@@ -833,6 +833,8 @@ export const readVehicleTrackingForTripIdsOdoo = async (tripIds) => {
         'image_url', 'image_filename', 'remarks',
         // Misc form fields
         'estimated_time', 'estimated_km', 'km_variance', 'time_variance', 'invoice_number',
+        // Deviation check (Over/Within) + the mandatory reason
+        'trip_check_status', 'deviation_reason',
       ],
     },
   });
@@ -1026,15 +1028,32 @@ export const endVehicleTripFromAttendanceOdoo = async (tripId, endTime, endKm) =
   } else {
     endStr = new Date().toISOString().replace('T', ' ').replace(/\..*/, '');
   }
-  const payload = { end_trip: true, end_time: endStr };
+  let endKmArg = null;
   if (endKm != null && endKm !== '') {
     const n = Number(endKm);
-    if (!Number.isNaN(n)) payload.end_km = n;
+    if (!Number.isNaN(n)) endKmArg = n;
   }
+  // Use the dedicated server method (not a raw write): it ends an "Over" trip
+  // by setting the deviation bypass on the trip recordset and flushing within
+  // that context. A raw write + context kwarg fails — the trip_check_status
+  // constraint fires on a deferred flush that's lost the context. The app
+  // collects the mandatory deviation reason right after (at the checkout gate).
+  const result = await _fieldRpc({
+    model: 'vehicle.tracking',
+    method: 'field_end_trip',
+    args: [Number(tripId), endKmArg, endStr],
+  });
+  if (result?.error) throw new Error(result.error);
+  return true;
+};
+
+// Store the deviation reason for an "Over — Check" trip (mobile checkout gate).
+export const submitTripDeviationReasonOdoo = async (tripId, reason) => {
+  if (!tripId) throw new Error('tripId is required');
   await _fieldRpc({
     model: 'vehicle.tracking',
-    method: 'write',
-    args: [[Number(tripId)], payload],
+    method: 'set_trip_deviation_reason',
+    args: [[Number(tripId)], reason || ''],
   });
   return true;
 };

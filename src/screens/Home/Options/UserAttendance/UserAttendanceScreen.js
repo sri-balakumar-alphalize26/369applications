@@ -25,12 +25,14 @@ import {
   searchAvailableTripsOdoo,
   searchDraftCustomerVisitsOdoo,
   readVehicleTrackingForTripIdsOdoo,
+  readVehicleLocationsOdoo,
   readCustomerVisitsByIdsOdoo,
   getFieldAttendanceStateOdoo,
   updateFieldAttendancePrimaryTripOdoo,
   createFieldTripLineOdoo,
   deleteFieldTripLineOdoo,
   endVehicleTripFromAttendanceOdoo,
+  submitTripDeviationReasonOdoo,
   markCustomerVisitsDoneOdoo,
 } from '@api/services/generalApi';
 import HistoryListItem from '@screens/Home/Options/UserAttendance/FieldAttendance/components/HistoryListItem';
@@ -127,6 +129,30 @@ const flattenTripForForm = (trip) => {
   };
 };
 
+// Enrich an over-trip with Estimated / Actual / Extra fields (2-decimal) for the
+// checkout deviation popup, so it matches FieldAttendanceSection's popup exactly.
+// Prefers the server-computed km_variance/time_variance; otherwise actual-est.
+const buildDeviationTrip = (full) => {
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const estKm = Number(full?.estimated_km) || 0;
+  const estTime = Number(full?.estimated_time) || 0;
+  const actualKm = Number(full?.km_travelled) || 0;
+  const actualTime = Number(full?.duration) || 0;
+  const varKm = Number(full?.km_variance);
+  const varTime = Number(full?.time_variance);
+  const extraKm = Number.isFinite(varKm) && varKm !== 0 ? varKm : actualKm - estKm;
+  const extraTime = Number.isFinite(varTime) && varTime !== 0 ? varTime : actualTime - estTime;
+  return {
+    ...full,
+    estimated_km: r2(estKm),
+    estimated_time: r2(estTime),
+    km_travelled: r2(actualKm),
+    duration: r2(actualTime),
+    extra_km: r2(Math.max(0, extraKm)),
+    extra_time: r2(Math.max(0, extraTime)),
+  };
+};
+
 const UserAttendanceScreen = ({ navigation, route }) => {
   const initialMode = route?.params?.initialMode || null;
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -175,6 +201,14 @@ const UserAttendanceScreen = ({ navigation, route }) => {
   const [pendingLateAction, setPendingLateAction] = useState(null);
   const [lateInfo, setLateInfo] = useState(null); // { isLate, lateMinutes, lateSequence }
 
+  // Trip deviation reason (checkout gate): trips that ended "Over" the estimate
+  // must get a reason before the employee can check out.
+  const [showDeviationModal, setShowDeviationModal] = useState(false);
+  const [deviationReasonText, setDeviationReasonText] = useState('');
+  const [deviationQueue, setDeviationQueue] = useState([]);       // trips still needing a reason
+  const [currentDeviationTrip, setCurrentDeviationTrip] = useState(null);
+  const [deviationSaving, setDeviationSaving] = useState(false);
+
   // Customer Visit (field-work) state — when on, geofence check is skipped
   // and a customer.visit record is created at check-in / closed at check-out.
   const [fieldVisitMode, setFieldVisitMode] = useState(false);
@@ -219,6 +253,10 @@ const UserAttendanceScreen = ({ navigation, route }) => {
     tripRef: '',
     startKm: 0,
     saving: false,
+    // Destination coords for the GPS verify box (same as the additional-trip
+    // popup). Null when the trip's destination has no stored location.
+    destCoords: null,
+    destName: '',
   });
   // After Create-New-Trip → VehicleTrackingForm → Start Trip, we want to
   // re-open the picker the user came from. These flags track that.
@@ -796,20 +834,124 @@ const UserAttendanceScreen = ({ navigation, route }) => {
 
   // Runs the original confirm + camera + checkout flow. Extracted so the
   // end-KM prompt path and the no-open-trip path can share it.
+  // Find ended trips that came back "Over" the estimate and still have no
+  // deviation reason — these must be explained before checkout.
+  const getOverTripsNeedingReason = useCallback(async () => {
+    if (!fieldData?.attendance_id) {
+      console.log('[UA-DEVIATION] getOverTrips: no attendance_id → []');
+      return [];
+    }
+    try {
+      const faState = await getFieldAttendanceStateOdoo(fieldData.attendance_id);
+      const ids = new Set();
+      if (faState?.source_trip?.id) ids.add(Number(faState.source_trip.id));
+      (faState?.trip_lines || []).forEach((l) => l?.trip?.id && ids.add(Number(l.trip.id)));
+      (faState?.return_lines || []).forEach((l) => l?.trip?.id && ids.add(Number(l.trip.id)));
+      console.log('[UA-DEVIATION] getOverTrips: attendance', fieldData.attendance_id,
+        '→ trip ids', Array.from(ids));
+      if (ids.size === 0) return [];
+      const trips = await readVehicleTrackingForTripIdsOdoo(Array.from(ids));
+      (trips || []).forEach((t) => console.log('[UA-DEVIATION]   trip', t?.id, t?.ref,
+        '| check=', t?.trip_check_status,
+        '| reason=', JSON.stringify(t?.deviation_reason),
+        '| km=', t?.km_travelled, 'est', t?.estimated_km,
+        '| dur=', t?.duration, 'est', t?.estimated_time));
+      const pending = (trips || []).filter(
+        (t) => t?.trip_check_status === 'over'
+          && !(t?.deviation_reason && String(t.deviation_reason).trim())
+      );
+      console.log('[UA-DEVIATION] getOverTrips: pending(needs reason) =', pending.length,
+        pending.map((t) => t.id));
+      return pending;
+    } catch (e) {
+      console.warn('[UA-DEVIATION] over-trip lookup failed:', e?.message);
+      return []; // don't block checkout on a transient lookup error
+    }
+  }, [fieldData]);
+
   const proceedWithFieldCheckOut = useCallback(() => {
-    showAlert({
-      message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
-      confirmText: 'Check Out',
-      cancelText: 'Cancel',
-      onConfirm: async () => {
-        hideAlert();
-        setCheckOutSubmitting(true);
-        const opened = await openCamera('field_check_out');
-        if (!opened) setCheckOutSubmitting(false);
-      },
-      onCancel: hideAlert,
-    });
-  }, [showAlert, hideAlert]);
+    (async () => {
+      console.log('[UA-DEVIATION] proceedWithFieldCheckOut: running checkout gate...');
+      // Gate: any "Over" trip must have a deviation reason first.
+      const pending = await getOverTripsNeedingReason();
+      if (pending.length) {
+        console.log('[UA-DEVIATION] blocking checkout —', pending.length, 'over trip(s) need a reason');
+        const enriched = pending.map(buildDeviationTrip);
+        setDeviationQueue(enriched);
+        setCurrentDeviationTrip(enriched[0]);
+        setDeviationReasonText('');
+        setShowDeviationModal(true);
+        return;
+      }
+      console.log('[UA-DEVIATION] gate clear — no over trips pending, proceeding to checkout confirm');
+      showAlert({
+        message: 'Check out now? This will close your latest open trip and mark all draft visits as done.',
+        confirmText: 'Check Out',
+        cancelText: 'Cancel',
+        onConfirm: async () => {
+          hideAlert();
+          setCheckOutSubmitting(true);
+          const opened = await openCamera('field_check_out');
+          if (!opened) setCheckOutSubmitting(false);
+        },
+        onCancel: hideAlert,
+      });
+    })();
+  }, [showAlert, hideAlert, getOverTripsNeedingReason]);
+
+  // Deviation modal submit: save this trip's reason, then either prompt the
+  // next over-trip or resume checkout.
+  const submitDeviationReason = useCallback(async () => {
+    const reason = deviationReasonText.trim();
+    if (!reason || !currentDeviationTrip?.id) return;
+    setDeviationSaving(true);
+    try {
+      console.log('[UA-DEVIATION] submit reason for trip', currentDeviationTrip.id, '→', JSON.stringify(reason));
+      await submitTripDeviationReasonOdoo(currentDeviationTrip.id, reason);
+      const rest = deviationQueue.filter((t) => t.id !== currentDeviationTrip.id);
+      console.log('[UA-DEVIATION] saved; remaining over-trips:', rest.map((t) => t.id));
+      setDeviationReasonText('');
+      if (rest.length) {
+        setDeviationQueue(rest);
+        setCurrentDeviationTrip(rest[0]);
+      } else {
+        setShowDeviationModal(false);
+        setDeviationQueue([]);
+        setCurrentDeviationTrip(null);
+        proceedWithFieldCheckOut(); // re-run gate → none left → checkout proceeds
+      }
+    } catch (e) {
+      console.warn('[UA-DEVIATION] save reason failed:', e?.message);
+      showToastMessage(e?.message || 'Could not save the reason');
+    } finally {
+      setDeviationSaving(false);
+    }
+  }, [deviationReasonText, currentDeviationTrip, deviationQueue, proceedWithFieldCheckOut]);
+
+  // Resolve a trip's DESTINATION coords so the checkout End-KM popup can run
+  // the same GPS verify as the additional-trip popup. The trip read only gives
+  // destination_id as [id, name]; lat/long live on vehicle.location. Mirrors
+  // FieldAttendanceSection.resolveDestCoords.
+  const resolveDestCoords = useCallback(async (full) => {
+    try {
+      const destId = Array.isArray(full?.destination_id) ? full.destination_id[0] : full?.destination_id;
+      const destName = full?.destination_name
+        || (Array.isArray(full?.destination_id) ? full.destination_id[1] : '') || '';
+      if (!destId) return { destCoords: null, destName };
+      const locs = await readVehicleLocationsOdoo([destId]);
+      const loc = locs?.[0];
+      if (loc && loc.latitude != null && loc.longitude != null) {
+        return {
+          destCoords: { latitude: Number(loc.latitude), longitude: Number(loc.longitude) },
+          destName: destName || loc.name || '',
+        };
+      }
+      return { destCoords: null, destName };
+    } catch (e) {
+      console.warn('[UA-CHECKOUT] resolveDestCoords failed:', e?.message);
+      return { destCoords: null, destName: '' };
+    }
+  }, []);
 
   // Check Out — if the last trip is still open, prompt for end_km first
   // and bulk-mark draft visits done; then run the existing confirm + camera
@@ -833,12 +975,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       if (pending && Number(pending.attendanceId) === Number(fieldData.attendance_id)) {
         console.log('[UA-CHECKOUT]   pending secondary trip detected — opening End KM popup',
           { tripId: pending.tripId, startKm: pending.startKm });
+        let dc = { destCoords: null, destName: '' };
+        try {
+          const rows = await readVehicleTrackingForTripIdsOdoo([Number(pending.tripId)]);
+          dc = await resolveDestCoords(rows?.[0]);
+        } catch (e) {
+          console.warn('[UA-CHECKOUT]   dest coords resolve failed (pending):', e?.message);
+        }
         setEndKmPrompt({
           visible: true,
           tripId: pending.tripId,
           tripRef: pending.ref || `Trip #${pending.tripId}`,
           startKm: Number(pending.startKm) || 0,
           saving: false,
+          destCoords: dc.destCoords,
+          destName: dc.destName,
         });
         return;
       }
@@ -866,12 +1017,21 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           if (!endKm) {
             console.log('[UA-CHECKOUT]   trip has no end_km — opening End KM popup',
               { tripId, startKm });
+            let dc = { destCoords: null, destName: '' };
+            try {
+              const rows = await readVehicleTrackingForTripIdsOdoo([tripId]);
+              dc = await resolveDestCoords(rows?.[0]);
+            } catch (e) {
+              console.warn('[UA-CHECKOUT]   dest coords resolve failed (last-trip):', e?.message);
+            }
             setEndKmPrompt({
               visible: true,
               tripId,
               tripRef: lastTrip.ref || `Trip #${tripId}`,
               startKm,
               saving: false,
+              destCoords: dc.destCoords,
+              destName: dc.destName,
             });
             return;
           }
@@ -915,6 +1075,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       // hydration; `_serialize_trip` historically didn't include start_km.
       (async () => {
         let startKm = 0;
+        let dc = { destCoords: null, destName: '' };
         try {
           console.log('[UA-CHECKOUT]   hydrating prev trip start_km from server', { tripId: lastOpen.tripId });
           const rows = await readVehicleTrackingForTripIdsOdoo([Number(lastOpen.tripId)]);
@@ -925,6 +1086,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           } else {
             console.log('[UA-CHECKOUT]   hydrate returned no start_km, defaulting to 0');
           }
+          // Resolve destination coords from the same record for the GPS verify.
+          dc = await resolveDestCoords(full);
         } catch (e) {
           console.warn('[UA-CHECKOUT]   hydrate start_km failed, defaulting to 0:', e?.message);
         }
@@ -939,6 +1102,8 @@ const UserAttendanceScreen = ({ navigation, route }) => {
           tripRef: lastOpen.tripRef,
           startKm,
           saving: false,
+          destCoords: dc.destCoords,
+          destName: dc.destName,
         });
       })();
       return;
@@ -976,7 +1141,7 @@ const UserAttendanceScreen = ({ navigation, route }) => {
       // is now closed on the server. Harmless when no marker exists.
       try { await clearPendingSecondaryTrip(); } catch (_) {}
       await markAllDayVisitsDone();
-      setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false });
+      setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false, destCoords: null, destName: '' });
       if (fieldData?.attendance_id) {
         await refreshFieldDetail(fieldData.attendance_id);
       }
@@ -4587,6 +4752,70 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         </View>
       </Modal>
 
+      {/* Trip Deviation Reason Modal — gates checkout for "Over" trips */}
+      <Modal
+        visible={showDeviationModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={styles.lateModalOverlay}>
+          <View style={styles.lateModalContainer}>
+            <View style={styles.lateModalHeader}>
+              <MaterialIcons name="warning-amber" size={scale(28)} color="#E67E22" />
+              <Text style={[styles.lateModalTitle, { color: '#E67E22' }]}>Trip Needs a Reason</Text>
+            </View>
+            <Text style={styles.lateModalSubtitle}>
+              {currentDeviationTrip?.ref ? `${currentDeviationTrip.ref}: ` : ''}
+              this trip went beyond the estimate.
+            </Text>
+            {currentDeviationTrip && (
+              <View style={styles.devMetricsBox}>
+                <View style={styles.devMetricRow}>
+                  <Text style={styles.devMetricLabel}>Estimated</Text>
+                  <Text style={styles.devMetricVal}>{currentDeviationTrip.estimated_km ?? 0} km</Text>
+                  <Text style={styles.devMetricVal}>{currentDeviationTrip.estimated_time ?? 0} h</Text>
+                </View>
+                <View style={styles.devMetricRow}>
+                  <Text style={styles.devMetricLabel}>Actual</Text>
+                  <Text style={styles.devMetricVal}>{currentDeviationTrip.km_travelled ?? 0} km</Text>
+                  <Text style={styles.devMetricVal}>{currentDeviationTrip.duration ?? 0} h</Text>
+                </View>
+                <View style={[styles.devMetricRow, styles.devMetricRowExtra]}>
+                  <Text style={[styles.devMetricLabel, styles.devMetricLabelExtra]}>Extra over</Text>
+                  <Text style={[styles.devMetricVal, styles.devMetricValExtra]}>+{currentDeviationTrip.extra_km ?? 0} km</Text>
+                  <Text style={[styles.devMetricVal, styles.devMetricValExtra]}>+{currentDeviationTrip.extra_time ?? 0} h</Text>
+                </View>
+              </View>
+            )}
+            {deviationQueue.length > 1 && (
+              <Text style={styles.lateModalDetail}>
+                {deviationQueue.length} trips need a reason
+              </Text>
+            )}
+            <TextInput
+              style={styles.lateReasonInput}
+              placeholder="Reason for going beyond the estimated KM / time..."
+              placeholderTextColor="#999"
+              multiline
+              numberOfLines={3}
+              value={deviationReasonText}
+              onChangeText={setDeviationReasonText}
+              textAlignVertical="top"
+            />
+            <TouchableOpacity
+              style={[styles.lateSubmitButton, (!deviationReasonText.trim() || deviationSaving) && styles.lateSubmitButtonDisabled]}
+              disabled={!deviationReasonText.trim() || deviationSaving}
+              onPress={submitDeviationReason}
+            >
+              <Text style={styles.lateSubmitButtonText}>
+                {deviationSaving ? 'Saving...' : 'Submit Reason'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Late Reason Modal */}
       <Modal
         visible={showLateReasonModal}
@@ -4760,11 +4989,13 @@ const UserAttendanceScreen = ({ navigation, route }) => {
         title={`End KM for ${endKmPrompt.tripRef || `Trip #${endKmPrompt.tripId || ''}`}`}
         disclaimer={"Enter the trip's end odometer reading. We'll close the trip with this value and mark its visits done before checking you out."}
         saveLabel="Save & Checkout"
+        destinationCoords={endKmPrompt.destCoords}
+        destinationName={endKmPrompt.destName}
         onSave={submitEndKmAndCheckout}
         onClose={() => {
           if (!endKmPrompt.saving) {
             console.log('[UA-CHECKOUT] End KM prompt closed by user');
-            setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false });
+            setEndKmPrompt({ visible: false, tripId: null, tripRef: '', startKm: 0, saving: false, destCoords: null, destName: '' });
           }
         }}
       />
@@ -5033,6 +5264,15 @@ const styles = StyleSheet.create({
   lateDeductionText: { fontSize: scale(13), color: '#E74C3C', fontFamily: FONT_FAMILY.urbanistBold, textAlign: 'center', marginBottom: scale(10), backgroundColor: '#FDE8E8', paddingVertical: scale(6), paddingHorizontal: scale(12), borderRadius: scale(8) },
   lateReasonLabel: { fontSize: scale(13), fontWeight: '600', color: COLORS.black, fontFamily: FONT_FAMILY.urbanistBold, marginBottom: scale(6), marginTop: scale(4) },
   lateReasonInput: { borderWidth: 1, borderColor: '#E0E0E0', borderRadius: scale(10), padding: scale(12), fontSize: scale(14), fontFamily: FONT_FAMILY.urbanistMedium, color: COLORS.black, backgroundColor: '#FAFAFA', minHeight: scale(80), marginBottom: scale(14) },
+  // Deviation popup metrics grid — mirrors FieldAttendanceSection devStyles so
+  // the checkout "Trip Needs a Reason" popup matches the field-attendance one.
+  devMetricsBox: { borderWidth: 1, borderColor: '#EEE', borderRadius: scale(10), paddingVertical: scale(4), marginBottom: scale(12) },
+  devMetricRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: scale(7), paddingHorizontal: scale(12), borderBottomWidth: 1, borderBottomColor: '#F2F2F2' },
+  devMetricRowExtra: { borderBottomWidth: 0, backgroundColor: '#FFF6EC' },
+  devMetricLabel: { flex: 1.2, fontSize: scale(13), color: '#666', fontFamily: FONT_FAMILY.urbanistMedium },
+  devMetricLabelExtra: { color: '#E67E22', fontFamily: FONT_FAMILY.urbanistBold },
+  devMetricVal: { flex: 1, fontSize: scale(13), color: '#333', fontFamily: FONT_FAMILY.urbanistBold, textAlign: 'right' },
+  devMetricValExtra: { color: '#E67E22' },
   lateSubmitButton: { backgroundColor: COLORS.primaryThemeColor, borderRadius: scale(10), padding: scale(14), alignItems: 'center' },
   lateSubmitButtonDisabled: { backgroundColor: '#CCC' },
   lateSubmitButtonText: { fontSize: scale(15), fontWeight: 'bold', color: COLORS.white, fontFamily: FONT_FAMILY.urbanistBold },

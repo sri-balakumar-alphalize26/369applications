@@ -114,6 +114,19 @@ const ClosePreviousTripSheet = ({
           return;
         }
       }
+      if (verify.status === 'unavailable') {
+        // Couldn't get a GPS fix. Retry once: 1st tap re-checks and blocks with
+        // a hint, 2nd tap enables the save so the driver isn't trapped.
+        if (saveAttempts >= 1) {
+          console.warn(TAG, '  unavailable but 2nd attempt — saving anyway');
+        } else {
+          console.warn(TAG, '  blocked: GPS unavailable — re-checking (retry available)');
+          setSaveAttempts((a) => a + 1);
+          runVerify();
+          setErrorText(`Couldn't get your location — re-checking. Tap ${saveLabel} again to continue.`);
+          return;
+        }
+      }
     }
     console.log(TAG, '  validation OK → onSave');
     setErrorText('');

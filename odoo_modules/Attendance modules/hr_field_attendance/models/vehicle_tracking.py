@@ -89,10 +89,38 @@ class VehicleTracking(models.Model):
         return self.trip_check_status == 'over' and not (self.deviation_reason or '').strip()
 
     def set_trip_deviation_reason(self, reason):
-        """Mobile entry point: store the deviation reason for an over trip."""
+        """Mobile entry point: store the deviation reason for an over trip.
+
+        The reason is entered AFTER the trip has ended, so the trip is already
+        finalized. The base write() lock guard would otherwise reject any edit
+        to a finalized trip ("This trip is finalized and cannot be edited"), so
+        write under bypass_lock — the guard's own escape hatch — to allow this
+        intentional post-finalization update of just the deviation_reason.
+        """
         self.ensure_one()
-        self.write({'deviation_reason': reason or ''})
+        self.with_context(bypass_lock=True).write({'deviation_reason': reason or ''})
         return {'success': True, 'trip_check_status': self.trip_check_status}
+
+    @api.model
+    def field_end_trip(self, trip_id, end_km=None, end_time=None):
+        """Mobile entry point: end a specific trip by id (used by the checkout
+        End-KM popup). Ends an "Over" trip too — the bypass context is set on
+        the trip recordset and the recompute/constraint are forced to run via
+        flush_recordset() WHILE the bypass is active. A plain RPC `write` with a
+        context kwarg doesn't work here: the trip_check_status constraint fires
+        on a deferred flush that no longer carries the context, rolling back the
+        write. Mirrors field_action_close_previous_trip on hr.attendance.
+        """
+        trip = self.browse(int(trip_id)).with_context(
+            skip_deviation_reason_required=True, skip_auto_end_trip=True)
+        if not trip.exists():
+            return {'error': 'not_found'}
+        vals = {'end_trip': True, 'end_time': end_time or fields.Datetime.now()}
+        if end_km not in (None, ''):
+            vals['end_km'] = int(end_km)
+        trip.write(vals)
+        trip.flush_recordset()
+        return {'success': True}
 
     def _check_start_km_for_picker_flow(self):
         """Block save when a draft trip is being persisted from the

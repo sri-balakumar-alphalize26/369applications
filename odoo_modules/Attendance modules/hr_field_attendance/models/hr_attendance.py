@@ -968,10 +968,15 @@ class HrAttendance(models.Model):
             else:
                 last_trip = rec.source_trip_id
             if last_trip and not last_trip.end_trip and not last_trip.trip_cancel:
+                # Same bypass-on-the-trip + flush pattern as the close RPC so an
+                # "Over" trip can be ended at checkout without the deviation
+                # constraint rolling back the write.
+                last_trip = last_trip.with_context(skip_deviation_reason_required=True)
                 last_trip.write({
                     'end_trip': True,
                     'end_time': last_trip.end_time or rec.check_out or fields.Datetime.now(),
                 })
+                last_trip.flush_recordset()
             # 2. Mark every linked visit as Done
             all_visits = rec.source_visit_ids | \
                          rec.trip_line_ids.mapped('visit_ids')
@@ -1406,6 +1411,9 @@ class HrAttendance(models.Model):
     def field_action_close_previous_trip(self, attendance_id, end_km):
         """Close the latest open trip on this attendance. End KM must be
         > Start KM. Mirrors the web close-previous-trip dialog."""
+        # Let an "Over" trip end here; the mobile app prompts for the
+        # deviation reason right after (the constraint stays enforced on the web).
+        self = self.with_context(skip_deviation_reason_required=True)
         att = self.browse(attendance_id)
         if not att.exists():
             return {'error': 'not_found'}
@@ -1422,11 +1430,19 @@ class HrAttendance(models.Model):
             return {'error': 'end_km_invalid'}
         if end_km_int <= (trip.start_km or 0):
             return {'error': 'end_km_too_low', 'start_km': trip.start_km or 0}
-        trip.with_context(skip_auto_end_trip=True).write({
+        # Put the deviation-reason bypass DIRECTLY on the trip recordset (not
+        # only inherited from `self`) and flush within that context, so the
+        # stored-field recompute of trip_check_status and its constraint run
+        # while the bypass is active. Otherwise an "Over" trip's constraint can
+        # fire during a later flush and roll back the whole write — leaving
+        # end_trip unset (the "trip never ends" bug).
+        trip = trip.with_context(skip_deviation_reason_required=True, skip_auto_end_trip=True)
+        trip.write({
             'end_km': end_km_int,
             'end_trip': True,
             'end_time': trip.end_time or fields.Datetime.now(),
         })
+        trip.flush_recordset()
         try:
             trip._mark_linked_visits_done()
         except Exception:
@@ -1474,6 +1490,7 @@ class HrAttendance(models.Model):
         """Create an OUTBOUND trip line. Used by both Setup Secondary Trip
         (first trip after primary, or first trip ever when going home →
         visit) and Add Additional Trip."""
+        self = self.with_context(skip_deviation_reason_required=True)
         att = self.browse(attendance_id)
         if not att.exists():
             return {'error': 'not_found'}
@@ -1512,6 +1529,7 @@ class HrAttendance(models.Model):
         """Create a RETURN trip line. `return_leg_type` is 'via_office' or
         'direct'. `is_office_to_home=True` flags the second leg of a
         via_office return."""
+        self = self.with_context(skip_deviation_reason_required=True)
         att = self.browse(attendance_id)
         if not att.exists():
             return {'error': 'not_found'}
@@ -1546,6 +1564,9 @@ class HrAttendance(models.Model):
     def field_action_check_out(self, attendance_id):
         """Finalise the attendance: ends any open trip + marks visits Done +
         sets check_out timestamp. Wraps _on_checkout_finalize_trips_and_visits."""
+        # Allow ending an "Over" trip during checkout; the app collects the
+        # deviation reason just before this RPC (the constraint stays on web).
+        self = self.with_context(skip_deviation_reason_required=True)
         att = self.browse(attendance_id)
         if not att.exists():
             return {'error': 'not_found'}
