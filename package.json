@@ -66,6 +66,7 @@
     "expo-font": "~11.10.3",
     "expo-image-manipulator": "~11.8.0",
     "expo-image-picker": "~14.7.1",
+    "expo-intent-launcher": "~10.11.0",
     "expo-local-authentication": "~13.8.0",
     "expo-location": "~16.5.5",
     "expo-network": "~5.8.0",

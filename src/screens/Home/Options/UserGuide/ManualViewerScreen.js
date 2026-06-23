@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from '@components/containers';
 import { NavigationHeader } from '@components/Header';
@@ -9,6 +9,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { Asset } from 'expo-asset';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { showToastMessage } from '@components/Toast';
 import { getManual } from '../../../../data/employeeManuals';
 
@@ -17,8 +18,37 @@ import { getManual } from '../../../../data/employeeManuals';
 const ManualViewerScreen = ({ navigation, route }) => {
   const manual = getManual(route?.params?.id);
   const [opening, setOpening] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    console.log('[UserGuide] viewer mount:', {
+      id: route?.params?.id,
+      found: !!manual,
+      title: manual?.title,
+      hasPdf: !!manual?.pdf,
+      htmlLength: manual?.html?.length,
+    });
+  }, []);
+
+  // Resolve the bundled PDF asset to a local file with a proper .pdf name.
+  const materializePdf = async () => {
+    const asset = Asset.fromModule(manual.pdf);
+    await asset.downloadAsync();
+    const src = asset.localUri || asset.uri;
+    const dest = `${FileSystem.cacheDirectory}${manual.id}-manual.pdf`;
+    try {
+      await FileSystem.copyAsync({ from: src, to: dest });
+      const info = await FileSystem.getInfoAsync(dest);
+      if (info.exists) return dest;
+    } catch (copyErr) {
+      console.log('[UserGuide] materializePdf: copy failed, using source -', copyErr?.message);
+    }
+    return src;
+  };
+
+  // Open straight in the device's PDF viewer (Android: ACTION_VIEW intent;
+  // iOS: Quick Look via Sharing). Falls back to the share sheet on failure.
   const openPdf = async () => {
     if (!manual?.pdf) {
       console.log('[UserGuide] openPdf: no PDF bundled for', manual?.id);
@@ -27,23 +57,25 @@ const ManualViewerScreen = ({ navigation, route }) => {
     try {
       setOpening(true);
       console.log('[UserGuide] openPdf: opening', manual.id);
-      // Resolve the bundled asset to a local file, give it a .pdf name, then share.
-      const asset = Asset.fromModule(manual.pdf);
-      await asset.downloadAsync();
-      const src = asset.localUri || asset.uri;
-      console.log('[UserGuide] openPdf: asset resolved at', src);
-      const dest = `${FileSystem.cacheDirectory}${manual.id}-manual.pdf`;
-      let fileUri = src;
-      try {
-        await FileSystem.copyAsync({ from: src, to: dest });
-        const info = await FileSystem.getInfoAsync(dest);
-        if (info.exists) fileUri = dest;
-        console.log('[UserGuide] openPdf: copied to', fileUri);
-      } catch (copyErr) {
-        console.log('[UserGuide] openPdf: copy failed, sharing source directly -', copyErr?.message);
+      const fileUri = await materializePdf();
+      console.log('[UserGuide] openPdf: file at', fileUri);
+
+      if (Platform.OS === 'android') {
+        try {
+          const contentUri = await FileSystem.getContentUriAsync(fileUri);
+          console.log('[UserGuide] openPdf: ACTION_VIEW', contentUri);
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+            data: contentUri,
+            flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+            type: 'application/pdf',
+          });
+          return;
+        } catch (intentErr) {
+          console.log('[UserGuide] openPdf: intent failed, share fallback -', intentErr?.message);
+        }
       }
+
       if (!(await Sharing.isAvailableAsync())) {
-        console.log('[UserGuide] openPdf: Sharing not available on this device');
         showToastMessage('Opening the PDF is not supported on this device');
         return;
       }
@@ -52,7 +84,6 @@ const ManualViewerScreen = ({ navigation, route }) => {
         UTI: 'com.adobe.pdf',
         dialogTitle: manual.title,
       });
-      console.log('[UserGuide] openPdf: share sheet opened for', manual.id);
     } catch (e) {
       console.log('[UserGuide] openPdf: error -', e?.message, e);
       showToastMessage('Could not open the PDF');
@@ -61,17 +92,85 @@ const ManualViewerScreen = ({ navigation, route }) => {
     }
   };
 
-  const pdfButton = (
-    <TouchableOpacity onPress={openPdf} disabled={opening} activeOpacity={0.8} style={styles.pdfBtn}>
-      {opening ? (
-        <ActivityIndicator size="small" color={COLORS.primaryThemeColor} />
-      ) : (
-        <>
-          <MaterialIcons name="picture-as-pdf" size={16} color={COLORS.primaryThemeColor} />
-          <Text style={styles.pdfBtnText}>PDF</Text>
-        </>
-      )}
-    </TouchableOpacity>
+  // Download to a folder the user chooses (Android: Storage Access Framework
+  // directory picker; iOS: share sheet with "Save to Files").
+  const downloadPdf = async () => {
+    if (!manual?.pdf) return;
+    try {
+      setDownloading(true);
+      console.log('[UserGuide] downloadPdf: start', manual.id);
+      const fileUri = await materializePdf();
+      const fileName = `${manual.id}-manual.pdf`;
+
+      if (Platform.OS === 'android') {
+        const SAF = FileSystem.StorageAccessFramework;
+        const permissions = await SAF.requestDirectoryPermissionsAsync();
+        if (!permissions.granted) {
+          console.log('[UserGuide] downloadPdf: folder permission denied');
+          showToastMessage('Storage permission denied');
+          return;
+        }
+        const base64 = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const safUri = await SAF.createFileAsync(permissions.directoryUri, fileName, 'application/pdf');
+        await FileSystem.writeAsStringAsync(safUri, base64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        console.log('[UserGuide] downloadPdf: saved to', safUri);
+        showToastMessage('PDF saved: ' + fileName);
+      } else {
+        if (!(await Sharing.isAvailableAsync())) {
+          showToastMessage('Saving is not supported on this device');
+          return;
+        }
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: `Save ${manual.title}`,
+        });
+      }
+    } catch (e) {
+      console.log('[UserGuide] downloadPdf: error -', e?.message, e);
+      showToastMessage('Could not download the PDF');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const headerActions = (
+    <View style={styles.headerActions}>
+      <TouchableOpacity
+        onPress={downloadPdf}
+        disabled={downloading || opening}
+        activeOpacity={0.8}
+        style={[styles.pdfBtn, { marginRight: 8 }]}
+      >
+        {downloading ? (
+          <ActivityIndicator size="small" color={COLORS.primaryThemeColor} />
+        ) : (
+          <>
+            <MaterialIcons name="file-download" size={16} color={COLORS.primaryThemeColor} />
+            <Text style={styles.pdfBtnText}>Save</Text>
+          </>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={openPdf}
+        disabled={opening || downloading}
+        activeOpacity={0.8}
+        style={styles.pdfBtn}
+      >
+        {opening ? (
+          <ActivityIndicator size="small" color={COLORS.primaryThemeColor} />
+        ) : (
+          <>
+            <MaterialIcons name="picture-as-pdf" size={16} color={COLORS.primaryThemeColor} />
+            <Text style={styles.pdfBtnText}>PDF</Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
   );
 
   if (!manual) {
@@ -91,7 +190,7 @@ const ManualViewerScreen = ({ navigation, route }) => {
         title={manual.title}
         onBackPress={() => navigation.goBack()}
         logo={false}
-        headerRight={pdfButton}
+        headerRight={headerActions}
       />
       <View style={{ flex: 1 }}>
         <WebView
@@ -99,7 +198,12 @@ const ManualViewerScreen = ({ navigation, route }) => {
           source={{ html: manual.html }}
           style={{ flex: 1 }}
           showsVerticalScrollIndicator={false}
-          onLoadEnd={() => setLoading(false)}
+          onLoadStart={() => console.log('[UserGuide] webview: load start', manual.id)}
+          onLoadEnd={() => {
+            console.log('[UserGuide] webview: load end', manual.id);
+            setLoading(false);
+          }}
+          onError={(e) => console.log('[UserGuide] webview: error', e?.nativeEvent)}
         />
         {loading && (
           <View style={styles.loader}>
@@ -114,6 +218,7 @@ const ManualViewerScreen = ({ navigation, route }) => {
 const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loader: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
   pdfBtn: {
     flexDirection: 'row',
     alignItems: 'center',
